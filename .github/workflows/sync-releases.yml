@@ -23,8 +23,8 @@ jobs:
           # 1. Fetch upstream releases (oldest to newest)
           UPSTREAM_RELEASES=$(gh api "repos/${UPSTREAM_REPO}/releases" | jq 'reverse')
 
-          # 2. Iterate through releases
-          echo "${UPSTREAM_RELEASES}" | jq -c '.[]' | while IFS= read -r release; do
+          # 2. Iterate using process substitution to avoid pipe failure / broken pipe
+          while IFS= read -r release; do
             TAG=$(echo "${release}" | jq -r '.tag_name')
             NAME=$(echo "${release}" | jq -r '.name // empty')
             BODY=$(echo "${release}" | jq -r '.body // empty')
@@ -34,10 +34,9 @@ jobs:
 
             [ "${DRAFT}" = "true" ] && continue
 
-            # Check if an actual GitHub Release already exists
-            RELEASE_EXISTS=$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}" --silent 2>&1 || true)
-            if echo "${RELEASE_EXISTS}" | grep -q '"id":'; then
-              echo "Release ${TAG} already exists. Skipping."
+            # Check if release already exists in fork
+            if gh release view "${TAG}" >/dev/null 2>&1; then
+              echo "Release ${TAG} already exists in fork. Skipping."
               continue
             fi
 
@@ -48,7 +47,7 @@ jobs:
             # Download compiled binaries
             echo "${release}" | jq -r '.assets[]?.browser_download_url' | while IFS= read -r url; do
               if [ -n "${url}" ]; then
-                wget -q -P ./downloads "${url}" || echo "Failed to download ${url}"
+                wget -q -P ./downloads "${url}" || echo "Warning: Failed to download ${url}"
               fi
             done
 
@@ -64,10 +63,10 @@ jobs:
             shopt -u nullglob
 
             if [ ${#FILES[@]} -gt 0 ]; then
-              gh release create "${TAG}" "${FILES[@]}" "${ARGS[@]}"
+              gh release create "${TAG}" "${FILES[@]}" "${ARGS[@]}" || echo "Failed or already exists: ${TAG}"
             else
-              gh release create "${TAG}" "${ARGS[@]}"
+              gh release create "${TAG}" "${ARGS[@]}" || echo "Failed or already exists: ${TAG}"
             fi
 
             rm -rf ./downloads
-          done
+          done < <(echo "${UPSTREAM_RELEASES}" | jq -c '.[]')
