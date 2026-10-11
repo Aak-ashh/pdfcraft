@@ -1,0 +1,32 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    # Runs daily at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync_latest_from_upstream:
+    name: Sync latest commits from upstream repo
+    runs-on: ubuntu-latest
+    if: ${{ github.repository != 'storytold/pdfcraft' }}
+
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+
+      - name: Sync upstream changes
+        id: sync
+        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
+        with:
+          upstream_sync_repo: storytold/pdfcraft
+          upstream_sync_branch: main
+          target_sync_branch: main
+          target_repo_token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Sync check
+        if: failure()
+        run: |
+          echo "[Error] Sync failed. You may have conflicting commits."
+          exit 1
