@@ -735,6 +735,61 @@ fn the_panel_filters_and_sorts() {
     assert_eq!(h.query_all_by_label("Oval").count(), ovals + 1, "a group header was added");
 }
 
+/// #1554: a page group's chevron folds that page's cards away and back, and the choice holds.
+#[test]
+fn page_groups_collapse_and_expand() {
+    let mut h = harness(|app| app.set_option("panel", "comments").unwrap());
+    for (page, text) in [(0, "First page note"), (1, "Second page note")] {
+        let shape = pdfcraft_engine::Shape::Note { at: [100.0, 100.0], icon: pdfcraft_engine::NoteIcon::Comment };
+        h.state_mut().apply_edit(pdfcraft_engine::Edit::AddAnnotation(pdfcraft_engine::NewAnnotation {
+            page,
+            style: pdfcraft_engine::Style::default_for(&shape),
+            shape,
+            contents: text.into(),
+            author: "Tester".into(),
+        }));
+    }
+    h.state_mut().views[0].comments.selected = None;
+    h.run_steps(3);
+    let shown = |h: &Harness<'static, PdfCraftApp>, text: &str| h.query_all_by_label_contains(text).count() > 0;
+    assert!(shown(&h, "First page note") && shown(&h, "Second page note"));
+    assert_eq!(h.query_all_by_label("Collapse").count(), 2, "one chevron per page group");
+
+    h.query_all_by_label("Collapse").next().unwrap().click();
+    h.run_steps(3);
+    assert!(!shown(&h, "First page note"), "page 1's card is folded away");
+    assert!(shown(&h, "Second page note"), "page 2 stays open");
+    h.run_steps(5);
+    assert!(!shown(&h, "First page note"), "the group stays folded on later frames");
+
+    h.get_by_label("Expand").click();
+    h.run_steps(3);
+    assert!(shown(&h, "First page note"), "page 1's card is back");
+
+    // Selecting a comment on a folded page opens its group so the card can be shown.
+    h.query_all_by_label("Collapse").next().unwrap().click();
+    h.run_steps(3);
+    assert!(!shown(&h, "First page note"));
+    h.state_mut().views[0].comments.selected = Some((0, 0));
+    h.state_mut().views[0].comments.reveal = true;
+    h.run_steps(3);
+    assert!(shown(&h, "First page note"), "the selected comment's group opened");
+
+    // "…" ▸ Collapse all pages, then Expand all pages.
+    h.state_mut().views[0].comments.selected = None;
+    h.get_by_label("More options").click();
+    h.run_steps(2);
+    h.get_by_label("Collapse all pages").click();
+    h.run_steps(3);
+    assert!(!shown(&h, "First page note") && !shown(&h, "Second page note"), "every page is folded");
+    assert_eq!(h.query_all_by_label("Expand").count(), 2);
+    h.get_by_label("More options").click();
+    h.run_steps(2);
+    h.get_by_label("Expand all pages").click();
+    h.run_steps(3);
+    assert!(shown(&h, "First page note") && shown(&h, "Second page note"), "every page is open again");
+}
+
 #[test]
 fn comments_take_checkmarks_lock_hide_and_summarize() {
     let mut h = harness(|app| {
@@ -1242,6 +1297,37 @@ fn hovering_a_comment_shows_its_author_and_text() {
     h.hover_at(p);
     h.run_steps(3);
     assert!(h.query_by_label_contains("Check this figure").is_none(), "a dialog covers the page hover");
+}
+
+#[test]
+fn preference_hides_author_only_highlight_hover_previews() {
+    // A highlight annotation with author Ada and empty contents over the first page.
+    let pdf = String::from_utf8_lossy(TEXT_FIXTURE).replace("/Contents 5 0 R /Resources", "/Contents 5 0 R /Annots [8 0 R] /Resources").replace(
+        "trailer",
+        "8 0 obj << /Type /Annot /Subtype /Highlight /Rect [50 50 150 120] /C [1 1 0] /T (Ada) /QuadPoints [50 120 150 120 50 50 150 50] >> endobj\ntrailer",
+    );
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("highlight_hover.pdf", None, pdf.into_bytes()).expect("opens");
+        app.set_option("left", "closed").unwrap();
+        app.set_option("panel", "none").unwrap();
+        app
+    });
+    h.run_steps(4);
+    settle(&mut h);
+
+    let p = at(&h, 100.0, 85.0);
+    // By default, author-only hover is shown.
+    h.hover_at(p);
+    h.run_steps(3);
+    h.get_by_label("Ada");
+
+    // Enabling preference hides author-only highlight hover.
+    h.state_mut().set_option("hide-empty-highlight-hover", "true").unwrap();
+    h.hover_at(p);
+    h.run_steps(3);
+    assert!(h.query_by_label("Ada").is_none(), "author-only hover must be suppressed");
 }
 
 #[test]

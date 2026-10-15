@@ -52,13 +52,14 @@ pub use pdfcraft_organize::view::{InitialView, Layout as InitialLayout, Magnific
 
 pub use pdfcraft_cos::Algorithm;
 pub use pdfcraft_create::{CONVERTIBLE, CreateError, ImageResolution, SourceKind, decode_text, source_kind};
+pub use pdfcraft_edit::added::{text_rect as added_text_rect, text_width as added_text_width};
 pub use pdfcraft_edit::{
     Added, AddedImage, AddedText, Align as TextAlign, Background, Content as AddedContent, Family as FontFamily, HeaderFooter, MarkKind, Watermark,
 };
 pub use pdfcraft_forms::{
     BorderStyle, CheckStyle, Field as FormField, FieldAction, FieldChange, FieldFont, FieldKind as FormFieldKind, FieldProps, FieldValue,
     Look as FieldLook, LookPatch as FieldLookPatch, NewField, TabOrder, Trigger as FieldTrigger, Widget as FormWidget, af as form_scripts,
-    appearance::auto_text_size_by as field_auto_text_size_by, flags as field_flags,
+    appearance as form_appearance, appearance::auto_text_size_by as field_auto_text_size_by, flags as field_flags,
 };
 
 pub use pdfcraft_a11y as a11y;
@@ -594,6 +595,11 @@ impl Document {
         self.editor.as_ref().map(|e| a11y::tags(&e.cos)).unwrap_or_default()
     }
 
+    /// Marked-content items directly owned by one reachable indirect structure tag.
+    pub fn tag_content(&self, object: pdfcraft_cos::ObjRef) -> Result<Vec<a11y::TagContentItem>, a11y::TagError> {
+        self.editor.as_ref().map(|e| a11y::tag_content(&e.cos, object)).unwrap_or_else(|| Ok(Vec::new()))
+    }
+
     /// The edit that fixes `rule`, for the rules with an automatic fix: the document language
     /// (`value` is the language), the title (`value` replaces it; else the current title or the
     /// file name) and the tab order.
@@ -869,6 +875,12 @@ fn is_placeholder_title(title: &str) -> bool {
 /// What is displayed: the working file, plus (in memory only, never saved) the appearances
 /// PdfCraft draws for comments that have none ([`pdfcraft_annot::with_missing_appearances`]).
 /// The working file is unchanged, and so is everything that reads it (saving, signatures, …).
+/// The reader shows the same pages in `a` and `b`: count, displayed size and rotation.
+fn same_pages(a: &[pdfcraft_render::PageInfo], b: &[pdfcraft_render::PageInfo]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| (x.width - y.width).abs() < 0.01 && (x.height - y.height).abs() < 0.01 && x.rotation == y.rotation)
+}
+
 fn display_bytes(editor: Option<&mut Editor>, bytes: &Arc<Vec<u8>>) -> Arc<Vec<u8>> {
     let Some(display) = editor.and_then(|e| pdfcraft_annot::with_missing_appearances_cached(&e.cos, &mut e.appearances)) else {
         return bytes.clone();
@@ -1471,6 +1483,8 @@ pub enum Edit {
         figure: u32,
         alt: Option<String>,
     },
+    /// Add `/Form` tags and object references for all widgets in an untagged AcroForm.
+    AutoTagFormFields,
     /// Change one property on a reachable indirect structure tag.
     SetTagProperty {
         object: pdfcraft_cos::ObjRef,
@@ -1961,6 +1975,7 @@ impl Edit {
             Edit::SetInitialView(_) => Label::of("Change initial view"),
             Edit::AutoTagText => Label::of("Automatically tag text"),
             Edit::SetAltText { .. } => Label::of("Set alternate text"),
+            Edit::AutoTagFormFields => Label::of("Tag form fields"),
             Edit::SetTagProperty { .. } => Label::of("Change tag properties"),
             Edit::MoveTag { .. } => Label::of("Move object"),
             Edit::MarkDecorative { .. } => Label::of("Mark figure as decorative"),
@@ -2156,6 +2171,7 @@ fn check_permission(edit: &Edit, p: &pdfcraft_cos::Permissions) -> Result<(), Ed
         | Edit::SetInitialView(_)
         | Edit::AutoTagText
         | Edit::SetAltText { .. }
+        | Edit::AutoTagFormFields
         | Edit::SetTagProperty { .. }
         | Edit::MoveTag { .. }
         | Edit::MarkDecorative { .. }
@@ -2443,6 +2459,9 @@ fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> 
         Edit::SetAltText { figure, alt } => {
             let r = pdfcraft_cos::ObjRef::new(*figure, doc.generation(*figure));
             a11y::set_alt(doc, r, alt.as_deref()).map_err(|e| EditError::Accessibility(e.to_string()))?;
+        }
+        Edit::AutoTagFormFields => {
+            a11y::tag_form_fields(doc).map_err(EditError::Accessibility)?;
         }
         Edit::SetTagProperty { object, property, value } => {
             a11y::set_tag_property(doc, *object, *property, value.as_deref()).map_err(|e| EditError::Accessibility(e.to_string()))?;
@@ -3439,6 +3458,31 @@ impl Session {
             },
             (_, cos) => (bytes, info, cos),
         };
+        // The catalog leads to no page, but the reader found pages by scanning: gather the page
+        // objects into a page tree as one more revision, or page edits address none of them
+        // (#1656). Kept only when the reader then shows the same pages, and never on a signed
+        // document, where writing the repair could rewrite the file under its signatures.
+        let (bytes, info, cos) = match cos {
+            Ok(Ok(cos)) if !info.pages.is_empty() && pdfcraft_organize::page_count(&cos).unwrap_or(0) == 0 => {
+                let mut work = cos.clone();
+                let signed = || pdfcraft_sign::pdf::list(&cos, &bytes, &context.trust).iter().any(|s| s.signed);
+                let rebuilt = match pdfcraft_organize::recover_page_tree(&mut work) {
+                    Ok(n) if n > 0 && !signed() => rebase(&work).ok().filter(|(_, i, _)| same_pages(&i.pages, &info.pages)),
+                    _ => None,
+                };
+                match rebuilt {
+                    Some((b, i, mut c)) => {
+                        for line in cos.repair_log() {
+                            c.note_repair(line.clone());
+                        }
+                        c.note_repair(format!("the page tree is missing; its {} pages were found by scanning the file", i.pages.len()));
+                        (b, i, Ok(Ok(c)))
+                    }
+                    None => (bytes, info, Ok(Ok(cos))),
+                }
+            }
+            cos => (bytes, info, cos),
+        };
         // XFA notes survive the document being re-read after edits.
         let xfa_warnings: Vec<String> = if info.xfa.is_some() { info.warnings.clone() } else { Vec::new() };
         let mut document = Self::build_document(&context.trust, name, path, bytes, info, cos, render_password, password, xfa);
@@ -3677,8 +3721,9 @@ impl Session {
         }
         // Signed documents are only ever saved incrementally: an edit that needs a full rewrite
         // (applying redactions, changing security, sanitizing) would invalidate the signatures.
+        // So does any edit to a file rebuilt from object headers: it has no chain to append to.
         let rewrites = |c: &pdfcraft_cos::Document| c.full_save_required() || c.encryption_changed();
-        if signed && rewrites(&next) && !rewrites(&editor.cos) {
+        if signed && ((rewrites(&next) && !rewrites(&editor.cos)) || (next.is_modified() && next.revisions().is_empty())) {
             return Err(EditError::SignedRewrite(edit.label().to_string()));
         }
         // What this edit drew with `?` (a value or comment text its font can't draw, stored as
@@ -4288,6 +4333,20 @@ impl Session {
             }
         };
         pdfcraft_print::impose(&cos, settings).map_err(|e| EditError::Print(e.to_string()))
+    }
+
+    /// For each page, whether its text mostly runs bottom-to-top ([`pdfcraft_print::text_reads_up`]);
+    /// only `pages` are read, the others are `false`.
+    pub fn print_text_up(&self, id: DocId, pages: &[usize]) -> Vec<bool> {
+        let Some(doc) = self.get(id) else { return Vec::new() };
+        let cos = match doc.editor.as_ref() {
+            Some(e) => e.cos.clone(),
+            None => match pdfcraft_cos::Document::open_with_password(doc.bytes.clone(), doc.password.as_deref()) {
+                Ok(c) => c,
+                Err(_) => return Vec::new(),
+            },
+        };
+        (0..doc.info.pages.len()).map(|i| pages.contains(&i) && pdfcraft_print::text_reads_up(&cos, i)).collect()
     }
 
     /// Combine whole files, in order, into new PDF bytes (one bookmark per file).
