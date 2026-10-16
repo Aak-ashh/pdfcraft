@@ -4,7 +4,8 @@
 //!   as the file's last one (table or stream) and a trailer with `/Prev`. The original bytes are
 //!   never modified, which keeps digital signatures over earlier revisions valid.
 //! * `write_full` writes only objects reachable from the trailer, renumbered densely, with a
-//!   cross-reference table or stream — the "Save As" / garbage-collecting path.
+//!   cross-reference table or stream — the "Save As" / garbage-collecting path. Unknown trailer
+//!   entries are copied, including objects reachable only from them.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -257,6 +258,13 @@ pub fn write_full(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, CosErro
             queue.push_back(r);
         }
     }
+    // Unknown trailer entries are document data. Objects they alone reference must be written
+    // too, or a full rewrite would keep the key and drop its value.
+    for (key, value) in trailer_in.iter() {
+        if !trailer_key_rewritten(key) {
+            collect_refs(value, &mut |r| queue.push_back(r));
+        }
+    }
     while let Some(r) = queue.pop_front() {
         if map.contains_key(&r) {
             continue;
@@ -284,13 +292,18 @@ pub fn write_full(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, CosErro
             collect_refs(&reader.get(r), &mut |x| pending.push(x));
         }
     }
+    // Acrobat refuses an encrypted file whose catalog sits in an object stream ("the file is
+    // damaged and could not be repaired", before it even asks for the password), while other
+    // readers accept it. qpdf keeps the catalog out of object streams too. Verified with
+    // Acrobat DC on macOS (#774).
+    let root_outside = if reader.document.output_security().0.is_some() { trailer_in.reference(b"Root") } else { None };
     let mut rows: BTreeMap<u32, Row> = BTreeMap::new();
     // Keep only references, not renamed copies of the entire object graph. Standalone
     // objects still precede object streams, preserving the established output order.
     let mut packed: Vec<(u32, ObjRef)> = Vec::new();
     for (i, (r, is_stream)) in order.iter().enumerate() {
         let num = output_number(i)?;
-        let in_stream = opts.object_streams && !is_stream && !encryption_objects.contains(r);
+        let in_stream = opts.object_streams && !is_stream && !encryption_objects.contains(r) && root_outside != Some(*r);
         if in_stream {
             packed.push((num, *r));
         } else {
@@ -331,6 +344,11 @@ pub fn write_full(doc: &Document, opts: &SaveOptions) -> Result<Vec<u8>, CosErro
     }
     if let Some(id) = trailer_in.get(b"ID") {
         trailer.set(b"ID".to_vec(), id.clone());
+    }
+    for (key, value) in trailer_in.iter() {
+        if !trailer_key_rewritten(key) {
+            trailer.set(key.clone(), renumber(value, &map));
+        }
     }
     if reader.document.output_security().0.is_none() {
         ensure_id(&mut trailer, opts, reader.document.bytes());
@@ -395,6 +413,15 @@ impl ObjectStreamBatch {
     }
 }
 
+/// Trailer keys a full rewrite generates itself. Everything else is copied, with references
+/// renumbered, so a save does not drop metadata the reader accepted.
+fn trailer_key_rewritten(key: &[u8]) -> bool {
+    matches!(
+        key,
+        b"Size" | b"Prev" | b"XRefStm" | b"Type" | b"W" | b"Index" | b"Filter" | b"DecodeParms" | b"Length" | b"Root" | b"Info" | b"Encrypt" | b"ID"
+    )
+}
+
 fn output_number(index: usize) -> Result<u32, CosError> {
     u32::try_from(index).ok().and_then(|n| n.checked_add(1)).ok_or_else(|| CosError::Syntax { offset: 0, detail: "too many objects to save".into() })
 }
@@ -425,6 +452,15 @@ fn write_xref_table(out: &mut Vec<u8>, offsets: &BTreeMap<u32, (u64, u16, bool)>
     let mut all: Vec<(u32, (u64, u16, bool))> = offsets.iter().map(|(k, v)| (*k, *v)).collect();
     if include_zero {
         all.insert(0, (0, (0, 65535, false)));
+    }
+    // A section is one or more subsections. `xref` followed immediately by `trailer` is not a
+    // table (qpdf: "xref syntax invalid") and is what an incremental save of a classic-table
+    // file used to append when nothing was edited. A zero-length subsection names no objects,
+    // so the free list and every in-use entry stay as they were, while a trailer-only change
+    // (a missing `/ID`, or a caller edit of the trailer) is still written.
+    if all.is_empty() {
+        let _ = writeln!(out, "0 0");
+        return;
     }
     let mut i = 0;
     while i < all.len() {
