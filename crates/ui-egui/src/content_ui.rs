@@ -615,7 +615,7 @@ fn font_size_input(ui: &mut egui::Ui, size: &mut f64) {
     }
     let response = ui.add(egui::TextEdit::singleline(&mut text).id(id).desired_width(44.0));
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, ui.is_enabled(), tl!("Font size:")));
-    let cancel = response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let cancel = (response.has_focus() || response.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Escape));
     if cancel {
         text = size.to_string();
         response.surrender_focus();
@@ -980,6 +980,44 @@ mod tests {
             h.run_steps(2);
             assert_eq!(*h.state(), (expected, changes));
         }
+    }
+
+    #[test]
+    fn typed_size_commits_on_focus_loss_and_escape_discards_the_draft() {
+        let mut h = egui_kittest::Harness::new_ui_state(
+            |ui, state: &mut (f64, usize)| {
+                let before = state.0;
+                ui.horizontal(|ui| font_size_input(ui, &mut state.0));
+                let _ = ui.button("Other control");
+                if state.0 != before {
+                    state.1 += 1;
+                }
+            },
+            (12.0, 0),
+        );
+        h.run();
+        let select_all =
+            || egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Font size:").click();
+        h.run();
+        h.event(select_all());
+        h.event(egui::Event::Text("6.5".into()));
+        h.run_steps(2);
+        assert_eq!(*h.state(), (12.0, 0));
+        h.get_by_label("Other control").click();
+        h.run_steps(2);
+        assert_eq!(*h.state(), (6.5, 1));
+        h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Font size:").click();
+        h.run();
+        h.event(select_all());
+        h.event(egui::Event::Text("13.25".into()));
+        h.run_steps(2);
+        h.event(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(2);
+        assert_eq!(*h.state(), (6.5, 1), "Escape must not commit the draft");
+        h.get_by_label("Other control").click();
+        h.run_steps(2);
+        assert_eq!(*h.state(), (6.5, 1), "later focus loss must not revive the cancelled draft");
     }
 
     /// The image a flip button leaves behind, as the panel returns it.
