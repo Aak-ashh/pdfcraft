@@ -25,7 +25,8 @@ const SCAN_BYTES: usize = 64 * 1024;
 const SCAN_OPS: usize = 4096;
 /// How far (in points) a backdrop may fall short of the crop box and still count as covering it.
 const COVER_EPS: f64 = 1.0;
-/// Components at least this close to white (per channel) count as white.
+/// Components at least this close to white (per channel) count as white: a near-white fill
+/// (`0.99 g`) is a backdrop too, and replacing it changes the page by at most 2%.
 const WHITE: f64 = 0.98;
 
 /// What paints a page's backdrop.
@@ -57,15 +58,26 @@ struct State {
     opaque: bool,
 }
 
-/// The backdrop `page` (0-based) paints, if any.
+/// The backdrop `page` (0-based) paints, if any. Finding the page walks the page tree, so to
+/// check many pages use [`page_backdrops`], which walks it once.
 pub fn page_backdrop(doc: &Document, page: usize) -> Result<Option<Backdrop>, EditError> {
-    Ok(scan(doc, page)?.map(|(b, _)| b))
+    let all = pdfcraft_model::pages(doc);
+    let p = all.get(page).ok_or(EditError::NoSuchPage(page))?;
+    Ok(scan(doc, p).map(|(b, _)| b))
+}
+
+/// The backdrop each of `pages` (0-based) paints, in the same order, walking the page tree once.
+/// A page past the end has none, and doesn't hide what the others paint: a page count taken
+/// elsewhere (the viewer's) can disagree with the page tree's on a malformed document.
+pub fn page_backdrops(doc: &Document, pages: &[usize]) -> Vec<Option<Backdrop>> {
+    let all = pdfcraft_model::pages(doc);
+    pages.iter().map(|&p| all.get(p).and_then(|page| scan(doc, page)).map(|(b, _)| b)).collect()
 }
 
 /// Replace `page`'s white backdrop fill, if it has one (see the module doc). Returns whether it
-/// did. A picture backdrop is left alone.
-pub(crate) fn replace(doc: &mut Document, page: usize) -> Result<bool, EditError> {
-    let Some((Backdrop::Fill, Some(found))) = scan(doc, page)? else { return Ok(false) };
+/// did; when it did, `page` no longer matches the document. A picture backdrop is left alone.
+pub(crate) fn replace(doc: &mut Document, page: &pdfcraft_model::Page) -> Result<bool, EditError> {
+    let Some((Backdrop::Fill, Some(found))) = scan(doc, page) else { return Ok(false) };
     let edited = found.pieces.splice([(found.op.clone(), b"n".to_vec())]);
     let piece = found.pieces.piece_of(found.op.start);
     let (Some(&(slot, original)), Some(bytes)) = (found.refs.get(piece), edited.get(piece)) else { return Ok(false) };
@@ -80,11 +92,10 @@ pub(crate) fn replace(doc: &mut Document, page: usize) -> Result<bool, EditError
     let mut dict = Dict::new();
     dict.set(b"PCBackdrop".to_vec(), Object::Dict(note));
     let copy = doc.add(Object::Stream(Stream::flate(dict, bytes)));
-    let p = page_of(doc, page)?;
-    let mut list = crate::contents(doc, &p)?;
+    let mut list = crate::contents(doc, page)?;
     let Some(entry) = list.get_mut(slot) else { return Ok(false) };
     *entry = Object::Ref(copy);
-    doc.update_dict(p.obj, |d| d.set(b"Contents".to_vec(), Object::Array(list)))?;
+    doc.update_dict(page.obj, |d| d.set(b"Contents".to_vec(), Object::Array(list)))?;
     Ok(true)
 }
 
@@ -124,20 +135,13 @@ fn unchanged_copy_of(doc: &Document, entry: &Object) -> Option<ObjRef> {
     (copy.decoded().ok()? == expect).then_some(*original)
 }
 
-fn page_of(doc: &Document, page: usize) -> Result<pdfcraft_model::Page, EditError> {
-    pdfcraft_model::pages(doc).into_iter().nth(page).ok_or(EditError::NoSuchPage(page))
-}
-
 /// Find the backdrop, and for a fill, where it is.
-fn scan(doc: &Document, page: usize) -> Result<Option<(Backdrop, Option<Found>)>, EditError> {
-    let p = page_of(doc, page)?;
+fn scan(doc: &Document, p: &pdfcraft_model::Page) -> Option<(Backdrop, Option<Found>)> {
     let crop = p.crop(doc);
-    let list: Vec<Object> = match p.dict.get(b"Contents") {
-        None => return Ok(None),
-        Some(c) => match &*doc.resolve(c) {
-            Object::Array(a) => a.clone(),
-            _ => vec![c.clone()],
-        },
+    let c = p.dict.get(b"Contents")?;
+    let list: Vec<Object> = match &*doc.resolve(c) {
+        Object::Array(a) => a.clone(),
+        _ => vec![c.clone()],
     };
     // The page's own content: untagged streams (marks and the q/Q wrapper carry /PCMark). Read
     // only as far as a backdrop could be.
@@ -148,7 +152,7 @@ fn scan(doc: &Document, page: usize) -> Result<Option<(Backdrop, Option<Found>)>
         if total >= SCAN_BYTES {
             break;
         }
-        let Object::Ref(r) = o else { return Ok(None) };
+        let Object::Ref(r) = o else { return None };
         let obj = doc.get(*r);
         let Object::Stream(s) = &*obj else { continue };
         if s.dict.get(b"PCMark").is_some() {
@@ -164,10 +168,10 @@ fn scan(doc: &Document, page: usize) -> Result<Option<(Backdrop, Option<Found>)>
     let parsed = pdfcraft_content::parse(head);
     let res = resources(doc, &p.dict);
     let found = walk(doc, &res, crop, &parsed.ops);
-    Ok(found.map(|(b, op)| match (b, op) {
+    found.map(|(b, op)| match (b, op) {
         (Backdrop::Fill, Some(op)) => (b, Some(Found { refs, pieces, op })),
         _ => (b, None),
-    }))
+    })
 }
 
 fn resources(doc: &Document, page: &Dict) -> Dict {

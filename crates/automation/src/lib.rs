@@ -1182,9 +1182,10 @@ impl Automation {
         };
         let doc = self.doc(a)?;
         let found: Vec<Value> = pages
-            .into_iter()
-            .filter_map(|p| {
-                let kind = match doc.page_backdrop(p)? {
+            .iter()
+            .zip(doc.page_backdrops(&pages))
+            .filter_map(|(p, found)| {
+                let kind = match found? {
                     pdfcraft_engine::Backdrop::Fill => "fill",
                     pdfcraft_engine::Backdrop::Image => "image",
                 };

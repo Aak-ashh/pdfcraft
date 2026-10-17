@@ -504,6 +504,15 @@ impl Document {
         self.editor.as_ref().and_then(|e| pdfcraft_edit::page_backdrop(&e.cos, page).ok().flatten())
     }
 
+    /// [`Self::page_backdrop`] for each of `pages`, in order, walking the page tree once: the
+    /// way to check many pages. A page out of range has none.
+    pub fn page_backdrops(&self, pages: &[usize]) -> Vec<Option<pdfcraft_edit::Backdrop>> {
+        match &self.editor {
+            Some(e) => pdfcraft_edit::page_backdrops(&e.cos, pages),
+            None => vec![None; pages.len()],
+        }
+    }
+
     /// Edit a PDF: the images `page` draws (0-based).
     pub fn page_images(&self, page: usize) -> Vec<pdfcraft_edit::PageImage> {
         self.editor.as_ref().and_then(|e| pdfcraft_edit::page_images(&e.cos, page).ok()).unwrap_or_default()

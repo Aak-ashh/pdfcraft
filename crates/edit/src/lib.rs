@@ -599,10 +599,10 @@ pub fn add_background(doc: &mut Document, pages: &[usize], bg: &Background, repl
     }
     let opacity = if bg.opacity.is_finite() { bg.opacity.clamp(0.0, 1.0) } else { 1.0 };
     for &i in pages {
-        if bg.replace_backdrop {
-            backdrop::replace(doc, i)?;
+        let mut page = page_list(doc)[i].clone();
+        if bg.replace_backdrop && backdrop::replace(doc, &page)? {
+            page = page_list(doc)[i].clone();
         }
-        let page = page_list(doc)[i].clone();
         let (w, h) = page.display_size(doc);
         let mut content = begin(MarkKind::Background, "Background", page.view_matrix(doc));
         match &bg.source {
@@ -659,7 +659,7 @@ pub fn marks_present(doc: &Document) -> Vec<MarkKind> {
 }
 
 pub mod backdrop;
-pub use backdrop::{Backdrop, page_backdrop};
+pub use backdrop::{Backdrop, page_backdrop, page_backdrops};
 pub mod objects;
 pub use objects::{EditableObject, MAX_MOVE_OBJECTS, ObjectKind, ObjectTarget, editable_objects, move_objects};
 
