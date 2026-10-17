@@ -1477,7 +1477,8 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
             }
         }
         if !merged {
-            for b in 0..segs.len() {
+            let mut b = 0;
+            while b < segs.len() {
                 let sb = &segs[b];
                 let best_host = (0..segs.len())
                     .filter(|&a| {
@@ -1494,7 +1495,8 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
                     let a = if b < a { a - 1 } else { a };
                     segs[a].merge(sb);
                     merged = true;
-                    break;
+                } else {
+                    b += 1;
                 }
             }
         }
@@ -2804,5 +2806,17 @@ mod tests {
         );
         assert_eq!(justified.plain_text(), "Justified clause.1 Next sentence on the same line\nKerned clause.2 continues cleanly");
         assert_eq!(justified.line_rects(0..justified.glyphs.len()).len(), 2);
+
+        // A line that begins with a raised superscript marker and continues with taller body text
+        // adopts the body text's vertical band (Seg::extend_box first branch) so a later
+        // out-of-order superscript on that line still measures against the body baseline.
+        let leading_script = page_glyphs(
+            "BT /F1 8 Tf 1 0 0 1 40 300 Tm 6 Ts (1) Tj 0 Ts \
+             /F1 12 Tf ( See the appendix) Tj \
+             1 0 0 1 146 300 Tm (for details) Tj \
+             /F1 8 Tf 1 0 0 1 139 303.6 Tm (2) Tj ET",
+        );
+        assert_eq!(leading_script.plain_text(), "1 See the appendix2 for details");
+        assert_eq!(leading_script.line_rects(0..leading_script.glyphs.len()).len(), 1);
     }
 }
