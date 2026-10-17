@@ -231,3 +231,71 @@ fn pages_without_content_or_with_odd_contents_have_no_backdrop() {
     assert_eq!(page_backdrop(&doc, 1).unwrap(), None);
     assert!(matches!(page_backdrop(&doc, 7), Err(EditError::NoSuchPage(7))));
 }
+
+/// `pages` 300 × 200 pages in a flat tree; even pages paint a white backdrop, odd ones don't.
+fn many_pages(pages: usize) -> Document {
+    let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", i + 5)).collect();
+    let mut objs = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!("<< /Type /Pages /Kids [{}] /Count {pages} /MediaBox [0 0 300 200] >>", kids.join(" ")),
+        stream("", &format!("1 g 0 0 300 200 re f 0 g {TEXT}")),
+        stream("", TEXT),
+    ];
+    objs.extend((0..pages).map(|i| format!("<< /Type /Page /Parent 2 0 R /Contents {} 0 R >>", 3 + i % 2)));
+    build(&objs)
+}
+
+#[test]
+fn checking_many_pages_walks_the_page_tree_once() {
+    // The Add Background dialog checks every page of a long document. Looking each page up on
+    // its own walked the whole tree per page, so checking them all grew with the square of the
+    // page count (minutes at 20,000 pages); one walk keeps it in proportion.
+    const PAGES: usize = 4000;
+    let doc = many_pages(PAGES);
+    let all: Vec<usize> = (0..PAGES).collect();
+    let start = std::time::Instant::now();
+    let found = page_backdrops(&doc, &all);
+    let took = start.elapsed();
+    assert_eq!(found.len(), PAGES);
+    for (i, f) in found.iter().enumerate() {
+        assert_eq!(*f, (i % 2 == 0).then_some(Backdrop::Fill), "page {i}");
+    }
+    assert!(took < std::time::Duration::from_secs(5), "checking {PAGES} pages took {took:?}");
+}
+
+#[test]
+fn a_batch_answers_in_the_order_asked_and_a_missing_page_hides_nothing() {
+    let doc = many_pages(5);
+    assert_eq!(page_backdrops(&doc, &[3, 0, 0]), [None, Some(Backdrop::Fill), Some(Backdrop::Fill)]);
+    assert_eq!(page_backdrops(&doc, &[]), []);
+    // The viewer can count more pages than the page tree holds: the others still answer.
+    assert_eq!(page_backdrops(&doc, &[2, 5, usize::MAX]), [Some(Backdrop::Fill), None, None]);
+    assert_eq!(page_backdrop(&doc, 4).unwrap(), Some(Backdrop::Fill));
+    assert!(matches!(page_backdrop(&doc, 5), Err(EditError::NoSuchPage(5))));
+}
+
+#[test]
+fn a_background_over_many_pages_replaces_each_backdrop_and_removing_restores_them() {
+    // Pages share their content streams, so each replaced page gets its own copy and the rest
+    // are checked against the document as it is after the earlier ones.
+    let mut doc = many_pages(4);
+    let all = [0, 1, 2, 3];
+    let before: Vec<Object> = pdfcraft_model::pages(&doc).iter().filter_map(|p| p.dict.get(b"Contents").cloned()).collect();
+    add_background(&mut doc, &all, &red(), true).unwrap();
+    assert_eq!(page_backdrops(&doc, &all), [None; 4]);
+    // Update: the backdrops are gone already, so nothing is copied again.
+    add_background(&mut doc, &all, &red(), true).unwrap();
+    assert_eq!(page_backdrops(&doc, &all), [None; 4]);
+    remove_marks(&mut doc, &all, MarkKind::Background).unwrap();
+    let after: Vec<Object> = pdfcraft_model::pages(&doc).iter().filter_map(|p| p.dict.get(b"Contents").cloned()).collect();
+    let refs = |list: &[Object]| -> Vec<Vec<Object>> {
+        list.iter()
+            .map(|c| match &*doc.resolve(c) {
+                Object::Array(a) => a.clone(),
+                _ => vec![c.clone()],
+            })
+            .collect()
+    };
+    assert_eq!(refs(&after), refs(&before), "every page points at its original stream again");
+    assert_eq!(page_backdrops(&doc, &all), [Some(Backdrop::Fill), None, Some(Backdrop::Fill), None]);
+}

@@ -105,14 +105,26 @@ impl BackdropCheck {
             self.key = Some(key);
             self.pages = vec![None; count];
         }
-        let mut budget = BACKDROP_PAGES_PER_FRAME;
+        // One batch a frame: finding a page walks the page tree, so the batch shares one walk.
+        let mut batch = Vec::with_capacity(BACKDROP_PAGES_PER_FRAME);
+        for &p in pages {
+            if batch.len() >= BACKDROP_PAGES_PER_FRAME {
+                break;
+            }
+            if matches!(self.pages.get(p), Some(None)) && !batch.contains(&p) {
+                batch.push(p);
+            }
+        }
+        if !batch.is_empty() {
+            for (p, found) in batch.iter().zip(doc.page_backdrops(&batch)) {
+                if let Some(slot) = self.pages.get_mut(*p) {
+                    *slot = Some(found);
+                }
+            }
+        }
         let mut n = BackdropCount::default();
         for &p in pages {
-            let Some(slot) = self.pages.get_mut(p) else { continue };
-            if slot.is_none() && budget > 0 {
-                *slot = Some(doc.page_backdrop(p));
-                budget -= 1;
-            }
+            let Some(slot) = self.pages.get(p) else { continue };
             match slot {
                 None => n.pending += 1,
                 Some(Some(Backdrop::Fill)) => n.fills += 1,
