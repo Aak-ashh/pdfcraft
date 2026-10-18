@@ -2820,7 +2820,8 @@ mod tests {
         let ops = [
             "BT /F1 12 Tf 1 0 0 1 100 200 Tm (Inside crop) Tj ET",
             "BT /F1 12 Tf 1 0 0 1 100 150 Tm /Span <</ActualText (ActualIn)>> BDC (in) Tj EMC ET",
-            "BT /F1 12 Tf 1 0 0 1 5 125 Tm /Span <</ActualText (CroppedSpan KeptSpan)>> BDC (OutSpan) Tj 1 0 0 1 100 125 Tm (KeptSpan) Tj EMC ET",
+            // Keep every glyph of OutSpan outside the crop; a boundary-crossing glyph remains visible.
+            "BT /F1 12 Tf 1 0 0 1 -100 125 Tm /Span <</ActualText (CroppedSpan KeptSpan)>> BDC (OutSpan) Tj 1 0 0 1 100 125 Tm (KeptSpan) Tj EMC ET",
             "BT /F1 12 Tf 1 0 0 1 5 200 Tm (LeftOut) Tj ET",
             "BT /F1 12 Tf 1 0 0 1 360 200 Tm (RightOut) Tj ET",
             "BT /F1 12 Tf 1 0 0 1 100 20 Tm (BelowOut) Tj ET",
