@@ -2817,6 +2817,31 @@ mod tests {
              /F1 8 Tf 1 0 0 1 139 303.6 Tm (2) Tj ET",
         );
         assert_eq!(leading_script.plain_text(), "1 See the appendix2 for details");
-        assert_eq!(leading_script.line_rects(0..leading_script.glyphs.len()).len(), 1);
+        let rects = leading_script.line_rects(0..leading_script.glyphs.len());
+        assert_eq!(rects.len(), 1);
+        let marker = leading_script.glyphs.first().unwrap().rect;
+        let body = leading_script.glyphs.iter().find(|g| g.text == "S").unwrap().rect;
+        let last = leading_script.glyphs.last().unwrap().rect;
+        assert!(marker[1] < body[1] && marker[3] < body[3], "marker must be raised above the body");
+        let close = |actual: f32, expected: f32| assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
+        // Highlight rectangles cover the actual glyphs, including the raised marker. They do
+        // not expose the segment's baseline band used for line grouping.
+        for (actual, expected) in rects[0].into_iter().zip([marker[0], marker[1], last[2], body[3]]) {
+            close(actual, expected);
+        }
+        close(rects[0][3] - rects[0][1], 14.8);
+        close(body[3] - 0.2 * 12.0, 100.0); // 300 pt PDF baseline on a 400 pt page.
+
+        // Pin that internal band too: replacing the first extend_box condition with `false`
+        // must fail here even when plain text and highlight rectangles remain unchanged.
+        let mut segment = Seg::new(Run { start: 0, end: 1 }, marker, marker[3] - marker[1]);
+        segment.extend_box(&body, body[3] - body[1]);
+        for (actual, expected) in segment.bbox.into_iter().zip([marker[0], body[1], body[2], body[3]]) {
+            close(actual, expected);
+        }
+        close(segment.h, 12.0);
+        close(segment.bbox[3] - segment.bbox[1], 12.0);
+        close(segment.bbox[3] - 0.2 * segment.h, 100.0);
+        close(segment.cy(), (body[1] + body[3]) / 2.0);
     }
 }
