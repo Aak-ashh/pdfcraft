@@ -299,3 +299,55 @@ fn a_background_over_many_pages_replaces_each_backdrop_and_removing_restores_the
     assert_eq!(refs(&after), refs(&before), "every page points at its original stream again");
     assert_eq!(page_backdrops(&doc, &all), [Some(Backdrop::Fill), None, Some(Backdrop::Fill), None]);
 }
+
+#[test]
+fn a_content_stream_whose_bytes_live_in_an_external_file_is_left_alone() {
+    let objs = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 200] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Contents [4 0 R] >>".into(),
+        stream("/F (content.bin)", &format!("1 g 0 0 300 200 re f {TEXT}")),
+    ];
+    let mut doc = build(&objs);
+    assert_eq!(page_backdrop(&doc, 0).unwrap(), None, "the inline bytes are not what the page draws");
+    let before = streams(&doc);
+    add_background(&mut doc, &[0], &red(), false).unwrap();
+    assert_eq!(streams(&doc)[1..], before[..]);
+}
+
+#[test]
+fn the_backdrop_copy_keeps_the_original_dictionary_less_its_old_encoding() {
+    let objs = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 200] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Contents [4 0 R] >>".into(),
+        stream("/Vendor (keep me) /DL 9999", &format!("1 g 0 0 300 200 re f {TEXT}")),
+    ];
+    let mut doc = build(&objs);
+    add_background(&mut doc, &[0], &red(), false).unwrap();
+    let doc = reopen(&doc);
+    let p = &pdfcraft_model::pages(&doc)[0];
+    let Some(Object::Array(list)) = p.dict.get(b"Contents").map(|c| (*doc.resolve(c)).clone()) else { panic!("contents") };
+    let Object::Stream(copy) = &*doc.resolve(&list[1]) else { panic!("a stream") };
+    assert!(copy.dict.get(b"Vendor").is_some(), "unknown entries survive");
+    assert!(copy.dict.get(b"DL").is_none(), "the old decoded length no longer holds");
+    assert!(copy.dict.get(b"PCBackdrop").is_some());
+    assert_eq!(String::from_utf8_lossy(&copy.decoded().unwrap()), format!("1 g 0 0 300 200 re n {TEXT}"));
+}
+
+#[test]
+fn a_stream_listed_twice_is_replaced_in_both_slots_and_restored_in_both() {
+    let mut doc = build(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 200] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Contents [4 0 R 4 0 R] >>".into(),
+        stream("", &format!("q 1 g 0 0 300 200 re f Q {TEXT}")),
+    ]);
+    let original = streams(&doc);
+    add_background(&mut doc, &[0], &red(), false).unwrap();
+    let s = streams(&doc);
+    assert_eq!(s.len(), 3, "{s:?}");
+    assert!(s[1..].iter().all(|c| c.contains("re n") && !c.contains("re f")), "no slot still paints the white fill: {s:?}");
+    remove_marks(&mut doc, &[0], MarkKind::Background).unwrap();
+    assert_eq!(streams(&doc), original);
+}

@@ -136,6 +136,18 @@ impl BackdropCheck {
     }
 }
 
+impl MarksDraft {
+    /// The dialog for `kind` is opening. Other settings carry over from last time, but replacing
+    /// a page's own backdrop starts on: Update restores backdrops before it re-applies, so a
+    /// page whose backdrop was replaced shows none and the checkbox stays hidden, and a choice
+    /// left off from an earlier dialog would hide the background again unseen.
+    pub fn opened(&mut self, kind: MarkKind) {
+        if kind == MarkKind::Background {
+            self.bg.replace_backdrop = true;
+        }
+    }
+}
+
 /// "1 page" or "{n} pages", in a message.
 fn pages_phrase(n: usize, one: &str, many: &str) -> String {
     if n == 1 { one.to_string() } else { crate::i18n::fmt(many, &[("n", &n.to_string())]) }

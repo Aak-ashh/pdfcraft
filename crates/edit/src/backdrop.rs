@@ -80,7 +80,7 @@ pub(crate) fn replace(doc: &mut Document, page: &pdfcraft_model::Page) -> Result
     let Some((Backdrop::Fill, Some(found))) = scan(doc, page) else { return Ok(false) };
     let edited = found.pieces.splice([(found.op.clone(), b"n".to_vec())]);
     let piece = found.pieces.piece_of(found.op.start);
-    let (Some(&(slot, original)), Some(bytes)) = (found.refs.get(piece), edited.get(piece)) else { return Ok(false) };
+    let (Some(&(_, original)), Some(bytes)) = (found.refs.get(piece), edited.get(piece)) else { return Ok(false) };
     // Where the operator sits in that piece: the joined offset less the pieces before it.
     let before: usize = (0..piece).filter_map(|i| edited.get(i)).map(|p| p.len() + 1).sum();
     let at = found.op.start.saturating_sub(before);
@@ -89,14 +89,27 @@ pub(crate) fn replace(doc: &mut Document, page: &pdfcraft_model::Page) -> Result
     note.set(b"Original".to_vec(), Object::Ref(original));
     note.set(b"At".to_vec(), Object::Int(i64::try_from(at).unwrap_or(i64::MAX)));
     note.set(b"Len".to_vec(), Object::Int(i64::try_from(len).unwrap_or(i64::MAX)));
-    let mut dict = Dict::new();
+    // The copy keeps the original's dictionary (unknown entries included) less what describes
+    // the old encoding; `scan` refused streams whose bytes live in an external file (`/F`).
+    let Object::Stream(source) = &*doc.get(original) else { return Ok(false) };
+    let mut dict = source.dict.clone();
+    for key in [&b"Length"[..], b"DL", b"PCBackdrop"] {
+        dict.remove(key);
+    }
     dict.set(b"PCBackdrop".to_vec(), Object::Dict(note));
     let copy = doc.add(Object::Stream(Stream::flate(dict, bytes)));
+    // Every slot that draws the original: a page may list the same stream twice, and a second
+    // copy of the fill would cover the background again.
     let mut list = crate::contents(doc, page)?;
-    let Some(entry) = list.get_mut(slot) else { return Ok(false) };
-    *entry = Object::Ref(copy);
-    doc.update_dict(page.obj, |d| d.set(b"Contents".to_vec(), Object::Array(list)))?;
-    Ok(true)
+    let mut replaced = false;
+    for entry in list.iter_mut().filter(|o| matches!(o, Object::Ref(r) if *r == original)) {
+        *entry = Object::Ref(copy);
+        replaced = true;
+    }
+    if replaced {
+        doc.update_dict(page.obj, |d| d.set(b"Contents".to_vec(), Object::Array(list)))?;
+    }
+    Ok(replaced)
 }
 
 /// Put back the original content streams [`replace`] copied on `page`, where the copy is still
@@ -157,6 +170,10 @@ fn scan(doc: &Document, p: &pdfcraft_model::Page) -> Option<(Backdrop, Option<Fo
         let Object::Stream(s) = &*obj else { continue };
         if s.dict.get(b"PCMark").is_some() {
             continue;
+        }
+        // Bytes in an external file (`/F`) replace the stream's own: what it draws is unknown here.
+        if s.dict.get(b"F").is_some() {
+            return None;
         }
         let bytes = s.decoded().unwrap_or_default();
         total = total.saturating_add(bytes.len()).saturating_add(1);

@@ -148,18 +148,24 @@ fn the_background_dialog_offers_to_replace_a_white_backdrop_and_warns_about_scan
     assert_eq!(backdrop(&h, 0), Some(pdfcraft_engine::Backdrop::Fill));
     assert!(h.state_mut().execute("edit.undo"));
     h.run_steps(2);
-    // Ticked, it is replaced; the scan is reported, not touched.
+    // Reopened, the choice starts on again; ticked, the backdrop is replaced and the scan is
+    // reported, not touched.
     h.state_mut().execute("edit.background");
     h.run_steps(3);
-    h.get_by_label(replace).click();
-    h.run_steps(2);
-    assert!(h.state().marks_draft.bg.replace_backdrop);
+    h.get_by_label(replace);
+    assert!(h.state().marks_draft.bg.replace_backdrop, "on again when the dialog opens");
     h.get_by_label("OK").click();
     h.run_steps(3);
     assert_eq!(backdrop(&h, 0), None);
     assert_eq!(backdrop(&h, 1), Some(pdfcraft_engine::Backdrop::Image));
-    // Nothing left to replace: the offer is gone.
+    // Nothing left to replace: the offer is gone. A choice left off from an earlier dialog
+    // doesn't carry into Update, which restores the backdrop first and would otherwise keep it
+    // with no checkbox shown.
+    h.state_mut().marks_draft.bg.replace_backdrop = false;
     h.state_mut().execute("edit.background.update");
     h.run_steps(3);
     assert!(h.query_by_label(replace).is_none());
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    assert_eq!(backdrop(&h, 0), None, "Update keeps the backdrop replaced");
 }
