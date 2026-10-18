@@ -363,6 +363,7 @@ struct TextDevice {
     filter: TextFilter,
     excluded_depth: Option<usize>,
     actual_filtered: bool,
+    actual_cropped: bool,
     partial_replacement: bool,
 }
 
@@ -437,6 +438,7 @@ impl TextDevice {
             filter: TextFilter::default(),
             excluded_depth: None,
             actual_filtered: false,
+            actual_cropped: false,
             partial_replacement: false,
         }
     }
@@ -451,10 +453,15 @@ impl TextDevice {
     /// Unicode). An empty one (a soft hyphen at a line break, say) stands for no text at all.
     fn end_actual_text(&mut self) {
         let Some((_, text, drawn)) = self.actual.take() else { return };
+        let cropped = std::mem::take(&mut self.actual_cropped);
         if std::mem::take(&mut self.actual_filtered) {
             // ActualText has no mapping from replacement words to individual glyphs. A mixed
             // span cannot be filtered honestly; a wholly excluded span can simply be omitted.
             self.partial_replacement |= !drawn.is_empty();
+            return;
+        }
+        if cropped {
+            self.glyphs.extend(drawn.into_iter().filter(|d| !d.2.text.chars().all(|c| c.is_control())));
             return;
         }
         let Some(glyph) = merge(&drawn, text.clone()) else {
@@ -622,12 +629,14 @@ impl<'a> Device<'a> for TextDevice {
         let b = corners.iter().fold(Rect::new(f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |b, p| {
             Rect::new(b.x0.min(p.x), b.y0.min(p.y), b.x1.max(p.x), b.y1.max(p.y))
         });
+        let outside_crop = b.x0.max(self.page.x0) >= b.x1.min(self.page.x1)
+            || b.y0.max(self.page.y0) >= b.y1.min(self.page.y1);
         if !(b.x0.is_finite() && b.y0.is_finite() && b.x1.is_finite() && b.y1.is_finite())
             || b.width() > 10_000.0
             || b.height() > 10_000.0
-            || b.x0.max(self.page.x0) >= b.x1.min(self.page.x1)
-            || b.y0.max(self.page.y0) >= b.y1.min(self.page.y1)
+            || outside_crop
         {
+            self.actual_cropped |= replaced && outside_crop;
             return;
         }
         let length = dx.hypot(dy);
@@ -2812,6 +2821,7 @@ mod tests {
         let ops = [
             "BT /F1 12 Tf 1 0 0 1 100 200 Tm (Inside crop) Tj ET",
             "BT /F1 12 Tf 1 0 0 1 100 150 Tm /Span <</ActualText (ActualIn)>> BDC (in) Tj EMC ET",
+            "BT /F1 12 Tf 1 0 0 1 5 125 Tm /Span <</ActualText (CroppedSpan KeptSpan)>> BDC (OutSpan) Tj 1 0 0 1 100 125 Tm (KeptSpan) Tj EMC ET",
             "BT /F1 12 Tf 1 0 0 1 5 200 Tm (LeftOut) Tj ET",
             "BT /F1 12 Tf 1 0 0 1 360 200 Tm (RightOut) Tj ET",
             "BT /F1 12 Tf 1 0 0 1 100 20 Tm (BelowOut) Tj ET",
@@ -2843,10 +2853,11 @@ mod tests {
                 doc.save_to(&mut bytes).unwrap();
                 let pdf = Pdf::new(std::sync::Arc::new(bytes)).unwrap();
                 let text = extract_page(&pdf, 0, &InterpreterSettings::default()).unwrap();
-                assert_eq!(text.plain_text(), "Inside crop\nActualIn\nA", "rotate={rotate} unit={unit}");
+                assert_eq!(text.plain_text(), "Inside crop\nActualIn\nKeptSpan\nA", "rotate={rotate} unit={unit}");
                 assert!(!text.find("Inside").is_empty(), "rotate={rotate} unit={unit}");
                 assert!(!text.find("ActualIn").is_empty(), "rotate={rotate} unit={unit}");
-                for hidden in ["LeftOut", "RightOut", "BelowOut", "AboveOut", "ActualOut"] {
+                assert!(!text.find("KeptSpan").is_empty(), "rotate={rotate} unit={unit}");
+                for hidden in ["LeftOut", "RightOut", "BelowOut", "AboveOut", "ActualOut", "CroppedSpan", "OutSpan"] {
                     assert!(text.find(hidden).is_empty(), "{hidden} must be clipped at rotate={rotate} unit={unit}");
                 }
             }
