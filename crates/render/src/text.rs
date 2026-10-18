@@ -2966,11 +2966,17 @@ mod tests {
              /F1 8 Tf 1 0 0 1 139 303.6 Tm (2) Tj ET",
         );
         assert_eq!(leading_script.plain_text(), "1 See the appendix2 for details");
-        let rects = leading_script.line_rects(0..leading_script.glyphs.len());
-        assert_eq!(rects.len(), 1);
         let marker = leading_script.glyphs.first().unwrap().rect;
         let body = leading_script.glyphs.iter().find(|g| g.text == "S").unwrap().rect;
         let last = leading_script.glyphs.last().unwrap().rect;
+        let center = |r: [f32; 4]| ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
+        let (start_x, start_y) = center(marker);
+        let (end_x, end_y) = center(last);
+        let start = leading_script.nearest(start_x, start_y).unwrap();
+        let end = leading_script.nearest(end_x, end_y).unwrap();
+        assert_eq!(leading_script.text_of(start..end + 1), "1 See the appendix2 for details");
+        let rects = leading_script.line_rects(start..end + 1);
+        assert_eq!(rects.len(), 1);
         assert!(marker[1] < body[1] && marker[3] < body[3], "marker must be raised above the body");
         let close = |actual: f32, expected: f32| assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
         // Highlight rectangles cover the actual glyphs, including the raised marker. They do
