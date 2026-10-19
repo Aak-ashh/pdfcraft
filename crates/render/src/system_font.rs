@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use hayro::hayro_interpret::font::{FallbackFontQuery, FontData};
 use hayro::hayro_interpret::hayro_cmap::CidFamily;
@@ -23,6 +23,8 @@ use skrifa::string::StringId;
 const MAX_BYTES: u64 = 96 << 20;
 /// Faces tried in a collection (`.ttc`).
 const MAX_FACES: u32 = 32;
+/// Downloaded font assets looked at per kind on macOS.
+const MAX_ASSETS: usize = 512;
 
 /// The writing system a character collection is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -163,7 +165,11 @@ fn candidates(script: Script) -> Vec<Candidate> {
             Script::TraditionalChinese => &["PingFang.ttc", "STHeiti Light.ttc", "Hiragino Sans GB.ttc"],
             Script::Korean => &["AppleSDGothicNeo.ttc", "AppleGothic.ttf", "PingFang.ttc"],
         };
-        names.iter().map(|f| Path::new("/System/Library/Fonts").join(f)).collect()
+        // The system folder first, then the downloaded font assets: on recent macOS a face such as
+        // PingFang lives in `/System/Library/AssetsV2/com_apple_MobileAsset_Font*/<id>.asset/AssetData`.
+        let mut dirs = vec![PathBuf::from("/System/Library/Fonts")];
+        dirs.extend(macos_font_asset_dirs().iter().cloned());
+        names.iter().flat_map(|f| dirs.iter().map(move |d| d.join(f))).collect()
     } else {
         let names: &[&str] = match script {
             Script::Korean => {
@@ -191,6 +197,28 @@ fn candidates(script: Script) -> Vec<Candidate> {
         ["/usr/share/fonts", "/usr/local/share/fonts"].iter().flat_map(|dir| names.iter().map(move |f| Path::new(dir).join(f))).collect()
     };
     files.into_iter().map(|path| Candidate { path, region }).collect()
+}
+
+/// The `AssetData` folders of the downloaded font assets of macOS, found once. The ids in their
+/// names change with each asset version, so they are listed rather than named; at most
+/// [`MAX_ASSETS`] are looked at.
+fn macos_font_asset_dirs() -> &'static [PathBuf] {
+    static DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    DIRS.get_or_init(|| {
+        let root = Path::new("/System/Library/AssetsV2");
+        let Ok(kinds) = std::fs::read_dir(root) else { return Vec::new() };
+        let mut dirs = Vec::new();
+        for kind in kinds.flatten().filter(|k| k.file_name().to_string_lossy().starts_with("com_apple_MobileAsset_Font")) {
+            let Ok(assets) = std::fs::read_dir(kind.path()) else { continue };
+            for asset in assets.flatten().take(MAX_ASSETS) {
+                let data = asset.path().join("AssetData");
+                if data.is_dir() {
+                    dirs.push(data);
+                }
+            }
+        }
+        dirs
+    })
 }
 
 fn windows_fonts() -> PathBuf {
@@ -273,13 +301,50 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_picks_the_regional_pingfang_face() {
-        let path = Path::new("/System/Library/Fonts/PingFang.ttc");
-        let Ok(bytes) = std::fs::read(path) else { return };
+        // Found where this macOS keeps it: the system folder, or the downloaded font assets.
+        let path = candidates(Script::TraditionalChinese)
+            .into_iter()
+            .map(|c| c.path)
+            .find(|p| p.file_name().is_some_and(|n| n == "PingFang.ttc") && p.is_file());
+        let Some(bytes) = path.and_then(|p| std::fs::read(p).ok()) else {
+            eprintln!("PingFang is not installed here: skipped");
+            return;
+        };
         for (script, region) in [(Script::TraditionalChinese, "TC"), (Script::SimplifiedChinese, "SC")] {
             let index = pick_face(&bytes, script.probe(), &[region], false).expect("PingFang covers it");
             let font = skrifa::FontRef::from_index(&bytes, index).unwrap();
             let family: String = font.localized_strings(StringId::FAMILY_NAME).next().unwrap().chars().collect();
             assert!(family.contains(region), "{script:?} got {family:?}");
+        }
+    }
+    /// A face that this macOS keeps only in its downloaded font assets (PingFang, on recent
+    /// versions) is among the candidates. The assets are searched here on their own, not by the
+    /// code under test; where there are none, nothing is checked.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_candidates_include_a_pingfang_that_lives_in_the_font_assets() {
+        fn find(dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
+            for entry in std::fs::read_dir(dir).ok()?.flatten() {
+                let path = entry.path();
+                if path.file_name().is_some_and(|n| n == name) && path.is_file() {
+                    return Some(path);
+                }
+                if depth > 0
+                    && path.is_dir()
+                    && !path.is_symlink()
+                    && let Some(found) = find(&path, name, depth - 1)
+                {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let Some(asset) = find(Path::new("/System/Library/AssetsV2"), "PingFang.ttc", 3) else {
+            eprintln!("no PingFang in the font assets here: skipped");
+            return;
+        };
+        for script in [Script::SimplifiedChinese, Script::TraditionalChinese] {
+            assert!(candidates(script).iter().any(|c| c.path == asset), "{script:?}: {} is not a candidate", asset.display());
         }
     }
 }
