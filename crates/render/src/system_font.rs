@@ -86,13 +86,30 @@ pub(crate) fn fallback(query: &FallbackFontQuery) -> Option<(FontData, u32)> {
 }
 
 fn read(candidate: &Candidate, probe: char, bold: bool) -> Option<(Arc<Vec<u8>>, u32)> {
-    let meta = std::fs::metadata(&candidate.path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_BYTES {
+    let bytes = file_bytes(&candidate.path)?;
+    let index = pick_face(&bytes, probe, candidate.region, bold)?;
+    Some((bytes, index))
+}
+
+/// The bytes of an installed font file, read once for the whole process and shared: a collection
+/// such as `PingFang.ttc` is tens of megabytes and is the candidate of several scripts and both
+/// weights, so the per-script cache keeps only a handle and a face index. A file that cannot be
+/// used is remembered too, so it is not tried again for every script.
+fn file_bytes(path: &Path) -> Option<Arc<Vec<u8>>> {
+    /// The bytes of each file tried, or `None` for one that cannot be used.
+    type Files = HashMap<PathBuf, Option<Arc<Vec<u8>>>>;
+    static FILES: Mutex<Option<Files>> = Mutex::new(None);
+    let mut files = FILES.lock().unwrap_or_else(PoisonError::into_inner);
+    files.get_or_insert_with(HashMap::new).entry(path.to_path_buf()).or_insert_with(|| read_file(path, MAX_BYTES).map(Arc::new)).clone()
+}
+
+/// A regular file of at most `max` bytes, or `None`: a font path is untrusted input.
+fn read_file(path: &Path, max: u64) -> Option<Vec<u8>> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > max {
         return None;
     }
-    let bytes = std::fs::read(&candidate.path).ok()?;
-    let index = pick_face(&bytes, probe, candidate.region, bold)?;
-    Some((Arc::new(bytes), index))
+    std::fs::read(path).ok()
 }
 
 /// The best face of the file that parses and maps `probe`: the region's face when the file has
@@ -197,6 +214,26 @@ mod tests {
         // A directory is not a font.
         let dir = Candidate { path: std::env::temp_dir(), region: &[] };
         assert!(read(&dir, '\u{7269}', false).is_none());
+    }
+
+    /// The files are bounded by `max`: a larger one is not read.
+    #[test]
+    fn a_file_over_the_cap_is_not_read() {
+        let inter = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/Inter-Regular.ttf"));
+        assert!(read_file(inter, MAX_BYTES).is_some());
+        assert!(read_file(inter, 1024).is_none());
+    }
+
+    /// Two faces drawn from one installed file (two scripts, or regular and bold) hold the same
+    /// bytes, not a copy each; a file that can't be used is remembered as unusable.
+    #[test]
+    fn one_installed_file_is_read_once_and_shared() {
+        let inter = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts/Inter-Regular.ttf"));
+        let first = file_bytes(inter).expect("readable");
+        let second = file_bytes(inter).expect("readable");
+        assert!(Arc::ptr_eq(&first, &second), "one allocation for the file");
+        let missing = Path::new("definitely/not/here.ttc");
+        assert!(file_bytes(missing).is_none() && file_bytes(missing).is_none());
     }
 
     #[test]
