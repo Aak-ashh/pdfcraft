@@ -254,8 +254,9 @@ fn options_tab_sets_the_check_box_style() {
 fn button_label_is_editable_without_renaming_the_field() {
     use pdfcraft_engine::{Edit, NewField};
     let mut h = harness();
-    // Saves stamp /ModDate from the clock; pinned, two saves compare equal across a second.
-    h.state_mut().session = std::mem::take(&mut h.state_mut().session).with_clock(|| 1_700_000_000);
+    // The byte comparisons below must not vary with the save's /ModDate.
+    let session = &mut h.state_mut().session;
+    *session = std::mem::take(session).with_clock(|| 1_700_000_000);
     h.state_mut().apply_edit(Edit::AddField {
         page: 0,
         rect: [40.0, 300.0, 190.0, 330.0],
