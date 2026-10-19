@@ -1387,6 +1387,7 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
         app.props_draft = None;
         app.view_draft = None;
         app.bulk_field_props = None;
+        app.field_props = None;
     } else {
         app.dialog = Some(next);
     }
