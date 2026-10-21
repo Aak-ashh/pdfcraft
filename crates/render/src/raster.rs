@@ -65,15 +65,23 @@ pub struct RenderConfig {
     /// View ▸ Reading colours: solid text and line-art paints are remapped for readability and
     /// the page clears to the setting's background. Display only; the document never changes.
     pub reading_colors: ReadingColors,
+    /// Draw a CID font of an Adobe CJK collection that the PDF does not embed with one face already
+    /// installed on this machine (see `system_font`). Off by default and on only for the pool that
+    /// draws the viewer: exports, printing and OCR render without it, so nothing drawn with an
+    /// installed font is saved or printed (AGENTS.md §1.2, §1.4).
+    pub system_fonts: bool,
 }
 
 impl RenderConfig {
     fn settings(&self) -> InterpreterSettings {
         let standard = InterpreterSettings::default().font_resolver;
+        let system_fonts = self.system_fonts;
         InterpreterSettings {
             ocg_overrides: self.layers.clone(),
             hide_comments: self.hide_comments,
-            font_resolver: Arc::new(move |query| japanese_fallback(query).or_else(|| system_fallback(query)).or_else(|| standard(query))),
+            font_resolver: Arc::new(move |query| {
+                japanese_fallback(query).or_else(|| system_fonts.then(|| system_fallback(query)).flatten()).or_else(|| standard(query))
+            }),
             ..InterpreterSettings::default()
         }
     }
@@ -6751,12 +6759,20 @@ trailer << /Root 1 0 R >>
 %%EOF",
                 content.len()
             );
-            let mut r = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
-            let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0, ..Default::default() });
-            assert!(p.error.is_none(), "{base_font}: {:?}", p.error);
-            let inked = p.rgba.as_chunks::<4>().0.iter().filter(|c| c[0] < 128).count();
+            let pdf = Arc::new(pdf.into_bytes());
+            let ink = |config: RenderConfig| {
+                let mut r = PageRenderer::new(pdf.clone(), config);
+                let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0, ..Default::default() });
+                assert!(p.error.is_none(), "{base_font}: {:?}", p.error);
+                p.rgba.as_chunks::<4>().0.iter().filter(|c| c[0] < 128).count()
+            };
             // Two to four glyphs at 40 pt cover several hundred dark pixels; a blank run has none.
-            assert!(inked > 300, "{base_font}: the text is drawn ({inked} dark pixels)");
+            let shown = ink(RenderConfig { system_fonts: true, ..RenderConfig::default() });
+            assert!(shown > 300, "{base_font}: the text is drawn ({shown} dark pixels)");
+            // Off by default: exports, printing and OCR render without an installed font, so
+            // nothing drawn with one can be saved (AGENTS.md §1.2, §1.4).
+            let saved = ink(RenderConfig::default());
+            assert!(saved < 50, "{base_font}: not drawn without system_fonts ({saved} dark pixels)");
         }
     }
 

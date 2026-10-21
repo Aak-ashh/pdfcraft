@@ -5,7 +5,8 @@
 //! `MSung-Light` without embedding the font. hayro maps those CIDs to Unicode itself, but it needs
 //! a face to draw them with; without one the text is blank. The craft-fonts Japanese faces come
 //! first (see `japanese_fallback` in `raster.rs`); this module is the last resort: one face
-//! already installed on this machine. It is read at runtime and never embedded or shipped
+//! already installed on this machine, used for the viewer only (`RenderConfig::system_fonts`, off
+//! for exports, printing and OCR). It is read at runtime and never embedded or shipped
 //! (AGENTS.md §1.4), Noto CJK and Source Han are left out on purpose (§1.1), and
 //! `PDFCRAFT_SYSTEM_FONTS=0` turns it off, as for the interface font.
 
@@ -282,7 +283,10 @@ mod tests {
                 assert!(c.path.is_absolute(), "{}", c.path.display());
                 assert!(c.path.extension().is_some_and(|e| e == "ttf" || e == "ttc"), "{}", c.path.display());
                 let name = c.path.to_string_lossy().to_lowercase();
-                assert!(!["notosanscjk", "notoserifcjk", "sourcehan", "source-han"].iter().any(|b| name.contains(b)), "{name}");
+                assert!(
+                    !["notosanscjk", "notoserifcjk", "sourcehan", "source-han", "adobe", "kozuka", "minion"].iter().any(|b| name.contains(b)),
+                    "{name}"
+                );
             }
         }
     }
