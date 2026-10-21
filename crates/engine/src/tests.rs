@@ -425,10 +425,16 @@ trailer << /Root 1 0 R >>
         std::thread::yield_now();
     };
     let inked = |rgba: &[u8]| rgba.as_chunks::<4>().0.iter().filter(|c| c[0] < 128).count();
-    if inked(&viewer.rgba) < 300 {
+    // Whether this machine has a face that can draw the page at all, asked of a renderer with the
+    // fallback switched on by hand, so a viewer pool that lost it fails below instead of skipping.
+    let probe = pdfcraft_render::PageRenderer::new(doc.display.clone(), pdfcraft_render::RenderConfig { system_fonts: true, ..Default::default() })
+        .render(pdfcraft_render::RenderRequest { page: 0, scale: 1.0, ..Default::default() });
+    assert!(probe.error.is_none(), "{:?}", probe.error);
+    if inked(&probe.rgba) < 300 {
         eprintln!("no installed Traditional Chinese face (or PDFCRAFT_SYSTEM_FONTS=0): skipped");
         return;
     }
+    assert!(inked(&viewer.rgba) > 300, "the viewer's pool draws it with the installed face ({} dark pixels)", inked(&viewer.rgba));
     let png = export::Exporter::new(doc).png(0, 72.0).unwrap();
     let exported = image::load_from_memory(&png).unwrap().into_rgba8();
     assert!(inked(exported.as_raw()) < 50, "an export draws nothing with an installed font ({} dark pixels)", inked(exported.as_raw()));
