@@ -4109,6 +4109,7 @@ version = "0.11.0"
 dependencies = [
  "chrono",
  "craft-docpath",
+ "getrandom 0.4.3",
  "icu_properties",
  "idna",
  "image",
