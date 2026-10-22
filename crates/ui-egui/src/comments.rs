@@ -17,6 +17,7 @@ use pdfcraft_engine::{Edit, LineEnding, Markup, NewAnnotation, NoteIcon, ReviewS
 use pdfcraft_render::{Annotation, DocInfo, PageInfo, PageText};
 
 use crate::canvas::{DocView, PageXform};
+use crate::page_cursor::{Layer, Subject};
 use crate::page_pointer::PagePointer;
 use crate::theme::{self, Tokens};
 use crate::{QuickTool, icons};
@@ -842,7 +843,7 @@ pub(crate) fn page_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, 
                 return false;
             }
             if over_page {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Crosshair);
             }
             if resp.drag_started()
                 && pressed_here
@@ -901,7 +902,7 @@ pub(crate) fn page_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, 
                 return false;
             }
             if over_page {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Crosshair);
             }
             let finish = resp.double_clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter));
             // Backspace (or Delete) takes back the last point, e.g. after a wrong click; Undo does too.
@@ -961,7 +962,7 @@ pub(crate) fn page_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, 
                 return false;
             }
             if over_page {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Crosshair);
             }
             if resp.drag_started()
                 && pressed_here
@@ -995,7 +996,7 @@ pub(crate) fn page_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, 
                 return false;
             }
             if over_page {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Crosshair);
             }
             if resp.clicked()
                 && over_page
@@ -1011,7 +1012,7 @@ pub(crate) fn page_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, 
                 return false;
             }
             if over_page {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+                view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Text);
             }
             if resp.clicked()
                 && over_page
@@ -1030,7 +1031,7 @@ pub(crate) fn page_input(ui: &egui::Ui, resp: &egui::Response, cx: &PageCx<'_>, 
                 return false;
             }
             if over_page {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Crosshair);
             }
             // A text box also takes a drag, as in Acrobat: the box is drawn at that size and its
             // text wraps inside it (#2669).
@@ -1146,6 +1147,46 @@ fn clamp_to(r: Rect, p: Pos2) -> Pos2 {
     pos2(p.x.clamp(r.left(), r.right()), p.y.clamp(r.top(), r.bottom()))
 }
 
+/// Whether `p` is on one of this page's links.
+fn on_link(cx: &PageCx<'_>, p: Pos2) -> bool {
+    cx.info.links.iter().any(|link| link.page == cx.page && cx.xf.user_rect(cx.info, cx.page, link.rect).contains(p))
+}
+
+/// The tip for the comment under the pointer, with any tool, beside that tool's own cursor: Acrobat
+/// shows a comment's tooltip whatever tool is active. Not with Fill & Sign, whose placement stays
+/// clear; not while drawing freehand, where it would cover the next stroke (#429); and not while a
+/// comment is moved, resized or drawn.
+pub(crate) fn describe(cx: &PageCx<'_>, view: &mut DocView) {
+    let freehand = matches!(cx.tool, QuickTool::Comment(CommentTool::Ink | CommentTool::Eraser));
+    if matches!(cx.tool, QuickTool::Fill(_)) || freehand || view.comments.gesture.is_some() {
+        return;
+    }
+    let Some(p) = cx.ptr.pos else { return };
+    // Inspection sorts comments by position, but the renderer paints them in `/Annots` order: the
+    // tip is that of the one drawn on top, among those with something to say (#3620).
+    let top = cx
+        .comments()
+        .filter(|a| cx.screen_rects(a).any(|r| r.contains(p)))
+        .filter_map(|a| hover_tip(a, cx.prefs).map(|text| (a.index, text)))
+        .max_by_key(|(index, _)| *index);
+    if let Some((_, text)) = top {
+        view.cursor.describe(Subject::Comment, text);
+    }
+}
+
+/// What hovering `a` says, as Acrobat's popups do. Replies and Fill & Sign's marks (typed text,
+/// checks, signatures) say nothing: they are page content being edited, not comments. Neither
+/// does a highlight with no text of its own, when the preferences say so.
+fn hover_tip(a: &Annotation, prefs: &CommentPrefs) -> Option<String> {
+    let empty_highlight = a.subtype == "Highlight" && a.contents.as_deref().is_none_or(str::is_empty);
+    if a.is_reply() || a.fill_sign || prefs.hide_empty_highlight_hover && empty_highlight {
+        return None;
+    }
+    let who = a.author.clone().unwrap_or_else(|| a.subtype.clone());
+    let body = a.contents.clone().unwrap_or_default();
+    Some(if body.is_empty() { who } else { format!("{who}\n{body}") })
+}
+
 /// The Select tool: hover, select, move, resize, edit, delete.
 fn select_input(
     ui: &egui::Ui,
@@ -1170,17 +1211,26 @@ fn select_input(
     let mut consumed = false;
     if let Some(p) = pointer {
         if point_at(p).is_some() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            view.cursor.claim(Layer::Handle, egui::CursorIcon::Crosshair);
         } else if let Some(h) = handle_at(p) {
-            ui.ctx().set_cursor_icon(match h {
-                (0, _) => egui::CursorIcon::ResizeVertical,
-                (_, 0) => egui::CursorIcon::ResizeHorizontal,
-                (-1, -1) | (1, 1) => egui::CursorIcon::ResizeNwSe,
-                _ => egui::CursorIcon::ResizeNeSw,
-            });
-        } else if let Some(a) = cx.hit(p) {
+            view.cursor.claim(
+                Layer::Handle,
+                match h {
+                    (0, _) => egui::CursorIcon::ResizeVertical,
+                    (_, 0) => egui::CursorIcon::ResizeHorizontal,
+                    (-1, -1) | (1, 1) => egui::CursorIcon::ResizeNwSe,
+                    _ => egui::CursorIcon::ResizeNeSw,
+                },
+            );
+        } else if let Some(a) = cx.hit(p)
+            // A click on a highlight over a link follows the link, so the link's hand and tip
+            // show there.
+            && !(a.subtype == "Highlight" && on_link(cx, p))
+        {
             let movable = cx.allowed && !is_markup(&a.subtype);
-            ui.ctx().set_cursor_icon(if movable { egui::CursorIcon::Move } else { egui::CursorIcon::PointingHand });
+            let icon = if movable { egui::CursorIcon::Move } else { egui::CursorIcon::PointingHand };
+            // Signatures and Fill & Sign's marks are placed on the page rather than comments on it.
+            view.cursor.claim(if a.fill_sign { Layer::Placed } else { Layer::Comment }, icon);
         }
     }
     if resp.drag_started()
@@ -1254,12 +1304,8 @@ fn select_input(
     // (egui clears the press origin on release, so clicks are located by the pointer.)
     let on_page = pointer.is_some_and(|p| cx.xf.rect.contains(p));
     if resp.clicked() && on_page {
-        let follow_link = cx.tool == QuickTool::Select
-            && !consumed
-            && cv.gesture.is_none()
-            && !resp.double_clicked()
-            && pointer
-                .is_some_and(|p| cx.info.links.iter().any(|link| link.page == cx.page && cx.xf.user_rect(cx.info, cx.page, link.rect).contains(p)));
+        let follow_link =
+            cx.tool == QuickTool::Select && !consumed && cv.gesture.is_none() && !resp.double_clicked() && pointer.is_some_and(|p| on_link(cx, p));
         match pointer.and_then(|p| cx.hit(p)) {
             Some(a) if a.subtype == "Highlight" && follow_link => {
                 // A plain click follows the link beneath text highlighting. Keep other
@@ -2381,6 +2427,44 @@ mod tests {
             .collect::<Vec<_>>();
         let n = glyphs.len();
         PageText { glyphs, line_of: vec![0; n], space_before: vec![false; n] }
+    }
+
+    fn annotation(subtype: &str, contents: Option<&str>, fill_sign: bool) -> Annotation {
+        Annotation {
+            page: 0,
+            subtype: subtype.into(),
+            author: None,
+            contents: contents.map(str::to_string),
+            modified: None,
+            name: None,
+            in_reply_to: None,
+            parent: None,
+            grouped: false,
+            rect: [0.0; 4],
+            color: None,
+            index: 0,
+            state: None,
+            quads: Vec::new(),
+            locked: false,
+            intent: None,
+            fill_sign,
+            no_rotate: false,
+            points: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_hover_tip_skips_fill_and_sign_marks_replies_and_bare_highlights_when_asked() {
+        let prefs = CommentPrefs::default();
+        assert_eq!(hover_tip(&annotation("FreeText", Some("Hello"), false), &prefs).as_deref(), Some("FreeText\nHello"));
+        assert_eq!(hover_tip(&annotation("FreeText", Some("Hello"), true), &prefs), None);
+        let reply = Annotation { in_reply_to: Some("1 0 R".into()), parent: Some((0, 1)), ..annotation("Text", Some("Agreed"), false) };
+        assert_eq!(hover_tip(&reply, &prefs), None);
+        let bare = Annotation { author: Some("Ana".into()), ..annotation("Highlight", None, false) };
+        assert_eq!(hover_tip(&bare, &prefs).as_deref(), Some("Ana"));
+        let hide = CommentPrefs { hide_empty_highlight_hover: true, ..CommentPrefs::default() };
+        assert_eq!(hover_tip(&bare, &hide), None);
+        assert_eq!(hover_tip(&annotation("Highlight", Some("Check this"), false), &hide).as_deref(), Some("Highlight\nCheck this"));
     }
 
     fn near(a: Option<([f32; 2], f32)>, b: ([f32; 2], f32)) -> bool {

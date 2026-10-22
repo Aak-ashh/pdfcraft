@@ -12,6 +12,7 @@ use pdfcraft_engine::{Edit, ObjectKind, ObjectTarget};
 use pdfcraft_render::DocInfo;
 
 use crate::canvas::{DocView, PageXform};
+use crate::page_cursor::Layer;
 use crate::page_pointer::PagePointer;
 
 const ACCENT: Color32 = Color32::from_rgb(0x14, 0x73, 0xE6);
@@ -617,7 +618,9 @@ fn crop_input(
     painter.text(done.center(), egui::Align2::CENTER_CENTER, tl!("Done"), font.clone(), Color32::WHITE);
     painter.rect(cancel, CornerRadius::same(11), t.panel, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
     painter.text(cancel.center(), egui::Align2::CENTER_CENTER, tl!("Cancel"), font, t.text);
-    if let Some(p) = hover_pos {
+    // Cropping takes over its page's cursor, and the buttons' wherever they are; other pages
+    // keep theirs.
+    if let Some(p) = hover_pos.filter(|p| xf.rect.contains(*p) || done.contains(*p) || cancel.contains(*p)) {
         let icon = if let Some(g) = crop_handles(k).iter().position(|h| h.distance(p) < 8.0) {
             match g {
                 0 | 3 => egui::CursorIcon::ResizeNwSe,
@@ -632,7 +635,7 @@ fn crop_input(
         } else {
             egui::CursorIcon::Default
         };
-        ui.ctx().set_cursor_icon(icon);
+        view.cursor.claim(Layer::Editor, icon);
     }
     let clicked = |r: Rect| allow_interaction && resp.clicked() && hover_pos.is_some_and(|p| r.contains(p));
     let keys = |key: egui::Key| allow_interaction && ui.input(|inp| inp.key_pressed(key)) && !ui.ctx().egui_wants_keyboard_input();
@@ -911,7 +914,7 @@ pub(crate) fn image_input(
             handles(b);
         }
         if allow_interaction && let Some(corner) = hover_pos.and_then(|p| corners.iter().position(|c| c.distance(p) < 8.0)) {
-            ui.ctx().set_cursor_icon(if matches!(corner, 0 | 3) { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw });
+            view.cursor.claim(Layer::Handle, if matches!(corner, 0 | 3) { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw });
         }
         // The rotate handle: a knob above the top edge, joined to it by a short stem.
         let (knob, stem) = rotate_knob(b, ui.clip_rect());
@@ -919,7 +922,7 @@ pub(crate) fn image_input(
             painter.line_segment([stem, knob], Stroke::new(1.0, ACCENT));
             painter.circle(knob, 5.0, Color32::WHITE, Stroke::new(1.0, ACCENT));
             if allow_interaction && hover_pos.is_some_and(|p| p.distance(knob) < 8.0) {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                view.cursor.claim(Layer::Handle, egui::CursorIcon::Grab);
             }
         }
         if allow_interaction
@@ -959,7 +962,7 @@ pub(crate) fn image_input(
             let label = Rect::from_center_size(turn(knob) - egui::vec2(0.0, 14.0), galley.size() + egui::vec2(8.0, 4.0));
             painter.rect(label, CornerRadius::same(3), Color32::WHITE, Stroke::new(1.0, ACCENT), egui::StrokeKind::Middle);
             painter.galley(label.center() - galley.size() / 2.0, galley, ACCENT);
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            view.cursor.claim(Layer::Drag, egui::CursorIcon::Grabbing);
             if resp.drag_stopped() || !ptr.primary_down {
                 if let Some(s) = view.image_selection.as_mut() {
                     s.drag = None;
@@ -1032,11 +1035,14 @@ pub(crate) fn image_input(
                         Some(Edit::EditPageImage { page, index: i, change: pdfcraft_engine::ImageEdit::Move(user_box(xf, info, page, target)) });
                 }
             }
-            ui.ctx().set_cursor_icon(match opposite {
-                Some(fixed) if (start.x - fixed.x) * (start.y - fixed.y) < 0.0 => egui::CursorIcon::ResizeNeSw,
-                Some(_) => egui::CursorIcon::ResizeNwSe,
-                None => egui::CursorIcon::Move,
-            });
+            view.cursor.claim(
+                Layer::Drag,
+                match opposite {
+                    Some(fixed) if (start.x - fixed.x) * (start.y - fixed.y) < 0.0 => egui::CursorIcon::ResizeNeSw,
+                    Some(_) => egui::CursorIcon::ResizeNwSe,
+                    None => egui::CursorIcon::Move,
+                },
+            );
             return true;
         }
         if allow_interaction
@@ -1074,12 +1080,13 @@ pub(crate) fn image_input(
     }
     let Some(b) = boxes.get(hit).copied() else { return false };
     let corner = [b.left_top(), b.right_top(), b.left_bottom(), b.right_bottom()].iter().position(|c| c.distance(p) < 8.0);
-    ui.ctx().set_cursor_icon(match (selected == Some(hit), corner) {
-        (true, Some(0 | 3)) => egui::CursorIcon::ResizeNwSe,
-        (true, Some(_)) => egui::CursorIcon::ResizeNeSw,
-        (true, None) => egui::CursorIcon::Move,
-        _ => egui::CursorIcon::PointingHand,
-    });
+    match (selected == Some(hit), corner) {
+        (true, Some(0 | 3)) => view.cursor.claim(Layer::Handle, egui::CursorIcon::ResizeNwSe),
+        (true, Some(_)) => view.cursor.claim(Layer::Handle, egui::CursorIcon::ResizeNeSw),
+        (true, None) => view.cursor.claim(Layer::Placed, egui::CursorIcon::Move),
+        // A click selects it.
+        _ => view.cursor.claim(Layer::Placed, egui::CursorIcon::PointingHand),
+    }
     if resp.clicked() || resp.secondary_clicked() {
         view.image_selection = Some(ImageSelection { page, index: hit, drag: None, crop: None, turning: false, settled: None });
     }
@@ -1288,7 +1295,7 @@ pub(crate) fn page_input(
         if resizing {
             draw_handles(preview);
         }
-        ui.ctx().set_cursor_icon(if resizing { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Move });
+        view.cursor.claim(Layer::Drag, if resizing { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Move });
         if resp.drag_stopped() || !ptr.any_down {
             view.block_drag = None;
             let (from, to) = (user_box(xf, info, page, b), user_box(xf, info, page, preview));
@@ -1337,17 +1344,13 @@ pub(crate) fn page_input(
         draw_handles(boxes[hit]);
     }
     // A closed paragraph moves when dragged (the four-way arrow says so; a click still opens it
-    // for typing); an edge rewraps it. The open one takes the text cursor. Only where the page
-    // shows, so the mode bar and side panels over a paragraph scrolled under them keep their own
-    // cursor (#2755).
-    if resp.contains_pointer() {
-        ui.ctx().set_cursor_icon(if on_edge {
-            egui::CursorIcon::ResizeHorizontal
-        } else if active.is_none() {
-            egui::CursorIcon::Move
-        } else {
-            egui::CursorIcon::Text
-        });
+    // for typing); an edge rewraps it. The open one takes the text cursor.
+    if on_edge {
+        view.cursor.claim(Layer::Handle, egui::CursorIcon::ResizeHorizontal);
+    } else if active.is_none() {
+        view.cursor.claim(Layer::Text, egui::CursorIcon::Move);
+    } else {
+        view.cursor.claim(if active == Some(hit) { Layer::Editor } else { Layer::Text }, egui::CursorIcon::Text);
     }
     if resp.clicked() {
         view.image_selection = None;

@@ -14,6 +14,7 @@ use pdfcraft_engine::{Edit, FieldValue, FormField, FormFieldKind, FormWidget, fi
 use pdfcraft_render::DocInfo;
 
 use crate::canvas::{DocView, PageXform};
+use crate::page_cursor::Layer;
 use crate::page_pointer::PagePointer;
 use crate::theme::Tokens;
 
@@ -151,20 +152,7 @@ fn toggle_edit(f: &FormField, w: &FormWidget) -> Option<Edit> {
     Some(Edit::SetFieldValue { name: f.name.clone(), value })
 }
 
-/// Where the pointer is relative to one page's form widgets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FieldPointer {
-    /// Not over a field.
-    Away,
-    /// Over a field, which has set the cursor. Nothing is pressed, so the layers below still see
-    /// the hover, but they must not replace the cursor: a check box drawn with a glyph, or set
-    /// on printed text, is a button, not text to select.
-    Over,
-    /// The field owns the press or click.
-    Owned,
-}
-
-/// Clicks on form widgets of one page.
+/// Clicks on form widgets of one page. `true` when a field owns the press or click.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn page_input(
     ui: &egui::Ui,
@@ -176,8 +164,8 @@ pub(crate) fn page_input(
     form: &[FormField],
     allowed: bool,
     view: &mut DocView,
-) -> FieldPointer {
-    let Some(p) = ptr.within(xf.rect) else { return FieldPointer::Away };
+) -> bool {
+    let Some(p) = ptr.within(xf.rect) else { return false };
     let hit = form.iter().find_map(|f| {
         f.widgets
             .iter()
@@ -185,7 +173,7 @@ pub(crate) fn page_input(
             .find(|(_, w)| w.page == Some(page) && !w.hidden && widget_rect(xf, info, page, w.rect).contains(p))
             .map(|(i, w)| (f, i, w))
     });
-    let Some((f, wi, w)) = hit else { return FieldPointer::Away };
+    let Some((f, wi, w)) = hit else { return false };
     // The field's tooltip (`/TU`), as Acrobat shows it on hover (#3854). ISO 32000-2 Table 226
     // makes it the name the user interface identifies the field by.
     if let Some(tip) = f.tooltip.as_deref().filter(|t| !t.trim().is_empty()) {
@@ -196,15 +184,16 @@ pub(crate) fn page_input(
     let pressable = f.kind == FormFieldKind::PushButton && !f.read_only() && f.button.is_some();
     // A radio button of a group can be read-only on its own.
     let usable = allowed && !w.read_only && (fillable(f) || pressable || f.kind == FormFieldKind::Signature);
-    // Only where the page shows: the mode bar and side panels over a field scrolled under them
-    // keep their own cursor (#2755).
-    if resp.contains_pointer() {
-        ui.ctx().set_cursor_icon(match (usable, f.kind) {
+    // Over the page's text too: a check box drawn with a glyph, or set on printed text, is a
+    // button, not text to select.
+    view.cursor.claim(
+        Layer::Field,
+        match (usable, f.kind) {
             (false, _) => egui::CursorIcon::NotAllowed,
             (true, FormFieldKind::Text) => egui::CursorIcon::Text,
             _ => egui::CursorIcon::PointingHand,
-        });
-    }
+        },
+    );
     // A text field opens on the press rather than the click, so a drag that starts on it
     // selects its text (#2213).
     let pressed = f.kind == FormFieldKind::Text && usable && resp.is_pointer_button_down_on() && ptr.pressed().is_some();
@@ -214,11 +203,11 @@ pub(crate) fn page_input(
         view.forms.pressed = true;
     }
     if !resp.clicked() {
-        return if resp.is_pointer_button_down_on() { FieldPointer::Owned } else { FieldPointer::Over };
+        return resp.is_pointer_button_down_on();
     }
     if !allowed {
         view.forms.notice = Some(FormNotice::Security);
-        return FieldPointer::Owned;
+        return true;
     }
     match f.kind {
         _ if f.read_only() || w.read_only => view.forms.notice = Some(FormNotice::ReadOnly(f.name.clone())),
@@ -289,7 +278,7 @@ pub(crate) fn page_input(
             }
         }
     }
-    FieldPointer::Owned
+    true
 }
 
 /// The edit the focused field's draft makes, if it differs from the field's value.

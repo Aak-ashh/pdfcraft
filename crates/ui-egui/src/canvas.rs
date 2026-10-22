@@ -12,6 +12,7 @@ use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Sense, Stroke, TextureHand
 use pdfcraft_engine::{DocId, Edit};
 use pdfcraft_render::{DestView, DocInfo, LayerOp, LinkTarget, PRINT_TAG, PageText, RenderPool, RenderRequest, RequestKind, Tile, device_pixels};
 
+use crate::page_cursor::{Layer, Subject};
 use crate::page_pointer::PagePointer;
 use crate::theme::{self, Tokens};
 use crate::{PdfCraftApp, QuickTool, RightPanel, comments, icons, widgets};
@@ -641,6 +642,8 @@ pub struct DocView {
     /// A queued Fill & Sign signature: select it after its edit succeeds, then leave placement.
     pub(crate) fill_signature_page: Option<usize>,
     pub(crate) signature_drag: crate::signature_drag::SignatureDrag,
+    /// What the page modules claim for the cursor this frame; `document_area` sets it once.
+    pub(crate) cursor: crate::page_cursor::PageCursor,
     /// A non-edit action requested by the organize toolbar, handled by the app.
     pub pending_action: Option<ViewAction>,
     /// The grid gap the next inserted files go to (set by a "+" between pages); otherwise they
@@ -947,6 +950,7 @@ impl DocView {
             fill_text: None,
             fill_signature_page: None,
             signature_drag: Default::default(),
+            cursor: Default::default(),
         }
     }
 
@@ -2500,17 +2504,6 @@ impl DocView {
     }
 }
 
-/// The hover popup for an annotation. Replies and Fill & Sign marks (typed text, checks, signatures)
-/// show none: they are page content being edited, not comments.
-fn annotation_hover_text(a: &pdfcraft_render::Annotation) -> Option<String> {
-    if a.is_reply() || a.fill_sign {
-        return None;
-    }
-    let who = a.author.clone().unwrap_or_else(|| a.subtype.clone());
-    let body = a.contents.clone().unwrap_or_default();
-    Some(if body.is_empty() { who } else { format!("{who}\n{body}") })
-}
-
 /// The scroll offset that puts `point` (content coordinates) at `rel` in the viewport, kept within
 /// the content as egui keeps it. egui clamps only after drawing, so an offset past the end showed
 /// the page misplaced for a frame and then jumped (zooming out beside a page that fits).
@@ -3309,7 +3302,6 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     };
     let mut open_signature = false;
     let mut hover_text: Option<(Pos2, String)> = None;
-    let mut badge_hover: Option<(Pos2, String)> = None;
     let mut clicked_link: Option<LinkTarget> = None;
     let mut remote_open: Option<(pdfcraft_engine::DocId, String, pdfcraft_render::RemoteDestination)> = None;
     let mut canvas_action: Option<comments::CanvasAction> = None;
@@ -3379,9 +3371,9 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         // The Hand tool pans by this widget's drag, before the pages are laid out (above).
         if hand {
             if resp.dragged() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                view.cursor.claim(Layer::Drag, egui::CursorIcon::Grabbing);
             } else if resp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Grab);
             }
         }
         let origin = resp_rect.min - vec2(0.0, y_shift);
@@ -3413,7 +3405,6 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         }
         let mut calc_hover = None;
         for &i in &visible_pages {
-            badge_hover = None;
             let r = snap_to_pixels(rects[i].translate(origin.to_vec2()), ppp);
             if !r.intersects(visible.expand(400.0)) {
                 continue;
@@ -3578,7 +3569,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                 && allowed
                 && let Some(p) = ptr.within(xf.rect)
             {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Crosshair);
                 if resp.clicked() {
                     // Centred on the click, upright as the page is shown.
                     let (vx, vy) = xf.screen_to_view(p);
@@ -3602,7 +3593,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                 && allowed
                 && let Some(p) = ptr.within(xf.rect)
             {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Crosshair);
                 if resp.clicked() {
                     // Centred on the click at its natural size (the engine sizes it).
                     let (vx, vy) = xf.screen_to_view(p);
@@ -3657,14 +3648,13 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                 crate::zoom_snap::page_input(ui, &resp, &xf, &ptr, i, view);
             }
             if tool == QuickTool::EnhanceCamera {
-                crate::camera_ui::page_input(ui, &resp, &xf, &ptr, i, view, can_modify);
+                crate::camera_ui::page_input(&resp, &xf, &ptr, i, view, can_modify);
             }
             if tool == QuickTool::Crop && crate::crop::page_input(ui, &resp, &xf, &ptr, i, info, view, can_crop) {
                 view.current = i;
                 open_boxes = true;
             }
-            // `over_field`: a form field is under the pointer and has set its cursor.
-            let (on_field, over_field) = if preparing {
+            let on_field = if preparing {
                 let field_tool = match tool {
                     QuickTool::Field(f) => Some(f),
                     _ => None,
@@ -3675,18 +3665,12 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                 field_props |= o.properties;
                 field_placed |= o.placed;
                 open_table = open_table.or(o.table);
-                (o.consumed || field_tool.is_some(), false)
+                o.consumed || field_tool.is_some()
             } else {
-                use crate::forms_ui::FieldPointer;
-                let field = if tool == QuickTool::Select
+                tool == QuickTool::Select
                     && !(editing_content && can_modify && crate::content_ui::select_grabs(&xf, &ptr, i, info, &added, view))
                     && !comments::select_grabs(&pcx, view)
-                {
-                    crate::forms_ui::page_input(ui, &resp, &xf, &ptr, i, info, &form, can_fill, view)
-                } else {
-                    FieldPointer::Away
-                };
-                (field == FieldPointer::Owned, field == FieldPointer::Over)
+                    && crate::forms_ui::page_input(ui, &resp, &xf, &ptr, i, info, &form, can_fill, view)
             };
             // Redact draws boxes off text; so does Highlight (an area highlight, as in Acrobat).
             let area_tool = tool == QuickTool::Redact && can_modify || tool == QuickTool::Comment(comments::CommentTool::Highlight) && allowed;
@@ -3696,7 +3680,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                     let (vx, vy) = xf.screen_to_view(p);
                     text.as_ref().is_some_and(|t| t.glyphs.iter().any(|g| vx >= g.rect[0] && vx <= g.rect[2] && vy >= g.rect[1] && vy <= g.rect[3]))
                 };
-                crate::redact_ui::page_input(ui, &resp, &xf, &ptr, i, info, over_text, view)
+                crate::redact_ui::page_input(&resp, &xf, &ptr, i, info, over_text, view)
             };
             let image_owns_pointer = tool == QuickTool::EditText && crate::edit_text_ui::image_owns_pointer(ui, &xf, &ptr, i, info, view);
             let on_objects =
@@ -3729,7 +3713,6 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
             let on_content = !on_objects && editing_content && can_modify && {
                 source_blocked
                     || crate::content_ui::page_input(
-                        ui,
                         &resp,
                         &xf,
                         &ptr,
@@ -3845,15 +3828,12 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                     // Column select (#740): the Column select tool, or Alt (Option on macOS) held
                     // while a drag starts, as in Acrobat.
                     let column = tool == QuickTool::ColumnSelect || ui.input(|inp| inp.modifiers.alt);
-                    // A link or a form field under the pointer keeps its own cursor: a check box
-                    // drawn with a glyph, or set on printed text, shows the hand, not the I-beam.
-                    // So do the mode bar and side panels over a page scrolled under them (#2755),
-                    // unless a selection is being dragged there.
-                    let cursor_free = !over_link && !over_field && (resp.contains_pointer() || resp.dragged());
-                    if column && cursor_free {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-                    } else if over_text && cursor_free {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+                    // A press on a link selects nothing (it is the link's), so no cursor here says
+                    // it would.
+                    if column && !over_link {
+                        view.cursor.claim(Layer::Text, egui::CursorIcon::Crosshair);
+                    } else if over_text && !over_link {
+                        view.cursor.claim(Layer::Text, egui::CursorIcon::Text);
                     }
                     // The pages' press, kept when its release came in the same frame (#2100): it
                     // still starts multi-click selection.
@@ -4029,16 +4009,13 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                     }
                 }
             }
-            // Fill & Sign keeps its placement cursor clear of link/comment hover feedback. Tips
-            // draw above the palette, so none shows while it is open, even beside it.
-            if !matches!(tool, QuickTool::Fill(_))
-                && unobstructed
-                && let Some(p) = pointer
-            {
+            // Links: the hand and the link's target, which count only for the tools that follow
+            // or edit links (`Layer::reached_by`). Tips draw above the palette, so none shows
+            // while it is open, even beside it.
+            if unobstructed && let Some(p) = pointer {
                 for l in info.links.iter().filter(|l| l.page == i) {
                     let sr = xf.user_rect(info, i, l.rect);
                     if sr.contains(p) {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         let label = match &l.target {
                             LinkTarget::Page(n, _) => {
                                 crate::i18n::fmt(tl!("Go to page {p}"), &[("p", info.pages.get(*n).map(|p| p.label.as_str()).unwrap_or("?"))])
@@ -4048,34 +4025,15 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                             LinkTarget::RemoteGoTo { file, .. } => file.clone(),
                             LinkTarget::Other(s) => crate::i18n::fmt(tl!("{s} action"), &[("s", s)]),
                         };
-                        hover_text = Some((p, label));
+                        view.cursor.claim_with_tip(Layer::Link, egui::CursorIcon::PointingHand, Some(label));
                         if resp.clicked() && tool == QuickTool::Select && !consumed {
                             clicked_link = Some(l.target.clone());
                         }
                     }
                 }
-                // Annotation hover shows the comment, as Acrobat's popups do; not while drawing
-                // freehand, where it would cover the next stroke (#429).
-                let freehand = matches!(tool, QuickTool::Comment(comments::CommentTool::Ink | comments::CommentTool::Eraser));
-                let gesturing = view.comments.gesture.is_some() || freehand;
-                // Inspection sorts annotations spatially, but the renderer paints in /Annots
-                // order. Keep the shared list intact and choose the last eligible raw index.
-                if hover_text.is_none()
-                    && !gesturing
-                    && let Some((_, text)) = info
-                        .annotations
-                        .iter()
-                        .filter(|a| a.page == i)
-                        .filter(|a| {
-                            !(prefs.hide_empty_highlight_hover && a.subtype == "Highlight" && a.contents.as_deref().is_none_or(str::is_empty))
-                        })
-                        .filter(|a| pcx.screen_rects(a).any(|r| r.contains(p)))
-                        .filter_map(|a| annotation_hover_text(a).map(|text| (a.index, text)))
-                        .max_by_key(|(index, _)| *index)
-                {
-                    hover_text = Some((p, text));
-                }
             }
+            // Comments say what they are with any tool, beside its cursor, as Acrobat's do.
+            comments::describe(&pcx, view);
             for (mp, mr, mc) in &view.compare_marks {
                 if *mp == i {
                     let sr = xf.user_rect(info, i, *mr).expand(1.5);
@@ -4120,14 +4078,11 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                 let side = (sr.width().min(sr.height()) * 0.8).clamp(24.0, 192.0);
                 let mark = Rect::from_center_size(sr.center(), vec2(side, side));
                 icons::paint(ui, mark, icon, side * 0.64, color);
-                if let Some(p) = pointer.filter(|p| mark.expand(2.0).contains(*p)) {
-                    badge_hover = Some((p, badge.summary.to_string()));
+                // Overlapping widgets paint in order, so the topmost badge's verdict is the tip,
+                // with any tool; a link's or a comment's tip wins over any badge.
+                if pointer.is_some_and(|p| mark.expand(2.0).contains(p)) {
+                    view.cursor.describe(Subject::SignatureBadge, badge.summary.to_string());
                 }
-            }
-            // Overlapping widgets paint in order, so the topmost badge owns the hover; an
-            // earlier link or annotation hover still wins over any badge.
-            if hover_text.is_none() {
-                hover_text = badge_hover.take();
             }
         }
         if calc_order {
@@ -4135,6 +4090,8 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
             let selected = view.prepare.selected.as_ref().map(|(name, _)| name.as_str());
             crate::calc_order_ui::paint_trace(ui, painter, visible, &view.calc_order, generation, selected);
         }
+        // The pages' one cursor, from the claim on the highest layer the tool reaches, and the tip.
+        hover_text = pointer.filter(|_| unobstructed).zip(view.cursor.resolve(ui.ctx(), tool));
         // ScrollArea ignores the wheel while any widget is dragged, so a text-selection drag
         // scrolls the page itself (#721). After the page loop, so it keeps scrolling once the
         // pointer leaves the selection's page for the gap or the next page; over the whole
@@ -6042,36 +5999,6 @@ mod tests {
             let r = grid_page_rect(cell, page);
             assert!(r.is_finite() && cell.contains_rect(r), "{page:?} -> {r:?}");
         }
-    }
-
-    fn annotation(fill_sign: bool) -> pdfcraft_render::Annotation {
-        pdfcraft_render::Annotation {
-            page: 0,
-            subtype: "FreeText".into(),
-            author: None,
-            contents: Some("Hello".into()),
-            modified: None,
-            name: None,
-            in_reply_to: None,
-            parent: None,
-            grouped: false,
-            rect: [0.0; 4],
-            color: None,
-            index: 0,
-            state: None,
-            quads: Vec::new(),
-            locked: false,
-            intent: None,
-            fill_sign,
-            no_rotate: false,
-            points: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn hover_popup_skips_fill_and_sign_marks() {
-        assert_eq!(annotation_hover_text(&annotation(false)).as_deref(), Some("FreeText\nHello"));
-        assert_eq!(annotation_hover_text(&annotation(true)), None);
     }
 
     fn signature(signed: bool, visible: bool, page: Option<usize>, rect: Option<[f64; 4]>) -> pdfcraft_engine::SignatureInfo {
