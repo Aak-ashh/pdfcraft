@@ -32,6 +32,14 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   its colour transform (an Adobe marker's, else `/ColorTransform`, ISO 32000-2 §7.4.8), so one
   stored untransformed keeps its colours; one whose marker and `/ColorTransform` disagree is left
   alone, since readers differ on which wins.
+- **Monochrome images** (`Settings::mono`, CCITT Group 4 by default): a 1-bit image with one
+  colour component (grey, indexed, a separation) or an image mask, stored with no filter or with
+  general-purpose ones, is stored again as CCITT Group 4 (`pdfcraft_filters::encode_g4`) when
+  that is smaller as stored. It is lossless: the samples decode to the same bits, so the colour
+  space, decode array and masks stay. Group 4 wins on scans, whose ragged edges defeat Flate;
+  on clean computer-drawn 1-bit art Flate can be smaller, and the image then stays. Not yet:
+  JBIG2, monochrome downsampling, inline images, soft masks and `/Mask` images, and rows wider
+  than 32,767 samples.
 - **Discard objects:** thumbnails, alternate images, document tags, print settings.
 - **Clean up:** Flate for streams with no filter; for streams with an outer ASCII85 or ASCIIHex
   layer, that layer is removed when the result is smaller (the inner filters keep their encoded

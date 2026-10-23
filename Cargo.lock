@@ -4424,7 +4424,9 @@ dependencies = [
 name = "pdfcraft-filters"
 version = "0.15.0"
 dependencies = [
+ "fax",
  "flate2",
+ "hayro-ccitt",
  "proptest",
  "thiserror 2.0.21",
  "weezl 0.2.1",
