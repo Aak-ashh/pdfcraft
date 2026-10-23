@@ -678,6 +678,14 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
 /// A finished draft as an edit: new text is added (and selected once it exists), retyped text
 /// updated, and text emptied by retyping removed. Empty new text adds nothing.
 fn finish(cv: &mut ContentView, d: TextDraft, added: &[Added]) -> Option<Edit> {
+    // Unchanged is no edit, even for text saved with trailing spaces the trim would drop.
+    if let Some(i) = d.index
+        && let Some((_, a)) = on_page(added, d.page).into_iter().find(|(k, _)| *k == i)
+        && let AddedContent::Text(old) = &a.content
+        && *old == (AddedText { text: d.text.clone(), rect: d.rect, ..d.style.clone() })
+    {
+        return None;
+    }
     let text = d.text.trim_end().to_string();
     let aligns = pdfcraft_engine::paragraph_align::remap(&d.text, &text, &d.style.aligns);
     let d = TextDraft { style: AddedText { aligns, ..d.style }, ..d };

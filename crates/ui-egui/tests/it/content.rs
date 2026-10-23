@@ -991,3 +991,29 @@ fn redo_after_undoing_typing_in_added_text_puts_it_back() {
     let doc = s.session.get(s.views[0].id).unwrap();
     assert_eq!(doc.can_redo(), Some("Edit content"), "the document's Redo still waits");
 }
+
+/// Redo with an added text box open and unchanged reaches the document's waiting Redo, even when
+/// the box's text ends in a space: closing the unchanged box writes nothing, so it can't clear
+/// that Redo first.
+#[test]
+fn redo_with_an_unchanged_box_open_redoes_the_document() {
+    let mut h = harness();
+    let rect = [40.0, 195.0, 240.0, 210.0];
+    let text = pdfcraft_engine::AddedText { rect, text: "Reviewed ".into(), ..Default::default() };
+    assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::AddText { page: 0, text }));
+    let pdfcraft_engine::AddedContent::Text(saved) = added(&h)[0].content.clone() else { panic!() };
+    assert_eq!(saved.text, "Reviewed ", "the trailing space is kept");
+    let bold = pdfcraft_engine::AddedText { bold: true, ..saved };
+    assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::UpdateContent { page: 0, index: 0, content: pdfcraft_engine::AddedContent::Text(bold) }));
+    assert!(h.state_mut().execute("edit.undo"));
+    assert!(h.state_mut().execute("edit.text"));
+    h.run_steps(3);
+    let point = at(&h, 45.0, 195.0);
+    click(&mut h, point);
+    assert_eq!(h.state().views[0].content.draft.as_ref().and_then(|d| d.index), Some(0), "the editor opened on the text");
+    h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
+    h.run_steps(4);
+    let pdfcraft_engine::AddedContent::Text(now) = &added(&h)[0].content else { panic!() };
+    assert!(now.bold, "the waiting Redo was redone");
+    assert!(h.state().views[0].content.draft.is_none(), "the box closed with the step");
+}
