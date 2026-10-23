@@ -1033,3 +1033,40 @@ fn redo_with_an_unchanged_box_open_redoes_the_document() {
     assert!(now.bold, "the waiting Redo was redone");
     assert!(h.state().views[0].content.draft.is_none(), "the box closed with the step");
 }
+
+/// Two copies of a document, the same added text open in each: the boxes share one Undo history,
+/// so typing taken back with Undo in one tab came back with Redo in the other.
+#[test]
+fn typing_in_one_tab_never_reaches_another_tabs_added_text() {
+    let mut h = harness();
+    h.state_mut().open_bytes("copy.pdf", None, include_bytes!("../data/form.pdf").to_vec()).unwrap();
+    h.run_steps(4);
+    let text = pdfcraft_engine::AddedText { rect: [40.0, 195.0, 240.0, 210.0], text: "Reviewed".into(), ..Default::default() };
+    let open_in = |h: &mut Harness<'static, PdfCraftApp>, tab: usize| {
+        h.state_mut().active = Some(tab);
+        h.run_steps(2);
+        assert!(h.state_mut().execute("edit.text"));
+        h.run_steps(3);
+        let r = h.state().views[tab].page_screen_rect(0).expect("on screen");
+        let k = r.width() / 300.0;
+        click(h, r.min + egui::vec2(45.0 * k, 195.0 * k));
+        assert_eq!(h.state().views[tab].content.draft.as_ref().and_then(|d| d.index), Some(0), "the editor opened on the text");
+    };
+    for tab in [0, 1] {
+        h.state_mut().active = Some(tab);
+        assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::AddText { page: 0, text: text.clone() }));
+    }
+    open_in(&mut h, 1);
+    open_in(&mut h, 0);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::End);
+    h.event(egui::Event::Text(" secret".into()));
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(3);
+    assert_eq!(h.state().views[0].content.draft.as_ref().map(|d| d.text.as_str()), Some("Reviewed"), "taken back");
+    h.state_mut().active = Some(1);
+    h.run_steps(3);
+    h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
+    h.run_steps(3);
+    assert_eq!(h.state().views[1].content.draft.as_ref().map(|d| d.text.as_str()), Some("Reviewed"), "the other tab's typing stays out");
+}
