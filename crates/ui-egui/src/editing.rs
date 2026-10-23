@@ -222,9 +222,31 @@ impl PdfCraftApp {
     pub fn redo(&mut self) {
         if self.combine_showing() {
             self.combine_history_step(false);
-        } else {
+        } else if !self.redo_in_page_box() {
             self.history_step(false);
         }
+    }
+
+    /// Redo from the menu or toolbar while a box on the page has typing of its own: the step is
+    /// the box's, as the key's is. What Undo took back in the box comes back; typing the page
+    /// doesn't have yet stays as it is, since applying it first is a new edit, which drops the
+    /// document's Redo. True when the box took the step.
+    fn redo_in_page_box(&mut self) -> bool {
+        let Some(ctx) = self.ctx.clone() else { return false };
+        let Some(view) = self.active.and_then(|i| self.views.get_mut(i)) else { return false };
+        if let Some(ed) = view.line_editor.as_mut() {
+            let Some(text) = redo_typing(&ctx, crate::edit_text_ui::input_id(), &ed.text) else { return ed.has_unsaved_text() };
+            let before = std::mem::replace(&mut ed.text, text);
+            ed.follow_rows(&before);
+            return true;
+        }
+        if let Some(d) = view.content.draft.as_mut() {
+            let Some(text) = redo_typing(&ctx, crate::content_ui::input_id(), &d.text) else { return d.has_unapplied_typing() };
+            d.style.aligns = pdfcraft_engine::paragraph_align::remap(&d.text, &text, &d.style.aligns);
+            d.text = text;
+            return true;
+        }
+        false
     }
 
     fn history_step(&mut self, undo: bool) {
@@ -1041,6 +1063,18 @@ impl PdfCraftApp {
 
 /// The single page a content edit changes (`None` for other edits). Like comment edits,
 /// these leave every other page's bytes, geometry and text alone, so their rasters stay valid.
+/// What the page text box `id`, showing `text`, gets back from its own Redo history, if anything;
+/// its caret goes where the Redo puts it.
+fn redo_typing(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<String> {
+    let mut state = egui::TextEdit::load_state(ctx, id)?;
+    let mut undoer = state.undoer();
+    let (range, redone) = undoer.redo(&(state.cursor.char_range()?, text.to_owned()))?.clone();
+    state.set_undoer(undoer);
+    state.cursor.set_char_range(Some(range));
+    egui::TextEdit::store_state(ctx, id, state);
+    Some(redone)
+}
+
 fn content_page(edit: &Edit) -> Option<usize> {
     match edit {
         Edit::MoveObjects { page, .. }

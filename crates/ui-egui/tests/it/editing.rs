@@ -6159,3 +6159,77 @@ fn redo_after_undoing_typing_puts_the_typing_back() {
     let doc = s.session.get(s.views[0].id).unwrap();
     assert_eq!((doc.can_redo(), doc.text_blocks(0)[0].base_font.as_str()), (Some("Edit text"), "Helvetica"), "the document's Redo still waits");
 }
+
+/// A row aligned on its own keeps its alignment when the whole paragraph is then made bold: the
+/// rewrite for the bold carries the rows' alignments too, as nothing in the page records them.
+#[test]
+fn a_row_aligned_on_its_own_keeps_it_through_more_formatting() {
+    let mut h = three_row_paragraph();
+    let wide = row_rect(&h, "three");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    align_by_pointer(&mut h, "Align right");
+    // Nothing selected: the bold is for the whole paragraph.
+    h.key_press(Key::End);
+    h.run_steps(2);
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().selection, None);
+    h.get_by_label("Bold").click();
+    h.run_steps(4);
+    assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().text_blocks(0)[0].base_font, "Helvetica-Bold");
+    let last = row_rect(&h, "nine");
+    assert!(
+        (last[2] - row_rect(&h, "three")[2].max(wide[2])).abs() < 1.0 && last[0] > wide[0] + 20.0,
+        "the last row is still right-aligned: {last:?}"
+    );
+}
+
+/// A second alignment picked while the same row is still selected applies to that row again, not
+/// the whole paragraph.
+#[test]
+fn a_second_alignment_for_a_selected_row_stays_on_that_row() {
+    let mut h = three_row_paragraph();
+    let first = row_rect(&h, "One");
+    let wide = row_rect(&h, "three");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    align_by_pointer(&mut h, "Align right");
+    align_by_pointer(&mut h, "Centre");
+    assert!((row_rect(&h, "One")[0] - first[0]).abs() < 0.5, "the first row stays put: {:?}", row_rect(&h, "One"));
+    let last = row_rect(&h, "nine");
+    let (mid, centre) = ((last[0] + last[2]) / 2.0, (wide[0] + wide[2]) / 2.0);
+    assert!((mid - centre).abs() < 1.0, "the last row is centred: {last:?} in {wide:?}");
+}
+
+/// Redo from the menu (not the key) after Undo in the box took the typing back: the typing comes
+/// back in the box, and the document's own Redo (a formatting change) still waits. The menu went
+/// to the document, which applied the box first: a new edit, which dropped that Redo.
+#[test]
+fn redo_from_the_menu_puts_the_typing_back_in_the_box() {
+    let mut h = harness(1, |_| {});
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    open_paragraph(&mut h);
+    h.get_by_label("Bold").click();
+    h.run_steps(4);
+    // Undo the bold (closing the editor), so the document has it to redo.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(4);
+    open_paragraph(&mut h);
+    let original = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.event(egui::Event::Text(" more".into()));
+    h.run_steps(2);
+    let typed = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(3);
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().text, original, "the typing is taken back");
+    assert!(h.state_mut().execute("edit.redo"));
+    h.run_steps(3);
+    let s = h.state();
+    let ed = s.views[0].line_editor.as_ref().expect("still typing");
+    assert_eq!(ed.text, typed, "Redo puts the typing back");
+    let doc = s.session.get(s.views[0].id).unwrap();
+    assert_eq!((doc.can_redo(), doc.text_blocks(0)[0].base_font.as_str()), (Some("Edit text"), "Helvetica"), "the document's Redo still waits");
+}

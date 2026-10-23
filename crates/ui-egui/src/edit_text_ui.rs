@@ -281,6 +281,19 @@ pub(crate) fn forget_typing_before(ctx: &egui::Context, id: egui::Id, from: &mut
     *from = Some(text.to_owned());
 }
 
+/// Select `range` (bytes of `text`) in the page text box `id` again. egui keeps a box's selection
+/// only while it has the focus, so a click on Format text drops it; given back as formatting
+/// returns the focus, it stays shown, and a second choice reaches the same text.
+pub(crate) fn reselect(ctx: &egui::Context, id: egui::Id, text: &str, range: &std::ops::Range<usize>) {
+    let chars = |at: usize| text.get(..at).map(|s| s.chars().count());
+    let (Some(start), Some(end)) = (chars(range.start), chars(range.end)) else { return };
+    if start < end {
+        let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(start), egui::text::CCursor::new(end))));
+        egui::TextEdit::store_state(ctx, id, state);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Extras {
     pub underline: bool,
@@ -359,9 +372,6 @@ impl LineEditor {
             // The whole paragraph's alignment when it was picked, or when the rows' own were
             // dropped for it (the rows are where those put them, so leaving it out keeps them there).
             align: (l.align != o.align || l.aligns.is_empty() && !o.aligns.is_empty()).then_some(l.align),
-            // Rows aligned on their own, sent with every rewrite of the paragraph while it is open:
-            // nothing in the page records them, so a rewrite without them would undo them.
-            aligns: if l.aligns != o.aligns || self.text != self.original { l.aligns.clone() } else { Vec::new() },
             underline: (self.extras.underline != self.extras0.underline).then_some(self.extras.underline),
             line_spacing: (self.extras.line_spacing != self.extras0.line_spacing && self.extras.line_spacing > 0.0)
                 .then_some(self.extras.line_spacing),
@@ -369,6 +379,12 @@ impl LineEditor {
             scale: (self.extras.scale != self.extras0.scale).then_some(self.extras.scale),
             ..Default::default()
         };
+        // Rows aligned on their own, sent with every rewrite of the paragraph while it is open
+        // (a colour or size change too): nothing in the page records them, so a rewrite without
+        // them would undo them. Alone, they are sent only when they changed.
+        if l.aligns != o.aligns || self.text != self.original || style != pdfcraft_engine::BlockStyle::default() {
+            style.aligns = l.aligns.clone();
+        }
         if let Some(range) = &self.selection
             && (style.family.is_some()
                 || style.resource.is_some()
@@ -392,9 +408,9 @@ impl LineEditor {
         style
     }
 
-    /// After applying formatting: the paragraph now has it.
+    /// After applying formatting: the paragraph now has it. The selection stays, as the box still
+    /// shows it, so a second alignment or format picked for it applies to the same rows.
     pub fn applied(&mut self) {
-        self.selection = None;
         self.font_resource = None;
         self.family_chosen = false;
         self.look0 = self.look.clone();
@@ -409,6 +425,10 @@ impl LineEditor {
         self.multiline = block.rows.len() > 1;
         self.source = Some((block.clone(), lines));
         let before = std::mem::replace(&mut self.text, block.editor_text.clone());
+        if self.text != before {
+            // A byte range of the old text: it may name other characters, or none, in the new.
+            self.selection = None;
+        }
         self.follow_rows(&before);
         self.original = self.text.clone();
     }
@@ -1755,6 +1775,9 @@ pub(crate) fn overlay(ctx: &egui::Context, view: &mut DocView, info: &DocInfo) -
                 }
                 if ed.focus {
                     r.request_focus();
+                    if let Some(range) = &ed.selection {
+                        reselect(ui.ctx(), input, &ed.text, range);
+                    }
                     ed.focus = false;
                 }
                 let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));

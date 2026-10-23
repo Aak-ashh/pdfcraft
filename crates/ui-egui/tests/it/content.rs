@@ -939,7 +939,7 @@ fn a_resized_added_picture_shows_only_at_its_new_size() {
 }
 
 /// Bug A for added text: with one line of the box selected, an alignment applies to that line
-/// only, the box stays open, and Undo puts it back and closes the box.
+/// only, as does a second one, the box stays open, and Undo puts it back and closes the box.
 #[test]
 fn aligning_a_selected_line_of_added_text_aligns_only_that_line() {
     let mut h = harness();
@@ -964,10 +964,18 @@ fn aligning_a_selected_line_of_added_text_aligns_only_that_line() {
     };
     assert_eq!(aligns(&h), (pdfcraft_engine::TextAlign::Left, vec![None, Some(pdfcraft_engine::TextAlign::Right)]));
     assert!(h.state().views[0].content.draft.is_some(), "the box stays open");
+    // A second choice, the line still selected, is for that line again.
+    let button = h.get_by_label("Alignment").rect().center();
+    click(&mut h, button);
+    let item = h.get_by_label("Centre").rect().center();
+    click(&mut h, item);
+    assert_eq!(aligns(&h), (pdfcraft_engine::TextAlign::Left, vec![None, Some(pdfcraft_engine::TextAlign::Center)]));
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run_steps(4);
-    assert_eq!(aligns(&h), (pdfcraft_engine::TextAlign::Left, vec![]), "Undo puts it back");
+    assert_eq!(aligns(&h), (pdfcraft_engine::TextAlign::Left, vec![None, Some(pdfcraft_engine::TextAlign::Right)]), "Undo puts it back");
     assert!(h.state().views[0].content.draft.is_none(), "and closes the box");
+    assert!(h.state_mut().execute("edit.undo"));
+    assert_eq!(aligns(&h), (pdfcraft_engine::TextAlign::Left, vec![]));
 }
 
 /// The same in an added text box: Redo after Undo puts the typing back in the box, and the

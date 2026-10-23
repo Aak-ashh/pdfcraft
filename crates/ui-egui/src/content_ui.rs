@@ -636,6 +636,9 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
                 }
                 if t.focus {
                     resp.request_focus();
+                    if let Some(range) = &t.selection {
+                        crate::edit_text_ui::reselect(ui.ctx(), input, &t.text, range);
+                    }
                     t.focus = false;
                 }
                 let buttons = egui::Frame::NONE
