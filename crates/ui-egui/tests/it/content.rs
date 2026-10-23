@@ -756,8 +756,12 @@ fn the_text_editor_aligns_a_narrow_box_to_its_own_edge() {
     assert!(r.width() < 60.0, "the box is narrower than the editor: {}", r.width());
     let pixels = h.render().unwrap();
     let inside = ink(&pixels, r);
+    let edge = ink(&pixels, egui::Rect::from_min_max(pos2(r.right() - r.width() * 0.25, r.min.y), r.max));
     let past = ink(&pixels, egui::Rect::from_min_max(pos2(r.right() + 2.0, r.min.y), pos2(r.right() + 40.0, r.max.y)));
-    assert!(inside > 20 && past == 0, "the text is drawn in its box ({inside} dark pixels in it, {past} past its right edge)");
+    assert!(
+        inside > 20 && edge > 0 && past == 0,
+        "the text is drawn in its box, up to its right edge ({inside} dark pixels in it, {edge} in its last quarter, {past} past it)"
+    );
 }
 
 /// The same when the line is right-aligned on its own while the box keeps Left: all its lines
@@ -779,8 +783,12 @@ fn the_text_editor_aligns_a_narrow_box_whose_lines_share_an_alignment() {
     let r = item_on_screen(&h, rect);
     let pixels = h.render().unwrap();
     let inside = ink(&pixels, r);
+    let edge = ink(&pixels, egui::Rect::from_min_max(pos2(r.right() - r.width() * 0.25, r.min.y), r.max));
     let past = ink(&pixels, egui::Rect::from_min_max(pos2(r.right() + 2.0, r.min.y), pos2(r.right() + 40.0, r.max.y)));
-    assert!(inside > 20 && past == 0, "the text is drawn in its box ({inside} dark pixels in it, {past} past its right edge)");
+    assert!(
+        inside > 20 && edge > 0 && past == 0,
+        "the text is drawn in its box, up to its right edge ({inside} dark pixels in it, {edge} in its last quarter, {past} past it)"
+    );
 }
 
 fn mode_tab(h: &Harness<'static, PdfCraftApp>, label: &str) -> egui::Rect {
