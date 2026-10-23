@@ -565,10 +565,12 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
     // shortcut: lines aligned differently from each other in a box under 60 points keep the
     // editor's left edge; anchor each line on its own if such boxes turn out to matter.
     let width = r.width().max(60.0);
-    let uniform = (0..pdfcraft_engine::paragraph_align::count(&draft.text)).all(|i| draft.style.paragraph_align(i) == draft.style.align);
-    let anchor = match draft.style.align {
-        pdfcraft_engine::TextAlign::Center if uniform => 0.5,
-        pdfcraft_engine::TextAlign::Right if uniform => 1.0,
+    // The alignment every line shares, its own or the box's.
+    let first = draft.style.paragraph_align(0);
+    let shared = (1..pdfcraft_engine::paragraph_align::count(&draft.text)).all(|i| draft.style.paragraph_align(i) == first).then_some(first);
+    let anchor = match shared {
+        Some(pdfcraft_engine::TextAlign::Center) => 0.5,
+        Some(pdfcraft_engine::TextAlign::Right) => 1.0,
         _ => 0.0,
     };
     let at = r.min - egui::vec2((width - r.width()) * anchor, 0.0);

@@ -760,6 +760,29 @@ fn the_text_editor_aligns_a_narrow_box_to_its_own_edge() {
     assert!(inside > 20 && past == 0, "the text is drawn in its box ({inside} dark pixels in it, {past} past its right edge)");
 }
 
+/// The same when the line is right-aligned on its own while the box keeps Left: all its lines
+/// share one alignment, so the editor keeps the box's right edge for them.
+#[test]
+fn the_text_editor_aligns_a_narrow_box_whose_lines_share_an_alignment() {
+    let _gpu = gpu();
+    let mut h = harness();
+    let rect = [40.0, 195.0, 60.0, 210.0];
+    let text = pdfcraft_engine::AddedText { rect, text: "Hi".into(), aligns: vec![Some(pdfcraft_engine::TextAlign::Right)], ..Default::default() };
+    assert_eq!(text.align, pdfcraft_engine::TextAlign::Left);
+    assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::AddText { page: 0, text }));
+    assert!(h.state_mut().execute("edit.text"));
+    h.run_steps(3);
+    let point = at(&h, 50.0, 195.0);
+    click(&mut h, point);
+    assert_eq!(h.state().views[0].content.draft.as_ref().and_then(|d| d.index), Some(0), "the editor opened on the text");
+    h.run_steps(3);
+    let r = item_on_screen(&h, rect);
+    let pixels = h.render().unwrap();
+    let inside = ink(&pixels, r);
+    let past = ink(&pixels, egui::Rect::from_min_max(pos2(r.right() + 2.0, r.min.y), pos2(r.right() + 40.0, r.max.y)));
+    assert!(inside > 20 && past == 0, "the text is drawn in its box ({inside} dark pixels in it, {past} past its right edge)");
+}
+
 fn mode_tab(h: &Harness<'static, PdfCraftApp>, label: &str) -> egui::Rect {
     h.get_all_by_role_and_label(egui::accesskit::Role::Button, label).map(|n| n.rect()).find(|r| r.bottom() < 120.0).expect("a mode tab")
 }
