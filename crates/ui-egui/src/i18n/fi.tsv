@@ -2783,6 +2783,9 @@ theme	Appearance	Teema
 	The signature's signed attributes have no message digest, so the signature does not cover the document.	Allekirjoituksen allekirjoitetuista määritteistä puuttuu viestitiiviste, joten allekirjoitus ei kata asiakirjaa.
 	The signature's signed attributes name a content type other than data, so it is not a signature of the document.	Allekirjoituksen allekirjoitetut määritteet nimeävät muun sisältötyypin kuin data, joten se ei ole asiakirjan allekirjoitus.
 	Remove {standard} identification	Poista {standard}-tunniste
+# Untranslated: English text until a translator fills these in.
+	Reads {name}, which the form doesn't have, so it gets no value there.	Reads {name}, which the form doesn't have, so it gets no value there.
+	Its script also reads fields whose names it builds as it runs, so those reads can't be checked.	Its script also reads fields whose names it builds as it runs, so those reads can't be checked.
 
 # Prepare a form ▸ Text field table (AI-assisted, not separately native-reviewed)
 	Add text field table	Lisää tekstikenttätaulukko

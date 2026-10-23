@@ -156,6 +156,37 @@ fn a_regex_after_a_condition_is_not_read_as_code() {
     assert_eq!(renamed(divides), Some(divides.replace("\"a\"", "\"qty\"")));
 }
 
+/// A `getField` whose argument is more than one string, or an `AFSimple_Calculate` list that
+/// isn't written out, reads a field whose name isn't known until the script runs.
+#[test]
+fn names_built_at_run_time_are_noticed() {
+    for js in [
+        "event.value = getField(\"row\" + i).value;",
+        "event.value = this.getField(name).value;",
+        "AFSimple_Calculate(\"SUM\", list);",
+        "AFSimple_Calculate(\"SUM\", new Array(\"a\", b));",
+        "AFSimple_Calculate(\"SUM\", [\"a\", prefix + \"b\"]);",
+        "AFSimple_Calculate(\"SUM\", new Array(\"a\", \"b\" + c));",
+        "AFSimple_Calculate(op, new Array(\"a\"));",
+    ] {
+        assert!(reads_built_names(js), "{js}");
+    }
+    for js in [
+        "event.value = getField(\"a\").value + getField('b').value;",
+        "AFSimple_Calculate(\"SUM\", new Array(\"a\", \"b\"));",
+        "AFSimple_Calculate(\"SUM\", [\"a\", \"b\",]);",
+        "AFSimple_Calculate(\"SUM\", \"a, b\");",
+        "// getField(\"row\" + i)\nvar s = 'getField(name)'; event.value = 1;",
+        "/** BVCALC a + b EVCALC **/ event.value = getField(\"a\").value + getField(\"b\").value;",
+    ] {
+        assert!(!reads_built_names(js), "{js}");
+    }
+    // The names it does know are still read and renamed.
+    let js = "event.value = getField(\"a\").value + getField(\"row\" + i).value + AFSimple_Calculate(\"SUM\", new Array(\"a\", b));";
+    assert_eq!(calculation_reads(js), ["a"]);
+    assert_eq!(rename_in_calculation(js, "a", "qty"), Some(js.replace("\"a\"", "\"qty\"")));
+}
+
 /// Scripts are read in one pass: a line of unfinished regular expressions, or calls nested in
 /// one another's field lists, don't make a rename read the rest of the script again for each.
 #[test]
