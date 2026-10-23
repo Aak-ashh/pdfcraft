@@ -85,18 +85,18 @@ pub struct BackdropCheck {
 }
 
 /// What the check found among the pages a background goes on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BackdropCount {
-    /// Pages with a white backdrop that can be replaced.
-    pub fills: usize,
-    /// Pages covered by a picture (scans): the background stays hidden there.
-    pub images: usize,
+    /// Pages (0-based, ascending) with a white backdrop that can be replaced.
+    pub fills: Vec<usize>,
+    /// Pages (0-based, ascending) covered by a picture (scans): the background stays hidden there.
+    pub images: Vec<usize>,
     /// Pages not checked yet.
     pub pending: usize,
 }
 
 impl BackdropCheck {
-    /// Check up to [`BACKDROP_PAGES_PER_FRAME`] more of `pages` (0-based) and count them.
+    /// Check up to [`BACKDROP_PAGES_PER_FRAME`] more of `pages` (0-based) and sort them.
     pub fn update(&mut self, doc: &pdfcraft_engine::Document, pages: &[usize]) -> BackdropCount {
         let key = (doc.id, doc.edit_generation());
         let count = doc.info.pages.len();
@@ -126,10 +126,14 @@ impl BackdropCheck {
             let Some(slot) = self.pages.get(p) else { continue };
             match slot {
                 None => n.pending += 1,
-                Some(Some(Backdrop::Fill)) => n.fills += 1,
-                Some(Some(Backdrop::Image)) => n.images += 1,
+                Some(Some(Backdrop::Fill)) => n.fills.push(p),
+                Some(Some(Backdrop::Image)) => n.images.push(p),
                 Some(None) => {}
             }
+        }
+        for list in [&mut n.fills, &mut n.images] {
+            list.sort_unstable();
+            list.dedup();
         }
         n
     }
@@ -147,9 +151,21 @@ impl MarksDraft {
     }
 }
 
-/// "1 page" or "{n} pages", in a message.
-fn pages_phrase(n: usize, one: &str, many: &str) -> String {
-    if n == 1 { one.to_string() } else { crate::i18n::fmt(many, &[("n", &n.to_string())]) }
+/// How many runs of pages a message lists before it stops with "…".
+const LISTED_PAGE_RUNS: usize = 8;
+
+/// `one` or `many` with `{pages}` replaced by `pages` (0-based, ascending) as 1-based runs
+/// ("1-3, 6"), so the message says which pages it means.
+fn pages_phrase(pages: &[usize], one: &str, many: &str) -> String {
+    // `count` 0 never matches a list that isn't empty, so the list is always written out.
+    let runs = crate::combine_ui::range_of(pages, 0);
+    let mut parts: Vec<&str> = runs.split(", ").take(LISTED_PAGE_RUNS + 1).collect();
+    if parts.len() > LISTED_PAGE_RUNS {
+        parts.truncate(LISTED_PAGE_RUNS);
+        parts.push("…");
+    }
+    let template = if pages.len() == 1 { one } else { many };
+    crate::i18n::fmt(template, &[("pages", &parts.join(", "))])
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -599,22 +615,22 @@ fn backdrop_options(ui: &mut egui::Ui, t: &Tokens, d: &mut MarksDraft, doc: &pdf
         ui.label(egui::RichText::new(tl!("Checking pages…")).small().color(t.text_faint));
         ui.ctx().request_repaint();
     }
-    if n.fills > 0 {
+    if !n.fills.is_empty() {
         ui.add_space(4.0);
         let label = pages_phrase(
-            n.fills,
-            tl!("This page paints its own white backdrop, which would hide the background. Replace it"),
-            tl!("{n} pages paint their own white backdrop, which would hide the background. Replace it"),
+            &n.fills,
+            tl!("Page {pages} paints its own white backdrop, which would hide the background. Replace it"),
+            tl!("Pages {pages} paint their own white backdrop, which would hide the background. Replace it"),
         );
         ui.add(widgets::checkbox(&mut d.bg.replace_backdrop, &label));
         ui.label(egui::RichText::new(tl!("Removing the background puts the page's own backdrop back.")).small().color(t.text_faint));
     }
-    if n.images > 0 {
+    if !n.images.is_empty() {
         ui.add_space(4.0);
         let text = pages_phrase(
-            n.images,
-            tl!("A picture covers this page (a scan?), so the background won't show there."),
-            tl!("A picture covers {n} pages (scans?), so the background won't show there."),
+            &n.images,
+            tl!("A picture covers page {pages} (a scan?), so the background won't show there."),
+            tl!("Pictures cover pages {pages} (scans?), so the background won't show there."),
         );
         ui.label(egui::RichText::new(text).small().color(crate::content_ui::UNDRAWABLE));
     }
@@ -652,6 +668,18 @@ mod tests {
         d.use_file = true;
         assert_eq!(undrawable(MarkKind::Watermark, &d), None, "a picture watermark draws no text");
         assert_eq!(undrawable(MarkKind::Background, &d), None);
+    }
+
+    #[test]
+    fn backdrop_messages_name_their_pages() {
+        let phrase = |pages: &[usize]| pages_phrase(pages, "Page {pages}", "Pages {pages}");
+        assert_eq!(phrase(&[2]), "Page 3");
+        assert_eq!(phrase(&[0, 1, 2, 5]), "Pages 1-3, 6");
+        assert_eq!(phrase(&[0, 1]), "Pages 1-2", "a whole document is still listed");
+        let every_other: Vec<usize> = (0..40).step_by(2).collect();
+        assert_eq!(phrase(&every_other), "Pages 1, 3, 5, 7, 9, 11, 13, 15, …", "a long list stops");
+        let runs: Vec<usize> = (0..LISTED_PAGE_RUNS * 2).step_by(2).collect();
+        assert_eq!(phrase(&runs), "Pages 1, 3, 5, 7, 9, 11, 13, 15", "exactly the limit: no …");
     }
 
     #[test]

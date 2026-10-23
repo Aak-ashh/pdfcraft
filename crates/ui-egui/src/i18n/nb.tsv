@@ -954,11 +954,11 @@
 	Replacement: pages of {name}	Erstatning: sider fra {name}
 	Replaces the existing one on those pages.	Erstatter den eksisterende på disse sidene.
 	Checking pages…	Kontrollerer sidene…
-	This page paints its own white backdrop, which would hide the background. Replace it	Denne siden maler sin egen hvite flate, som ville skjult bakgrunnen. Erstatt den
-	{n} pages paint their own white backdrop, which would hide the background. Replace it	{n} sider maler sin egen hvite flate, som ville skjult bakgrunnen. Erstatt den
+	Page {pages} paints its own white backdrop, which would hide the background. Replace it	Side {pages} maler sin egen hvite flate, som ville skjult bakgrunnen. Erstatt den
+	Pages {pages} paint their own white backdrop, which would hide the background. Replace it	Sidene {pages} maler sine egne hvite flater, som ville skjult bakgrunnen. Erstatt dem
 	Removing the background puts the page's own backdrop back.	Når bakgrunnen fjernes, kommer sidens egen hvite flate tilbake.
-	A picture covers this page (a scan?), so the background won't show there.	Et bilde dekker denne siden (en skanning?), så bakgrunnen vises ikke der.
-	A picture covers {n} pages (scans?), so the background won't show there.	Bilder dekker {n} sider (skanninger?), så bakgrunnen vises ikke der.
+	A picture covers page {pages} (a scan?), so the background won't show there.	Et bilde dekker side {pages} (en skanning?), så bakgrunnen vises ikke der.
+	Pictures cover pages {pages} (scans?), so the background won't show there.	Bilder dekker sidene {pages} (skanninger?), så bakgrunnen vises ikke der.
 	Report	Rapport
 	Report…	Rapport…
 	Requires user to enter a password for:	Krever at brukeren skriver inn et passord for:

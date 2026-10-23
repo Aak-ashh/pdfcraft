@@ -179,8 +179,8 @@ fn the_background_dialog_offers_to_replace_a_white_backdrop_and_warns_about_scan
     assert_eq!(backdrop(&h, 0), Some(pdfcraft_engine::Backdrop::Fill));
     h.state_mut().execute("edit.background");
     h.run_steps(3);
-    let replace = "This page paints its own white backdrop, which would hide the background. Replace it";
-    h.get_by_label("A picture covers this page (a scan?), so the background won't show there.");
+    let replace = "Page 1 paints its own white backdrop, which would hide the background. Replace it";
+    h.get_by_label("A picture covers page 2 (a scan?), so the background won't show there.");
     assert!(h.state().marks_draft.bg.replace_backdrop, "on by default");
     // Left unticked, the backdrop stays and still hides the background.
     h.get_by_label(replace).click();
