@@ -727,8 +727,14 @@ impl PdfCraftApp {
                 continue;
             }
             // A box typed into on the page (a paragraph being edited, added text) keeps Undo and
-            // Redo only while it holds typing the page doesn't have; then they reach the document.
-            let page_box = matches!(spec.id, "edit.undo" | "edit.redo") && self.page_box_focused(ctx) && !self.page_typing_unapplied();
+            // Redo only while it holds typing the page doesn't have, or Redo has typing to put
+            // back; then they reach the document. ⌘⇧Z is also ⌘Z to the Undo shortcut, so a
+            // Redo the box keeps is never taken as Undo.
+            let page_box = matches!(spec.id, "edit.undo" | "edit.redo")
+                && self.page_box_focused(ctx)
+                && !self.page_typing_unapplied()
+                && !(spec.id == "edit.redo" && self.page_box_can_redo(ctx))
+                && !(spec.id == "edit.undo" && ctx.input(|i| i.modifiers.shift));
             if typing && !spec.in_text && !page_box {
                 continue;
             }
