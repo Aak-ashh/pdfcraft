@@ -518,6 +518,7 @@ pub(crate) fn after_refresh(view: &mut DocView, added: &[Added]) {
 /// committed (a click away, or Done), and whether Done finished adding text. Discard or Escape
 /// throws the draft away.
 pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, added: &[Added]) -> (Option<Edit>, bool) {
+    let doc_id = view.id;
     let Some(page) = view.content.draft.as_ref().map(|d| d.page) else { return (None, false) };
     let Some(xf) = view.page_xform(page) else { return (None, false) };
     let zoom = xf.rect.width() / xf.pw.max(1.0);
@@ -571,7 +572,7 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
             ui.visuals_mut().text_cursor.stroke.color = crate::edit_text_ui::caret_color_on(Color32::WHITE);
             let [cr, cg, cb] = t.style.color.map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8);
             let input = input_id();
-            crate::edit_text_ui::forget_typing_before(ui.ctx(), input, &mut t.typing_from, &t.style.text);
+            crate::edit_text_ui::forget_typing_before(ui.ctx(), input, doc_id, &mut t.typing_from, &t.style.text);
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let resp = ui.add(

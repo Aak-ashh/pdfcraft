@@ -6067,3 +6067,41 @@ fn redo_after_undoing_typing_puts_the_typing_back() {
     let doc = s.session.get(s.views[0].id).unwrap();
     assert_eq!((doc.can_redo(), doc.text_blocks(0)[0].base_font.as_str()), (Some("Edit text"), "Helvetica"), "the document's Redo still waits");
 }
+
+/// Two copies of a document, the same paragraph open in each. The paragraph boxes share one text
+/// box, and so one Undo history: a box opened on the same text as another tab's didn't clear it.
+/// Typing in one tab, taken back with Undo, then came back with Redo in the other tab.
+#[test]
+fn typing_in_one_tab_never_reaches_another_tabs_paragraph() {
+    let mut h = harness(1, |app| {
+        app.open_bytes("copy.pdf", None, fixture(1)).expect("the copy opens");
+    });
+    let open_in = |h: &mut Harness<'static, PdfCraftApp>, tab: usize| {
+        h.state_mut().active = Some(tab);
+        h.run_steps(2);
+        assert!(h.state_mut().execute("edit.edit_text"));
+        h.run_steps(2);
+        let r = h.state().views[tab].page_screen_rect(0).expect("on screen");
+        click_at(h, egui::pos2(r.left() + 40.0 / 200.0 * r.width(), r.top() + (300.0 - 158.0) / 300.0 * r.height()));
+        assert!(h.state().views[tab].line_editor.is_some(), "the paragraph opens for typing");
+    };
+    open_in(&mut h, 1);
+    let original = h.state().views[1].line_editor.as_ref().unwrap().text.clone();
+    open_in(&mut h, 0);
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().text, original, "the same paragraph");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.event(egui::Event::Text(" secret".into()));
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(3);
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().text, original, "taken back");
+    // The copy, its paragraph still open: Redo there has nothing of its own to put back.
+    h.state_mut().active = Some(1);
+    h.run_steps(3);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    h.run_steps(3);
+    let s = h.state();
+    let text = s.views[1].line_editor.as_ref().map(|ed| ed.text.clone());
+    assert!(!text.as_deref().unwrap_or_default().contains("secret"), "the other tab's typing came in: {text:?}");
+    assert_eq!(s.session.get(s.views[1].id).unwrap().text_blocks(0)[0].text, s.session.get(s.views[0].id).unwrap().text_blocks(0)[0].text);
+}
