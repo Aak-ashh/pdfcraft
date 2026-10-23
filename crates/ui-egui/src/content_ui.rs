@@ -639,6 +639,10 @@ fn finish(cv: &mut ContentView, d: TextDraft, added: &[Added]) -> Option<Edit> {
         Some(i) => {
             let (_, a) = on_page(added, d.page).into_iter().find(|(k, _)| *k == i)?;
             let AddedContent::Text(old) = &a.content else { return None };
+            // Unchanged is no edit, even for text saved with trailing spaces the trim would drop.
+            if *old == (AddedText { text: d.text.clone(), rect: d.rect, ..d.style.clone() }) {
+                return None;
+            }
             let updated = AddedText { text, rect: d.rect, ..d.style };
             (*old != updated).then_some(Edit::UpdateContent { page: d.page, index: i, content: AddedContent::Text(updated) })
         }
