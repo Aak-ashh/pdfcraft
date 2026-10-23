@@ -950,6 +950,8 @@
 	Removing the background puts the page's own backdrop back.	Menghapus latar belakang akan mengembalikan isian putih milik halaman.
 	A picture covers page {pages} (a scan?), so the background won't show there.	Sebuah gambar menutupi halaman {pages} (hasil pindai?), jadi latar belakang tidak akan terlihat di sana.
 	Pictures cover pages {pages} (scans?), so the background won't show there.	Gambar menutupi halaman-halaman {pages} (hasil pindai?), jadi latar belakang tidak akan terlihat di sana.
+	Page {pages} changed after the background was added, so its own white backdrop stays off. It looks the same on white paper.	Halaman {pages} berubah setelah latar belakang ditambahkan, jadi isian putihnya sendiri tetap mati. Di kertas putih tampilannya sama.
+	Pages {pages} changed after the background was added, so their own white backdrops stay off. They look the same on white paper.	Halaman {pages} berubah setelah latar belakang ditambahkan, jadi isian putihnya sendiri tetap mati. Di kertas putih tampilannya sama.
 	Report	Laporan
 	Report…	Laporan…
 	Requires user to enter a password for:	Memerlukan pengguna untuk memasukkan kata sandi untuk:

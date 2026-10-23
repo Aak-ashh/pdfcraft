@@ -154,6 +154,16 @@ impl MarksDraft {
 /// How many runs of pages a message lists before it stops with "…".
 const LISTED_PAGE_RUNS: usize = 8;
 
+/// After Remove background: the pages (0-based, ascending) whose own white backdrop stays off,
+/// because they changed after the background was added (`pdfcraft_engine::EditNotice`).
+pub(crate) fn backdrops_left_off_message(pages: &[usize]) -> String {
+    pages_phrase(
+        pages,
+        tl!("Page {pages} changed after the background was added, so its own white backdrop stays off. It looks the same on white paper."),
+        tl!("Pages {pages} changed after the background was added, so their own white backdrops stay off. They look the same on white paper."),
+    )
+}
+
 /// `one` or `many` with `{pages}` replaced by `pages` (0-based, ascending) as 1-based runs
 /// ("1-3, 6"), so the message says which pages it means.
 fn pages_phrase(pages: &[usize], one: &str, many: &str) -> String {

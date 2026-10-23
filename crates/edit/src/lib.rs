@@ -205,7 +205,8 @@ pub struct Background {
     /// Pictures: size relative to the page (1.0 fits the page).
     pub scale: f64,
     /// Replace a white backdrop the page paints itself, which would hide the background
-    /// ([`backdrop`]). Removing the background puts it back.
+    /// ([`backdrop`]). Removing the background turns it back on where that is still safe
+    /// ([`backdrops_left_off`] are the pages where it isn't).
     pub replace_backdrop: bool,
 }
 
@@ -971,7 +972,8 @@ pub fn add_background(doc: &mut Document, pages: &[usize], bg: &Background, repl
 /// Remove marks of `kind` from `pages`; returns how many were removed. Wrappers left with
 /// nothing after them go too, restoring the original content list; a wrapper that content
 /// after it still relies on (another tool's appended stream) stays. Removing backgrounds also
-/// puts back a backdrop [`add_background`] replaced, unless it was edited since.
+/// turns a backdrop [`add_background`] replaced back on where that is still safe; the pages where
+/// it isn't are [`backdrops_left_off`].
 pub fn remove_marks(doc: &mut Document, pages: &[usize], kind: MarkKind) -> Result<usize, EditError> {
     let all = page_list(doc);
     check(pages, all.len())?;
@@ -1034,7 +1036,7 @@ pub fn marks_present(doc: &Document) -> Vec<MarkKind> {
 }
 
 pub mod backdrop;
-pub use backdrop::{Backdrop, page_backdrop, page_backdrops};
+pub use backdrop::{Backdrop, backdrops_left_off, page_backdrop, page_backdrops};
 mod background;
 pub use background::page_background;
 pub mod objects;

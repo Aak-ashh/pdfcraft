@@ -212,6 +212,39 @@ fn the_background_dialog_offers_to_replace_a_white_backdrop_and_warns_about_scan
     assert_eq!(backdrop(&h, 0), None, "Update keeps the backdrop replaced");
 }
 
+/// Remove background says which pages keep their own white backdrop off: here one whose
+/// backdrop copy changed before the fill since the background replaced it.
+#[test]
+fn remove_background_says_which_pages_keep_their_own_backdrop_off() {
+    let copy = "1 1 1 rg 0 0 300 400 re n 0 g 20 20 50 50 re f";
+    let bg = "q 1 0 0 rg 0 0 300 400 re f Q";
+    let fixture = format!(
+        "%PDF-1.7\n\
+         1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+         2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 400] >> endobj\n\
+         3 0 obj << /Type /Page /Parent 2 0 R /Contents [4 0 R 5 0 R] >> endobj\n\
+         4 0 obj << /PCMark /Background /Length {} >> stream\n{bg}\nendstream endobj\n\
+         5 0 obj << /PCBackdrop << /Index 2 /Op (f) /Before <{}> >> /Length {} >> stream\n{copy}\nendstream endobj\n\
+         trailer << /Root 1 0 R >>\n%%EOF",
+        bg.len(),
+        "00".repeat(32),
+        copy.len()
+    );
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("doc.pdf", None, fixture.into_bytes()).unwrap();
+        app
+    });
+    h.run_steps(4);
+    assert_eq!(marks(&h), [MarkKind::Background]);
+    h.state_mut().execute("edit.background.remove");
+    h.run_steps(2);
+    assert!(marks(&h).is_empty());
+    let toast = h.state().toast.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
+    assert_eq!(toast, "Page 1 changed after the background was added, so its own white backdrop stays off. It looks the same on white paper.");
+}
+
 /// Pages from 1 to 1 stays one page: the dialog used to turn "to" back into the last page on
 /// every frame while both were 1, so only page 1 could not be chosen alone. The field starts on
 /// the last page.

@@ -996,6 +996,8 @@ theme	Appearance	Giao diện
 	Removing the background puts the page's own backdrop back.	Gỡ nền sẽ khôi phục lớp tô trắng riêng của trang.
 	A picture covers page {pages} (a scan?), so the background won't show there.	Một hình ảnh phủ kín trang {pages} (bản quét?), nên nền sẽ không hiện ở đó.
 	Pictures cover pages {pages} (scans?), so the background won't show there.	Hình ảnh phủ kín các trang {pages} (bản quét?), nên nền sẽ không hiện ở đó.
+	Page {pages} changed after the background was added, so its own white backdrop stays off. It looks the same on white paper.	Trang {pages} đã thay đổi sau khi thêm nền, nên lớp tô trắng riêng của nó vẫn tắt. Trên giấy trắng trông vẫn như cũ.
+	Pages {pages} changed after the background was added, so their own white backdrops stay off. They look the same on white paper.	Các trang {pages} đã thay đổi sau khi thêm nền, nên lớp tô trắng riêng của chúng vẫn tắt. Trên giấy trắng trông vẫn như cũ.
 	Report	Báo cáo
 	Report…	Báo cáo…
 	Requires user to enter a password for:	Yêu cầu người dùng nhập mật khẩu cho:

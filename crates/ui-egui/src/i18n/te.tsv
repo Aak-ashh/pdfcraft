@@ -836,6 +836,8 @@ comment menu	Edit	సవరించు
 	Removing the background puts the page's own backdrop back.	నేపథ్యాన్ని తీసివేస్తే పేజీ సొంత తెల్లని నింపు తిరిగి వస్తుంది.
 	A picture covers page {pages} (a scan?), so the background won't show there.	పేజీ {pages}ని ఒక చిత్రం కప్పుతోంది (స్కాన్?), కాబట్టి అక్కడ నేపథ్యం కనిపించదు.
 	Pictures cover pages {pages} (scans?), so the background won't show there.	పేజీలు {pages}ని చిత్రాలు కప్పుతున్నాయి (స్కాన్‌లు?), కాబట్టి అక్కడ నేపథ్యం కనిపించదు.
+	Page {pages} changed after the background was added, so its own white backdrop stays off. It looks the same on white paper.	నేపథ్యాన్ని జోడించిన తర్వాత పేజీ {pages} మారింది, కాబట్టి దాని సొంత తెల్లని నింపు ఆపివేయబడే ఉంటుంది. తెల్ల కాగితంపై అది అలాగే కనిపిస్తుంది.
+	Pages {pages} changed after the background was added, so their own white backdrops stay off. They look the same on white paper.	నేపథ్యాన్ని జోడించిన తర్వాత పేజీలు {pages} మారాయి, కాబట్టి వాటి సొంత తెల్లని నింపులు ఆపివేయబడే ఉంటాయి. తెల్ల కాగితంపై అవి అలాగే కనిపిస్తాయి.
 	PDF or image	PDF లేదా చిత్రం
 	No file chosen	ఫైల్ ఏదీ ఎంచుకోలేదు
 	Page number	పేజీ సంఖ్య

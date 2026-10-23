@@ -5,19 +5,34 @@
 //!
 //! A white fill can be replaced: the one fill operator becomes `n` (end the path without
 //! painting), which looks the same on white paper. The page then gets a copy of the content
-//! stream that held it, tagged `/PCBackdrop << /Original ref /At n /Len n >>`, and the stream
-//! itself is left alone (other pages may share it). [`restore`] puts the original back when the
-//! background is removed, unless the copy has been edited since. A picture can't be replaced
-//! without losing it, so it is only reported.
+//! stream that held it, tagged `/PCBackdrop << /Index n /Op (f) /Before <SHA-256> /Was [num gen] >>`:
+//! how many of the copy's operators come before the `n`, the operator it stands in for, a hash of
+//! those operators (their values, not their spacing: redaction writes a stream out again with
+//! other whitespace), and the number of the stream it was copied from. The stream itself is left
+//! alone (other pages may share it). [`restore`] turns the fill back on when the background is
+//! removed, even after the page was edited or redacted, as long as the operators before the fill
+//! are unchanged and the fill would again be the first thing painted, covering the page.
+//! Otherwise the fill stays off, and [`backdrops_left_off`] names those pages. A picture can't be
+//! replaced without losing it, so it is only reported.
+//!
+//! The tag holds no page content and no reference that keeps another object alive (`/Was` is two
+//! numbers, not a reference): a reference to the original stream would keep text in the file
+//! that a redaction, Remove Hidden Information or Edit Text removed from the copy.
 //!
 //! Detection is deliberately strict: only one rectangle (`re`), in DeviceGray, DeviceRGB or
 //! DeviceCMYK, opaque in the graphics state, with an axis-aligned transform, filled before any
 //! other painting, and covering the crop box. Anything else is real content and stays.
 
 use pdfcraft_content::{Matrix, Op, Pieces};
-use pdfcraft_cos::{Dict, Document, ObjRef, Object, Stream};
+use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
+use sha2::{Digest, Sha256};
 
-use crate::EditError;
+use crate::{EditError, MarkKind};
+
+/// The dictionary key of a backdrop copy's tag.
+const TAG: &[u8] = b"PCBackdrop";
+/// The fill operators a backdrop can be painted with, and so the only ones a tag may restore.
+const FILLS: [&[u8]; 3] = [b"f", b"F", b"f*"];
 
 /// How much of a page's content is read looking for a backdrop: it has to come first.
 const SCAN_BYTES: usize = 64 * 1024;
@@ -39,11 +54,21 @@ pub enum Backdrop {
 }
 
 /// Where a replaceable fill is: the content streams (references in `/Contents` order, untagged
-/// ones only), their joined bytes, and the fill operator's joined byte range.
+/// ones only), their joined bytes, where each starts in them, and the fill operator's joined
+/// byte range.
 struct Found {
     refs: Vec<(usize, ObjRef)>,
     pieces: Pieces,
+    starts: Vec<usize>,
     op: std::ops::Range<usize>,
+}
+
+impl Found {
+    /// The piece holding the fill operator, and the operator's offset in it.
+    fn place(&self) -> Option<(usize, usize)> {
+        let piece = self.pieces.piece_of(self.op.start);
+        Some((piece, self.op.start.checked_sub(*self.starts.get(piece)?)?))
+    }
 }
 
 #[derive(Clone)]
@@ -63,7 +88,7 @@ struct State {
 pub fn page_backdrop(doc: &Document, page: usize) -> Result<Option<Backdrop>, EditError> {
     let all = pdfcraft_model::pages(doc);
     let p = all.get(page).ok_or(EditError::NoSuchPage(page))?;
-    Ok(scan(doc, p).map(|(b, _)| b))
+    Ok(scan(doc, p, None).map(|(b, _)| b))
 }
 
 /// The backdrop each of `pages` (0-based) paints, in the same order, walking the page tree once.
@@ -71,32 +96,56 @@ pub fn page_backdrop(doc: &Document, page: usize) -> Result<Option<Backdrop>, Ed
 /// elsewhere (the viewer's) can disagree with the page tree's on a malformed document.
 pub fn page_backdrops(doc: &Document, pages: &[usize]) -> Vec<Option<Backdrop>> {
     let all = pdfcraft_model::pages(doc);
-    pages.iter().map(|&p| all.get(p).and_then(|page| scan(doc, page)).map(|(b, _)| b)).collect()
+    pages.iter().map(|&p| all.get(p).and_then(|page| scan(doc, page, None)).map(|(b, _)| b)).collect()
+}
+
+/// Pages (0-based, ascending) whose own white backdrop [`replace`] turned off and [`restore`]
+/// couldn't turn back on: a tagged copy is still in their content, with no background over it.
+/// They look the same on white paper.
+pub fn backdrops_left_off(doc: &Document) -> Vec<usize> {
+    let tag_of = |o: &Object| crate::stream_tag(doc, o);
+    let copy = |o: &Object| doc.resolve(o).as_dict().is_some_and(|d| d.get(TAG).is_some());
+    pdfcraft_model::pages(doc)
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            let list: Vec<Object> = match p.dict.get(b"Contents").map(|c| doc.resolve(c)).as_deref() {
+                Some(Object::Array(a)) => a.clone(),
+                Some(_) => p.dict.get(b"Contents").cloned().into_iter().collect(),
+                None => Vec::new(),
+            };
+            list.iter().any(copy) && !list.iter().any(|o| tag_of(o).as_deref() == Some(MarkKind::Background.tag()))
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// Replace `page`'s white backdrop fill, if it has one (see the module doc). Returns whether it
 /// did; when it did, `page` no longer matches the document. A picture backdrop is left alone.
 pub(crate) fn replace(doc: &mut Document, page: &pdfcraft_model::Page) -> Result<bool, EditError> {
-    let Some((Backdrop::Fill, Some(found))) = scan(doc, page) else { return Ok(false) };
+    let Some((Backdrop::Fill, Some(found))) = scan(doc, page, None) else { return Ok(false) };
+    let Some((piece, at)) = found.place() else { return Ok(false) };
+    let op = found.pieces.data().get(found.op.clone()).unwrap_or_default().to_vec();
     let edited = found.pieces.splice([(found.op.clone(), b"n".to_vec())]);
-    let piece = found.pieces.piece_of(found.op.start);
     let (Some(&(_, original)), Some(bytes)) = (found.refs.get(piece), edited.get(piece)) else { return Ok(false) };
-    // Where the operator sits in that piece: the joined offset less the pieces before it.
-    let before: usize = (0..piece).filter_map(|i| edited.get(i)).map(|p| p.len() + 1).sum();
-    let at = found.op.start.saturating_sub(before);
-    let len = found.op.end.saturating_sub(found.op.start);
+    // The `n` among the copy's own operators. A copy whose fill can't be found that way again is
+    // not made: there would be no safe way back.
+    let parsed = pdfcraft_content::parse(head(bytes));
+    let Some(index) = parsed.ops.iter().position(|o| o.span.start == at && o.op == b"n") else { return Ok(false) };
+    let Some(before) = parsed.ops.get(..index) else { return Ok(false) };
     let mut note = Dict::new();
-    note.set(b"Original".to_vec(), Object::Ref(original));
-    note.set(b"At".to_vec(), Object::Int(i64::try_from(at).unwrap_or(i64::MAX)));
-    note.set(b"Len".to_vec(), Object::Int(i64::try_from(len).unwrap_or(i64::MAX)));
+    note.set(b"Index".to_vec(), Object::Int(i64::try_from(index).unwrap_or(i64::MAX)));
+    note.set(b"Op".to_vec(), Object::String(PdfString::literal(op)));
+    note.set(b"Before".to_vec(), Object::String(PdfString { bytes: ops_hash(before), hex: true }));
+    note.set(b"Was".to_vec(), Object::Array(vec![Object::Int(original.num.into()), Object::Int(original.generation.into())]));
     // The copy keeps the original's dictionary (unknown entries included) less what describes
     // the old encoding; `scan` refused streams whose bytes live in an external file (`/F`).
     let Object::Stream(source) = &*doc.get(original) else { return Ok(false) };
     let mut dict = source.dict.clone();
-    for key in [&b"Length"[..], b"DL", b"PCBackdrop"] {
+    for key in [&b"Length"[..], b"DL", TAG] {
         dict.remove(key);
     }
-    dict.set(b"PCBackdrop".to_vec(), Object::Dict(note));
+    dict.set(TAG.to_vec(), Object::Dict(note));
     let copy = doc.add(Object::Stream(Stream::flate(dict, bytes)));
     // Every slot that draws the original: a page may list the same stream twice, and a second
     // copy of the fill would cover the background again.
@@ -112,14 +161,41 @@ pub(crate) fn replace(doc: &mut Document, page: &pdfcraft_model::Page) -> Result
     Ok(replaced)
 }
 
-/// Put back the original content streams [`replace`] copied on `page`, where the copy is still
-/// exactly what it wrote. Returns how many it restored.
+/// Turn the fills [`replace`] turned off on `page` back on, where [`restored_copy`] finds that
+/// safe; a copy listed in several slots is restored in each. Returns how many slots it restored.
+/// A copy it can't restore stays as it is, tag and all, so [`backdrops_left_off`] names its page.
 pub(crate) fn restore(doc: &mut Document, page: &pdfcraft_model::Page) -> Result<usize, EditError> {
     let mut list = crate::contents(doc, page)?;
+    // Per copy: the stream that takes its place, or `None` when it stays.
+    let mut done: Vec<(ObjRef, Option<ObjRef>)> = Vec::new();
     let mut restored = 0;
     for entry in list.iter_mut() {
-        if let Some(original) = unchanged_copy_of(doc, entry) {
-            *entry = Object::Ref(original);
+        let Object::Ref(copy) = *entry else { continue };
+        let with = match done.iter().find(|(c, _)| *c == copy) {
+            Some(&(_, with)) => with,
+            None => {
+                let with = restored_copy(doc, page, copy).map(|(bytes, dict, was)| {
+                    // The stream it was copied from, while that is still here with these bytes
+                    // (other pages may share it): the page is then exactly as it was. `/Was` is
+                    // only a number, and a full save renumbers objects, so the bytes decide.
+                    let same = |w: &ObjRef| match &*doc.get(*w) {
+                        Object::Stream(s) => {
+                            [TAG, &b"PCMark"[..], b"Subtype"].iter().all(|k| s.dict.get(k).is_none())
+                                && s.decoded().ok().as_deref() == Some(bytes.as_slice())
+                        }
+                        _ => false,
+                    };
+                    match was.filter(same) {
+                        Some(w) => w,
+                        None => doc.add(Object::Stream(Stream::flate(dict, &bytes))),
+                    }
+                });
+                done.push((copy, with));
+                with
+            }
+        };
+        if let Some(with) = with {
+            *entry = Object::Ref(with);
             restored += 1;
         }
     }
@@ -129,27 +205,125 @@ pub(crate) fn restore(doc: &mut Document, page: &pdfcraft_model::Page) -> Result
     Ok(restored)
 }
 
-/// The original of a backdrop copy whose bytes are still the original's with the fill turned to
-/// `n`; `None` for anything else (including a copy edited since, which is kept).
-fn unchanged_copy_of(doc: &Document, entry: &Object) -> Option<ObjRef> {
-    let copy = doc.resolve(entry);
-    let Object::Stream(copy) = &*copy else { return None };
-    let note = copy.dict.get(b"PCBackdrop").map(|n| doc.resolve(n))?;
+/// `copy` (a stream [`replace`] wrote for `page`) with its fill turned back on: the bytes, its
+/// dictionary without the tag, and the stream it was copied from. `None` when it isn't such a
+/// copy, or when turning the fill on could paint over something: the operators before the fill
+/// changed since (their hash no longer matches), or the page would no longer paint the fill
+/// first, covering it. What comes after the fill (an edit, a redaction) is kept as it is.
+fn restored_copy(doc: &Document, page: &pdfcraft_model::Page, copy: ObjRef) -> Option<(Vec<u8>, Dict, Option<ObjRef>)> {
+    let obj = doc.get(copy);
+    let Object::Stream(s) = &*obj else { return None };
+    let note = s.dict.get(TAG).map(|n| doc.resolve(n))?;
     let note = note.as_dict()?;
-    let Some(Object::Ref(original)) = note.get(b"Original") else { return None };
-    let at = usize::try_from(note.get(b"At")?.as_int()?).ok()?;
-    let len = usize::try_from(note.get(b"Len")?.as_int()?).ok()?;
-    let orig = doc.get(*original);
-    let Object::Stream(orig) = &*orig else { return None };
-    let source = orig.decoded().ok()?;
-    let mut expect = source.get(..at)?.to_vec();
-    expect.push(b'n');
-    expect.extend_from_slice(source.get(at.checked_add(len)?..)?);
-    (copy.decoded().ok()? == expect).then_some(*original)
+    let index = usize::try_from(note.get(b"Index")?.as_int()?).ok()?;
+    let op = note.get(b"Op")?.as_string()?.bytes.as_slice();
+    if !FILLS.contains(&op) {
+        return None;
+    }
+    let hash = note.get(b"Before")?.as_string()?;
+    let bytes = s.decoded().ok()?;
+    let parsed = pdfcraft_content::parse(head(&bytes));
+    // The `n` standing in for the fill, after exactly the operators that came before it.
+    let fill = parsed.ops.get(index)?;
+    if fill.op != b"n" || !fill.operands.is_empty() || ops_hash(parsed.ops.get(..index)?) != hash.bytes {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len().saturating_add(op.len()));
+    out.extend_from_slice(bytes.get(..fill.span.start)?);
+    out.extend_from_slice(op);
+    out.extend_from_slice(bytes.get(fill.span.end..)?);
+    let (Backdrop::Fill, Some(found)) = scan(doc, page, Some((copy, &out)))? else { return None };
+    let (piece, offset) = found.place()?;
+    if found.refs.get(piece).map(|&(_, r)| r) != Some(copy) || offset != fill.span.start || found.op.len() != op.len() {
+        return None;
+    }
+    let mut dict = s.dict.clone();
+    for key in [&b"Length"[..], b"DL", TAG] {
+        dict.remove(key);
+    }
+    let was = match note.get(b"Was").and_then(Object::as_array).map(Vec::as_slice) {
+        Some([num, generation]) => Some(ObjRef { num: u32::try_from(num.as_int()?).ok()?, generation: u16::try_from(generation.as_int()?).ok()? }),
+        _ => None,
+    };
+    Some((out, dict, was))
 }
 
-/// Find the backdrop, and for a fill, where it is.
-fn scan(doc: &Document, p: &pdfcraft_model::Page) -> Option<(Backdrop, Option<Found>)> {
+/// As much of a content stream as a backdrop could be in: it has to come first.
+fn head(bytes: &[u8]) -> &[u8] {
+    bytes.get(..bytes.len().min(SCAN_BYTES)).unwrap_or_default()
+}
+
+/// A SHA-256 of what `ops` are, not how they are written: keywords and operand values, with
+/// numbers in one form (`1`, `1.0` and `1.00000` are the same), so a stream written out again
+/// with other spacing or number formatting still matches.
+fn ops_hash(ops: &[Op]) -> Vec<u8> {
+    let mut h = Sha256::new();
+    for op in ops {
+        for o in &op.operands {
+            canonical(o, &mut h, 0);
+        }
+        if let Some((dict, data)) = &op.inline {
+            canonical_dict(dict, &mut h, 0);
+            bytes(b'i', data, &mut h);
+        }
+        bytes(b'k', &op.op, &mut h);
+    }
+    h.finalize().to_vec()
+}
+
+/// How deep [`canonical`] follows nested arrays and dictionaries; deeper ones count as equal.
+const CANONICAL_DEPTH: usize = 32;
+
+fn canonical(o: &Object, h: &mut Sha256, depth: usize) {
+    if depth > CANONICAL_DEPTH {
+        h.update(b"~");
+        return;
+    }
+    match o {
+        Object::Null => h.update(b"z"),
+        Object::Bool(b) => h.update(if *b { b"T" } else { b"F" }),
+        Object::Int(i) => number(&i.to_string(), h),
+        Object::Real(r) if *r == 0.0 => number("0", h),
+        Object::Real(r) => number(&format!("{r:.5}"), h),
+        Object::String(s) => bytes(b's', &s.bytes, h),
+        Object::Name(n) => bytes(b'/', n, h),
+        Object::Array(a) => {
+            h.update(b"[");
+            for x in a {
+                canonical(x, h, depth.saturating_add(1));
+            }
+            h.update(b"]");
+        }
+        Object::Dict(d) => canonical_dict(d, h, depth),
+        Object::Stream(_) | Object::Ref(_) => h.update(b"?"),
+    }
+}
+
+fn canonical_dict(d: &Dict, h: &mut Sha256, depth: usize) {
+    h.update(b"<");
+    for (k, v) in d.iter() {
+        bytes(b'/', k, h);
+        canonical(v, h, depth.saturating_add(1));
+    }
+    h.update(b">");
+}
+
+/// A number written with up to five decimals, without trailing zeros.
+fn number(text: &str, h: &mut Sha256) {
+    let t = if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.') } else { text };
+    bytes(b'#', t.as_bytes(), h);
+}
+
+/// A typed, length-prefixed value, so no two different sequences hash the same way.
+fn bytes(kind: u8, b: &[u8], h: &mut Sha256) {
+    h.update([kind]);
+    h.update(u64::try_from(b.len()).unwrap_or(u64::MAX).to_le_bytes());
+    h.update(b);
+}
+
+/// Find the backdrop, and for a fill, where it is. With `swap`, that stream reads as those bytes
+/// instead of its own (to check a change before making it).
+fn scan(doc: &Document, p: &pdfcraft_model::Page, swap: Option<(ObjRef, &[u8])>) -> Option<(Backdrop, Option<Found>)> {
     let crop = p.crop(doc);
     let c = p.dict.get(b"Contents")?;
     let list: Vec<Object> = match &*doc.resolve(c) {
@@ -160,6 +334,7 @@ fn scan(doc: &Document, p: &pdfcraft_model::Page) -> Option<(Backdrop, Option<Fo
     // only as far as a backdrop could be.
     let mut refs = Vec::new();
     let mut data = Vec::new();
+    let mut starts = Vec::new();
     let mut total = 0usize;
     for (slot, o) in list.iter().enumerate() {
         if total >= SCAN_BYTES {
@@ -175,18 +350,21 @@ fn scan(doc: &Document, p: &pdfcraft_model::Page) -> Option<(Backdrop, Option<Fo
         if s.dict.get(b"F").is_some() {
             return None;
         }
-        let bytes = s.decoded().unwrap_or_default();
+        let bytes = match swap {
+            Some((with, b)) if with == *r => b.to_vec(),
+            _ => s.decoded().unwrap_or_default(),
+        };
+        starts.push(total);
         total = total.saturating_add(bytes.len()).saturating_add(1);
         refs.push((slot, *r));
         data.push(bytes);
     }
     let pieces = Pieces::join(&data);
-    let head = pieces.data().get(..pieces.data().len().min(SCAN_BYTES)).unwrap_or_default();
-    let parsed = pdfcraft_content::parse(head);
+    let parsed = pdfcraft_content::parse(head(pieces.data()));
     let res = resources(doc, &p.dict);
     let found = walk(doc, &res, crop, &parsed.ops);
     found.map(|(b, op)| match (b, op) {
-        (Backdrop::Fill, Some(op)) => (b, Some(Found { refs, pieces, op })),
+        (Backdrop::Fill, Some(op)) => (b, Some(Found { refs, pieces, starts, op })),
         _ => (b, None),
     })
 }

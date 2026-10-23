@@ -830,6 +830,8 @@
 	Removing the background puts the page's own backdrop back.	ການລຶບພື້ນຫຼັງຈະເອົາພື້ນສີຂາວເດີມຂອງໜ້າກັບຄືນມາ.
 	A picture covers page {pages} (a scan?), so the background won't show there.	ມີຮູບພາບປົກໜ້າ {pages} ຢູ່ (ພາບສະແກນ?), ສະນັ້ນພື້ນຫຼັງຈະບໍ່ສະແດງຢູ່ບ່ອນນັ້ນ.
 	Pictures cover pages {pages} (scans?), so the background won't show there.	ມີຮູບພາບຫຼາຍຮູບປົກໜ້າ {pages} ຢູ່ (ພາບສະແກນ?), ສະນັ້ນພື້ນຫຼັງຈະບໍ່ສະແດງຢູ່ບ່ອນນັ້ນ.
+	Page {pages} changed after the background was added, so its own white backdrop stays off. It looks the same on white paper.	ໜ້າ {pages} ປ່ຽນໄປຫຼັງຈາກເພີ່ມພື້ນຫຼັງ, ສະນັ້ນພື້ນສີຂາວຂອງມັນເອງຍັງປິດຢູ່. ເທິງເຈ້ຍສີຂາວມັນເບິ່ງຄືເກົ່າ.
+	Pages {pages} changed after the background was added, so their own white backdrops stay off. They look the same on white paper.	ໜ້າ {pages} ປ່ຽນໄປຫຼັງຈາກເພີ່ມພື້ນຫຼັງ, ສະນັ້ນພື້ນສີຂາວຂອງພວກມັນເອງຍັງປິດຢູ່. ເທິງເຈ້ຍສີຂາວພວກມັນເບິ່ງຄືເກົ່າ.
 	PDF or image	PDF ຫຼື ຮູບພາບ
 	No file chosen	ຍັງບໍ່ໄດ້ເລືອກໄຟລ໌
 	Page number	ໝາຍເລກໜ້າ

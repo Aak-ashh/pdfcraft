@@ -971,7 +971,7 @@ pub fn tools() -> Vec<ToolDef> {
                 }),
                 &["doc"],
             )),
-        t("doc_background", "Add background", "Fill page backgrounds with a colour, or a picture from `file` (an image, or page `file_page` of a PDF) fitted at `scale` (default 1), behind the content. A page that paints its own opaque white backdrop would hide it, so that backdrop is replaced unless replace_backdrop is false (removing the background puts it back); a scanned page's picture still hides it (doc_backdrops lists both). Undoable.")
+        t("doc_background", "Add background", "Fill page backgrounds with a colour, or a picture from `file` (an image, or page `file_page` of a PDF) fitted at `scale` (default 1), behind the content. A page that paints its own opaque white backdrop would hide it, so that backdrop is replaced unless replace_backdrop is false (removing the background turns it back on where that is still safe, and doc_remove_marks warns about the pages where it isn't); a scanned page's picture still hides it (doc_backdrops lists both). Undoable.")
             .cmd("edit.background")
             .with(schema(
                 json!({ "doc": doc(), "pages": pages("to fill (default: all)"), "color": { "type": "string" }, "file": { "type": "string" }, "file_page": { "type": "integer", "minimum": 1 }, "scale": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }, "opacity": { "type": "number", "minimum": 0, "maximum": 1 }, "replace": { "type": "boolean" }, "replace_backdrop": { "type": "boolean", "description": "Replace a white backdrop the page paints itself, which would hide the background. Default true." } }),

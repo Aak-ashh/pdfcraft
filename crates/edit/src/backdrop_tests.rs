@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use pdfcraft_cos::{Document, ObjRef, Object, SaveOptions, Stream, write_incremental};
+use pdfcraft_cos::{Dict, Document, ObjRef, Object, SaveOptions, Stream, write_full, write_incremental};
 
 use super::*;
 use crate::{Background, MarkKind, add_background, remove_marks};
@@ -188,19 +188,166 @@ fn replacing_can_be_turned_off() {
     assert_eq!(streams(&doc)[1..], before[..]);
 }
 
-#[test]
-fn a_backdrop_copy_edited_since_is_kept_when_the_background_goes() {
-    let mut doc = page(&[&format!("1 g 0 0 300 200 re f {TEXT}")]);
-    add_background(&mut doc, &[0], &red(), false).unwrap();
-    // Something else rewrites the copy (as Edit text does), keeping its dictionary.
-    let p = &pdfcraft_model::pages(&doc)[0];
+/// Rewrite the page's backdrop copy (the stream after the background) as another tool would:
+/// Edit text and redaction keep its dictionary and change its bytes.
+fn rewrite_copy(doc: &mut Document, bytes: &str) -> ObjRef {
+    let p = &pdfcraft_model::pages(doc)[0];
     let Some(Object::Array(list)) = p.dict.get(b"Contents").cloned() else { panic!("contents") };
     let Object::Ref(copy) = list[1] else { panic!("a reference") };
     let Object::Stream(s) = (*doc.get(copy)).clone() else { panic!("a stream") };
-    let edited = "1 g 0 0 300 200 re n BT /F1 24 Tf 40 90 Td (Edited) Tj ET";
-    doc.set(copy, Object::Stream(Stream::flate(s.dict.clone(), edited.as_bytes())));
+    assert!(s.dict.get(b"PCBackdrop").is_some(), "the copy");
+    doc.set(copy, Object::Stream(Stream::flate(s.dict.clone(), bytes.as_bytes())));
+    copy
+}
+
+#[test]
+fn an_edit_after_the_fill_is_kept_and_the_backdrop_still_comes_back() {
+    let mut doc = page(&[&format!("1 g 0 0 300 200 re f {TEXT}")]);
+    add_background(&mut doc, &[0], &red(), false).unwrap();
+    rewrite_copy(&mut doc, "1 g 0 0 300 200 re n BT /F1 24 Tf 40 90 Td (Edited) Tj ET");
     remove_marks(&mut doc, &[0], MarkKind::Background).unwrap();
-    assert_eq!(streams(&doc), [edited.to_string()], "the edit survives");
+    assert_eq!(streams(&doc), ["1 g 0 0 300 200 re f BT /F1 24 Tf 40 90 Td (Edited) Tj ET"], "the edit survives, under the fill");
+    assert_eq!(page_backdrop(&doc, 0).unwrap(), Some(Backdrop::Fill));
+    assert_eq!(backdrops_left_off(&doc), Vec::<usize>::new());
+}
+
+#[test]
+fn a_change_before_the_fill_leaves_it_off_and_names_the_page() {
+    for edited in [
+        // A different colour before the fill: the hash of what comes before it no longer matches.
+        "0.99 g 0 0 300 200 re n BT /F1 24 Tf 40 90 Td (Edited) Tj ET",
+        // Something painted before it.
+        "BT /F1 9 Tf (x) Tj ET 1 g 0 0 300 200 re n",
+        // The fill is gone.
+        "BT /F1 24 Tf 40 90 Td (Edited) Tj ET",
+    ] {
+        let mut doc = page(&[&format!("1 g 0 0 300 200 re f {TEXT}")]);
+        add_background(&mut doc, &[0], &red(), false).unwrap();
+        assert_eq!(backdrops_left_off(&doc), Vec::<usize>::new(), "a background is over it");
+        rewrite_copy(&mut doc, edited);
+        remove_marks(&mut doc, &[0], MarkKind::Background).unwrap();
+        assert_eq!(streams(&doc), [edited.to_string()], "{edited}: the copy stays as it is");
+        assert_eq!(backdrops_left_off(&doc), [0], "{edited}");
+    }
+}
+
+#[test]
+fn a_fill_that_would_cover_content_painted_before_it_stays_off() {
+    let mut doc = page(&[&format!("1 g 0 0 300 200 re f {TEXT}")]);
+    add_background(&mut doc, &[0], &red(), false).unwrap();
+    // A tool puts a stream of its own before the copy, untagged: turning the fill back on would
+    // now paint white over that text.
+    let over = doc.add(Object::Stream(Stream::flate(pdfcraft_cos::Dict::new(), b"BT /F1 9 Tf 10 10 Td (Over) Tj ET")));
+    let p = pdfcraft_model::pages(&doc)[0].clone();
+    let Some(Object::Array(mut list)) = p.dict.get(b"Contents").cloned() else { panic!("contents") };
+    list.insert(1, Object::Ref(over));
+    doc.update_dict(p.obj, |d| d.set(b"Contents".to_vec(), Object::Array(list))).unwrap();
+    remove_marks(&mut doc, &[0], MarkKind::Background).unwrap();
+    let s = streams(&doc);
+    assert_eq!(s.len(), 2, "{s:?}");
+    assert!(s[1].contains("re n") && !s[1].contains("re f"), "nothing white goes over the text: {s:?}");
+    assert_eq!(backdrops_left_off(&doc), [0]);
+}
+
+#[test]
+fn the_tag_holds_no_reference_and_a_full_save_keeps_no_second_copy_of_the_page() {
+    let mut doc = page(&[&format!("1 g 0 0 300 200 re f {TEXT}")]);
+    add_background(&mut doc, &[0], &red(), false).unwrap();
+    let saved = Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap();
+    // Every stream in the file that holds the page's text: only the copy the page draws. A
+    // reference from the tag to the original stream kept a second, which a redaction or Remove
+    // Hidden Information on the copy left in the file.
+    let holding: Vec<(ObjRef, Dict)> = saved
+        .scan_objects()
+        .filter_map(|(r, o)| match &*o {
+            Object::Stream(s) if String::from_utf8_lossy(&s.decoded().unwrap_or_default()).contains("(Hello)") => Some((r, s.dict.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(holding.len(), 1, "{holding:?}");
+    let Some(Object::Dict(note)) = holding[0].1.get(b"PCBackdrop").map(|n| (*saved.resolve(n)).clone()) else { panic!("the tag") };
+    fn refs(o: &Object) -> bool {
+        match o {
+            Object::Ref(_) => true,
+            Object::Array(a) => a.iter().any(refs),
+            Object::Dict(d) => d.iter().any(|(_, v)| refs(v)),
+            _ => false,
+        }
+    }
+    assert!(!note.iter().any(|(_, v)| refs(v)), "{note:?}");
+    assert_eq!(note.get(b"Op").and_then(Object::as_string).map(|s| s.bytes.clone()), Some(b"f".to_vec()));
+    assert_eq!(note.get(b"Before").and_then(Object::as_string).map(|s| s.bytes.len()), Some(32), "a SHA-256");
+    // The original is gone, so Remove writes the fill back into a stream of its own.
+    let mut saved = saved;
+    remove_marks(&mut saved, &[0], MarkKind::Background).unwrap();
+    assert_eq!(streams(&saved), [format!("1 g 0 0 300 200 re f {TEXT}")]);
+    assert_eq!(page_backdrop(&saved, 0).unwrap(), Some(Backdrop::Fill));
+}
+
+#[test]
+fn a_copy_written_out_again_with_other_spacing_still_comes_back() {
+    // Redaction writes the whole stream out again: one operator a line, numbers its own way.
+    let mut doc = page(&[&format!("1 g 0 0 300 200 re f {TEXT}")]);
+    add_background(&mut doc, &[0], &red(), false).unwrap();
+    rewrite_copy(&mut doc, "1.0 g\n0 0 300.000 200 re\nn\nBT\n/F1 24 Tf\n40 90 Td\n[-6505] TJ\nET");
+    remove_marks(&mut doc, &[0], MarkKind::Background).unwrap();
+    assert_eq!(streams(&doc), ["1.0 g\n0 0 300.000 200 re\nf\nBT\n/F1 24 Tf\n40 90 Td\n[-6505] TJ\nET"], "the fill is back, the rest as written");
+    assert_eq!(backdrops_left_off(&doc), Vec::<usize>::new());
+}
+
+#[test]
+fn a_tag_that_does_not_add_up_is_left_alone() {
+    let content = format!("1 g 0 0 300 200 re f {TEXT}");
+    let copied = format!("1 g 0 0 300 200 re n {TEXT}");
+    let good = ops_hash(&pdfcraft_content::parse(b"1 g 0 0 300 200 re").ops);
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    for tag in [
+        // Not a fill operator, a wrong hash, an index that isn't the `n` or runs past the end.
+        format!("<< /Index 2 /Op (B) /Before <{}> >>", hex(&good)),
+        format!("<< /Index 2 /Op (f) /Before <{}> >>", hex(&[0; 32])),
+        format!("<< /Index 1 /Op (f) /Before <{}> >>", hex(&good)),
+        format!("<< /Index 99999 /Op (f) /Before <{}> >>", hex(&good)),
+        format!("<< /Index -1 /Op (f) /Before <{}> >>", hex(&good)),
+        // Missing entries, wrong types, and the reference earlier test builds wrote.
+        "<< /Index 2 /Op (f) >>".to_string(),
+        "<< /Index (2) /Op /f /Before 3 >>".to_string(),
+        "<< /Original 5 0 R /At 19 /Len 1 >>".to_string(),
+        "(not a dictionary)".to_string(),
+    ] {
+        let mut doc = build(&[
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 200] >>".into(),
+            "<< /Type /Page /Parent 2 0 R /Contents [4 0 R] >>".into(),
+            stream(&format!("/PCBackdrop {tag}"), &copied),
+            stream("", &content),
+        ]);
+        remove_marks(&mut doc, &[0], MarkKind::Background).unwrap();
+        assert_eq!(streams(&doc), std::slice::from_ref(&copied), "{tag}");
+        assert_eq!(backdrops_left_off(&doc), [0], "{tag}");
+    }
+    // The same page with an honest tag comes back.
+    let mut doc = build(&[
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 200] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Contents [4 0 R] >>".into(),
+        stream(&format!("/PCBackdrop << /Index 2 /Op (f) /Before <{}> >>", hex(&good)), &copied),
+    ]);
+    remove_marks(&mut doc, &[0], MarkKind::Background).unwrap();
+    assert_eq!(streams(&doc), [content]);
+}
+
+#[test]
+fn operators_hash_by_value_not_by_spelling() {
+    let h = |s: &[u8]| ops_hash(&pdfcraft_content::parse(s).ops);
+    assert_eq!(h(b"1 g 0 0 300 200 re"), h(b"1.0 g\n0  0 300.00000 200 re"));
+    assert_eq!(h(b"0 g"), h(b"-0.0 g"));
+    assert_ne!(h(b"1 g 0 0 300 200 re"), h(b"0.99 g 0 0 300 200 re"));
+    assert_ne!(h(b"(ab) Tj"), h(b"(a) (b) Tj"), "operand boundaries count");
+    assert_ne!(h(b"/a /b BDC"), h(b"/ab BDC"));
+    assert_ne!(h(b""), h(b"q"));
+    // Nesting is bounded: deep arrays hash without running out of stack.
+    let deep = format!("{}{} Tj", "[".repeat(1000), "]".repeat(1000));
+    let _ = h(deep.as_bytes());
 }
 
 #[test]
