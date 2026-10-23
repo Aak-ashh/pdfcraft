@@ -559,6 +559,19 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
     }
     let r = screen_rect(&xf, info, page, draft.rect);
     let source_rect = draft.index.map(|_| screen_rect(&xf, info, page, draft.style.rect));
+    // At least 60 points wide, so a short box can still be clicked into. Where that is wider than
+    // the box, the editor reaches past it away from the edge its text keeps (the right edge for
+    // right-aligned text, both halves for centred), so the text stays where the page draws it.
+    // shortcut: lines aligned differently from each other in a box under 60 points keep the
+    // editor's left edge; anchor each line on its own if such boxes turn out to matter.
+    let width = r.width().max(60.0);
+    let uniform = (0..pdfcraft_engine::paragraph_align::count(&draft.text)).all(|i| draft.style.paragraph_align(i) == draft.style.align);
+    let anchor = match draft.style.align {
+        pdfcraft_engine::TextAlign::Center if uniform => 0.5,
+        pdfcraft_engine::TextAlign::Right if uniform => 1.0,
+        _ => 0.0,
+    };
+    let at = r.min - egui::vec2((width - r.width()) * anchor, 0.0);
     let background_ready = draft.index.is_some_and(|index| view.text_background.ready_added(page, index));
     let tokens = Tokens::get(ctx);
     let (mut commit, mut cancel, mut done) = (false, false, false);
@@ -575,7 +588,7 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
     egui::Area::new(egui::Id::new(("added-text", view.id.0)))
         .fade_in(false)
         .order(egui::Order::Foreground)
-        .fixed_pos(r.min)
+        .fixed_pos(at)
         .constrain_to(view.viewport_rect())
         .constrain(false)
         .show(ctx, |ui| {
@@ -601,7 +614,7 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let output = egui::TextEdit::multiline(&mut t.text)
                     .font(font)
-                    .desired_width(r.width().max(60.0))
+                    .desired_width(width)
                     .desired_rows(1)
                     .layouter(&mut layouter)
                     .background_color(if background_ready { Color32::TRANSPARENT } else { Color32::WHITE })
