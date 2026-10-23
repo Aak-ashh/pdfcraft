@@ -34,13 +34,15 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   alone, since readers differ on which wins. Samples are read with `/DecodeParms` given by
   reference too, the numbers inside included (`Document::with_direct_parms`), here and below:
   without them a predictor's tag bytes would shift every row of an image written back.
-- **Monochrome images** (`Settings::mono`, CCITT Group 4 by default): a 1-bit image with one
-  colour component (grey, indexed, a separation) or an image mask, stored with no filter or with
-  general-purpose ones, is stored again as CCITT Group 4 (`pdfcraft_filters::encode_g4`) when
-  that is smaller as stored. It is lossless: the samples decode to the same bits, so the colour
+- **Monochrome images** (`Settings::mono`, CCITT Group 4 by default, or JBIG2): a 1-bit image
+  with one colour component (grey, indexed, a separation) or an image mask, stored with no filter
+  or with general-purpose ones, is stored again as CCITT Group 4 (`pdfcraft_filters::encode_g4`)
+  or lossless JBIG2 (`encode_jbig2_generic`; a document below PDF 1.4 gets `/Version /1.4` in
+  its catalog) when that is smaller as stored. On 300 dpi text JBIG2 is about a third smaller
+  than Group 4. It is lossless: the samples decode to the same bits, so the colour
   space, decode array and masks stay. Group 4 wins on scans, whose ragged edges defeat Flate;
   on clean computer-drawn 1-bit art Flate can be smaller, and the image then stays. Not yet:
-  JBIG2, monochrome downsampling, inline images, soft masks and `/Mask` images, and rows wider
+  JBIG2 symbol coding (lossy or lossless), monochrome downsampling, inline images, soft masks and `/Mask` images, and rows wider
   than 32,767 samples. Redaction doesn't decode Group 4 yet: a mark over part of an image stored
   this way removes the whole image (nothing leaks). Nor does anything that exports an image:
   Export ▸ Images and Save Image As refuse it, Copy Image fails, and Word, PowerPoint and HTML
