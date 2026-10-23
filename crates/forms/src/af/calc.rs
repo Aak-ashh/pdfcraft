@@ -277,12 +277,18 @@ fn calculation_sites(js: &str) -> Vec<(Range<usize>, Site)> {
             sites.extend(built(k));
             continue;
         }
+        // One string of comma-separated names, when it is the whole list (not `"row" + suffix`).
         if let Some((range, list)) = string(k + 4) {
-            sites.push((range, Site::Commas(list)));
+            if punct(k + 5, ')') {
+                sites.push((range, Site::Commas(list)));
+            } else {
+                sites.extend(built(k));
+            }
             continue;
         }
-        // `new Array("a", "b")` or `["a", "b"]`: its items, up to the first that isn't a string,
-        // which has to close the list for the list to be written out. Nothing else is read, so no
+        // `new Array("a", "b")` or `["a", "b"]`: each item that is one string, and the list has
+        // to end the call. An item that is more than a string (`"row" + i`), or anything after
+        // the list (`.concat(more)`), is a name built at run time. Nothing else is read, so no
         // token is read for two calls.
         let (first, close) = if punct(k + 4, '[') {
             (k + 5, ']')
@@ -292,11 +298,21 @@ fn calculation_sites(js: &str) -> Vec<(Range<usize>, Site)> {
             sites.extend(built(k));
             continue;
         };
-        for (range, token) in tokens.iter().skip(first) {
-            match token {
-                Js::Str(name) => sites.push((range.clone(), Site::Literal(name.clone()))),
-                Js::Punct(',') => {}
-                Js::Punct(c) if *c == close => break,
+        let mut j = first;
+        loop {
+            match tokens.get(j) {
+                // An item ends at a comma or the list's end, or where a script cut short ends.
+                Some((range, Js::Str(name))) if punct(j + 1, ',') || punct(j + 1, close) || tokens.get(j + 1).is_none() => {
+                    sites.push((range.clone(), Site::Literal(name.clone())));
+                    j += 1;
+                }
+                Some((_, Js::Punct(','))) => j += 1,
+                Some((_, Js::Punct(c))) if *c == close => {
+                    if !punct(j + 1, ')') {
+                        sites.extend(built(k));
+                    }
+                    break;
+                }
                 _ => {
                     sites.extend(built(k));
                     break;

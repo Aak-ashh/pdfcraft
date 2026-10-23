@@ -168,8 +168,22 @@ fn names_built_at_run_time_are_noticed() {
         "AFSimple_Calculate(\"SUM\", [\"a\", prefix + \"b\"]);",
         "AFSimple_Calculate(\"SUM\", new Array(\"a\", \"b\" + c));",
         "AFSimple_Calculate(op, new Array(\"a\"));",
+        "AFSimple_Calculate(\"SUM\", \"row\" + suffix);",
+        "AFSimple_Calculate(\"SUM\", [\"a\"].concat(more));",
+        "AFSimple_Calculate(\"SUM\", [\"row\" + i]);",
     ] {
         assert!(reads_built_names(js), "{js}");
+    }
+    // A string that is only the start of a name or a list isn't read, or renamed, as one.
+    for (js, reads) in [
+        ("AFSimple_Calculate(\"SUM\", \"row\" + suffix);", vec![]),
+        ("AFSimple_Calculate(\"SUM\", [\"row\" + i]);", vec![]),
+        ("AFSimple_Calculate(\"SUM\", [\"a\", \"row\" + i]);", vec!["a"]),
+        ("AFSimple_Calculate(\"SUM\", [\"a\", \"b\"].concat(more));", vec!["a", "b"]),
+    ] {
+        assert_eq!(parse_calculate(js), None, "{js} is a script");
+        assert_eq!(calculation_reads(js), reads, "{js}");
+        assert_eq!(rename_in_calculation(js, "row", "line"), None, "{js}");
     }
     for js in [
         "event.value = getField(\"a\").value + getField('b').value;",

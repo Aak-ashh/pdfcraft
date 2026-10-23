@@ -5058,6 +5058,43 @@ fn the_calculation_order_is_read_fixed_and_set() {
     assert_eq!((value(&mut a, "total"), value(&mut a, "tax")), (json!("0"), json!("0")), "undone with the values it recalculated");
 }
 
+/// A malformed form with two calculated fields named `dup`, one summing `src`, the other `x`.
+fn two_calculations_with_one_name() -> Vec<u8> {
+    let widget = |name: &str, y: u32, reads: &str| {
+        format!(
+            "<< /Type /Annot /Subtype /Widget /FT /Tx /T ({name}) /Rect [50 {y} 250 {}] /P 3 0 R /AA << /C << /S /JavaScript /JS (AFSimple_Calculate\\(\"SUM\", \"{reads}\"\\);) >> >> >>",
+            y + 20
+        )
+    };
+    pdf_of(&[
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>",
+        "<< /Type /Page /Parent 2 0 R /Annots [5 0 R 6 0 R 7 0 R 8 0 R] >>",
+        "<< /Fields [5 0 R 6 0 R 7 0 R 8 0 R] /DA (/Helv 0 Tf 0 g) /CO [6 0 R 7 0 R 5 0 R] >>",
+        &widget("dup", 700, "x"),
+        &widget("dup", 660, "src"),
+        &widget("src", 620, "x"),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [50 580 250 600] /P 3 0 R /V (3) >>",
+    ])
+}
+
+/// Each row of the calculation order gets its own field's formula, even where two fields share a
+/// name (a malformed form): the first dup sums src, the second x.
+#[test]
+fn the_calculation_order_gives_each_field_its_own_formula() {
+    let dir = workdir("calcdup");
+    std::fs::write(dir.join("dup.pdf"), two_calculations_with_one_name()).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "dup.pdf" }))["doc"].as_u64().unwrap();
+    let r = ok(&mut a, "form_calculation_order", json!({ "doc": doc }));
+    assert_eq!(r["calculation_order"], json!(["dup", "src", "dup"]));
+    let formulas: Vec<Value> = r["fields"].as_array().unwrap().iter().map(|f| f["formula"].clone()).collect();
+    assert_eq!(
+        formulas,
+        [json!({ "op": "sum", "fields": ["src"] }), json!({ "op": "sum", "fields": ["x"] }), json!({ "op": "sum", "fields": ["x"] })]
+    );
+}
+
 /// The calculation order through the tool shows each formula, in form_set_props's shape or as a
 /// script, and flags a read of a field the form doesn't have and a script that builds the names
 /// it reads; form_fields shows a custom script too.
