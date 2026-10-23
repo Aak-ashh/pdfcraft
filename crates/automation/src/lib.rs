@@ -696,7 +696,10 @@ impl Automation {
                 };
                 let index = self.paragraph_index(id, page, k, &blocks)?;
                 let block = blocks.get(index).cloned().ok_or_else(|| ToolError::InvalidArgs(format!("paragraph {k} is out of range")))?;
-                let text = a.opt_str("text")?.map(str::to_owned).unwrap_or(block.text);
+                // `aligns` counts rows, so without new text the paragraph keeps its rows (the
+                // editor text); otherwise its text joined with spaces is rewrapped.
+                let own = if a.get("aligns").is_some() { block.editor_text } else { block.text };
+                let text = a.opt_str("text")?.map(str::to_owned).unwrap_or(own);
                 let mut style = pdfcraft_engine::BlockStyle {
                     ranges: parse_style_ranges(a.get("ranges"))?,
                     resource: a.opt_str("font_resource")?.map(str::to_owned),
