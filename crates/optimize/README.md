@@ -37,14 +37,13 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
 - **Monochrome images** (`Settings::mono`, CCITT Group 4 by default): a 1-bit image with one
   colour component (grey, indexed, a separation) or an image mask, stored with no filter or with
   general-purpose ones, is stored again as CCITT Group 4 (`pdfcraft_filters::encode_g4`) when
-  that is smaller as stored. It is lossless: the samples decode to the same bits, so the colour
+  that is smaller as stored. An eight-bit grey image of only 0 and 255 is packed to one bit first
+  (not an indexed image, whose samples are palette indices, nor one with a colour-key `/Mask`). It is lossless: the samples decode to the same bits, so the colour
   space, decode array and masks stay. Group 4 wins on scans, whose ragged edges defeat Flate;
   on clean computer-drawn 1-bit art Flate can be smaller, and the image then stays. Not yet:
   JBIG2, monochrome downsampling, inline images, soft masks and `/Mask` images, and rows wider
   than 32,767 samples. Redaction doesn't decode Group 4 yet: a mark over part of an image stored
-  this way removes the whole image (nothing leaks). Nor does anything that exports an image:
-  Export ▸ Images and Save Image As refuse it, Copy Image fails, and Word, PowerPoint and HTML
-  export leave the picture out.
+  this way removes the whole image (nothing leaks).
 - **Discard objects:** thumbnails, alternate images, document tags, print settings.
 - **Clean up:** Flate for streams with no filter; for streams with an outer ASCII85 or ASCIIHex
   layer, that layer is removed when the result is smaller (the inner filters keep their encoded
