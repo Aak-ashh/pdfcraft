@@ -293,6 +293,27 @@ impl PdfCraftApp {
         focused == Some(crate::edit_text_ui::input_id()) || focused == Some(crate::content_ui::input_id())
     }
 
+    /// Whether the focused box on the page has typing its own Redo would put back: after Undo in
+    /// the box restores what the page has, Redo still belongs to the box, not the document. The
+    /// same test egui makes when it handles the key.
+    pub(crate) fn page_box_can_redo(&self, ctx: &egui::Context) -> bool {
+        let Some(view) = self.active.and_then(|i| self.views.get(i)) else { return false };
+        let focused = ctx.memory(|m| m.focused());
+        let (id, text) = if focused == Some(crate::edit_text_ui::input_id())
+            && let Some(ed) = &view.line_editor
+        {
+            (crate::edit_text_ui::input_id(), &ed.text)
+        } else if focused == Some(crate::content_ui::input_id())
+            && let Some(d) = &view.content.draft
+        {
+            (crate::content_ui::input_id(), &d.text)
+        } else {
+            return false;
+        };
+        egui::TextEdit::load_state(ctx, id)
+            .is_some_and(|state| state.cursor.char_range().is_some_and(|range| state.undoer().has_redo(&(range, text.clone()))))
+    }
+
     /// Typing in a box on the page (a paragraph being edited, added text) that the page doesn't
     /// have yet: Undo and Redo keys take it back in the box first.
     pub(crate) fn page_typing_unapplied(&self) -> bool {

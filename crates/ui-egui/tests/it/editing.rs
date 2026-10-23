@@ -6127,3 +6127,34 @@ fn aligning_a_selected_row_aligns_only_that_row_and_undo_puts_it_back() {
     assert!(s.views[0].line_editor.is_none(), "the editor closed with the step it showed");
     assert!((row_rect(&h, "nine")[0] - last[0]).abs() < 0.5, "the last row is back");
 }
+
+/// Redo after Undo in the box puts the typing back, in the box: it doesn't reach the document,
+/// whose own Redo (a formatting change waiting here) must stay waiting.
+#[test]
+fn redo_after_undoing_typing_puts_the_typing_back() {
+    let mut h = harness(1, |_| {});
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    open_paragraph(&mut h);
+    h.get_by_label("Bold").click();
+    h.run_steps(4);
+    // Undo the bold (closing the editor), so the document has it to redo.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(4);
+    assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().can_redo(), Some("Edit text"));
+    open_paragraph(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.event(egui::Event::Text(" more".into()));
+    h.run_steps(2);
+    let typed = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(3);
+    assert_ne!(h.state().views[0].line_editor.as_ref().unwrap().text, typed, "the typing is taken back");
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    h.run_steps(3);
+    let s = h.state();
+    let ed = s.views[0].line_editor.as_ref().expect("still typing");
+    assert_eq!(ed.text, typed, "Redo puts the typing back");
+    let doc = s.session.get(s.views[0].id).unwrap();
+    assert_eq!((doc.can_redo(), doc.text_blocks(0)[0].base_font.as_str()), (Some("Edit text"), "Helvetica"), "the document's Redo still waits");
+}
