@@ -6051,13 +6051,14 @@ fn redo_after_undoing_typing_puts_the_typing_back() {
     h.run_steps(4);
     assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().can_redo(), Some("Edit text"));
     open_paragraph(&mut h);
+    let original = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
     h.key_press_modifiers(Modifiers::COMMAND, Key::End);
     h.event(egui::Event::Text(" more".into()));
     h.run_steps(2);
     let typed = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
     h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     h.run_steps(3);
-    assert_ne!(h.state().views[0].line_editor.as_ref().unwrap().text, typed, "the typing is taken back");
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().text, original, "the typing is taken back");
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     h.run_steps(3);
     let s = h.state();
