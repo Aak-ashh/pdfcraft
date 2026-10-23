@@ -6742,3 +6742,68 @@ fn a_lone_row_aligns_across_the_column_it_sits_in() {
     align(&mut doc, added::Align::Right);
     assert!((title(&doc)[2] - column[1]).abs() < 1.0, "right: on the column's right edge, {:?} vs {column:?}", title(&doc));
 }
+
+/// An edited paragraph's text has a line break between its source rows (`editor_text`), as the
+/// paragraph editor sends it. Those are the rows of one paragraph, not paragraph ends: justified
+/// in a font of its own (the single-style rewrite), every row but the last still fills the width.
+#[test]
+fn a_justified_paragraph_from_the_editor_fills_its_rows() {
+    let mut doc =
+        text_page("BT /F1 10 Tf 12 TL 100 700 Td (One two three four five six seven) Tj T* (eight nine ten eleven twelve) Tj T* (end) Tj ET");
+    let block = text::text_blocks(&doc, 0).unwrap()[0].clone();
+    assert_eq!(block.editor_text.matches('\n').count(), 2);
+    let style = text::BlockStyle { align: Some(added::Align::Justify), family: Some((Family::Helvetica, true, false)), ..Default::default() };
+    text::rewrite_block(&mut doc, 0, 0, Some(&block.editor_text), &style).unwrap();
+    let lines = text::text_lines(&doc, 0).unwrap();
+    let row = |t: &str| lines.iter().find(|l| l.text.starts_with(t)).unwrap().rect;
+    let right = row("One")[2];
+    assert!((row("eight")[2] - right).abs() < 1.0, "the second row is stretched: {:?} vs {right}", row("eight"));
+    assert!(row("end")[2] < right - 20.0, "the last row isn't");
+}
+
+/// The same on a page of two columns, where the other column has more rows: a title over the
+/// first column is aligned across the first column, not its own box.
+#[test]
+fn a_lone_row_aligns_across_its_own_column_of_two() {
+    let mut doc = text_page(
+        "BT /F1 18 Tf 1 0 0 1 120 700 Tm (Title) Tj ET \
+         BT /F1 10 Tf 12 TL 50 660 Td (The first column runs to here.) Tj T* (A second row of it.) Tj ET \
+         BT /F1 10 Tf 12 TL 320 660 Td (The second column has more rows.) Tj T* (One.) Tj T* (Two.) Tj T* (Three.) Tj T* (Four.) Tj ET",
+    );
+    let blocks = text::text_blocks(&doc, 0).unwrap();
+    let column = blocks.iter().find(|b| b.text.starts_with("The first")).unwrap().rect;
+    let index = blocks.iter().position(|b| b.text == "Title").unwrap();
+    let style = text::BlockStyle { aligns: vec![Some(added::Align::Left)], ..Default::default() };
+    text::rewrite_block(&mut doc, 0, index, Some("Title"), &style).unwrap();
+    let title = text::text_lines(&doc, 0).unwrap().into_iter().find(|l| l.text == "Title").unwrap().rect;
+    assert!((title[0] - column[0]).abs() < 0.5, "left: on the first column's edge, {title:?} vs {column:?}");
+}
+
+/// A one-row title in two colours is rewritten by the styled-region path, which is given the
+/// same column frame: centred twice, it stays centred in the column instead of moving right.
+#[test]
+fn a_lone_row_of_two_styles_aligns_across_its_column() {
+    let mut doc = text_page(
+        "BT /F1 18 Tf 1 0 0 1 250 700 Tm (Big ) Tj 1 0 0 rg (Title) Tj ET \
+         BT 0 g /F1 10 Tf 12 TL 72 650 Td (The body of the page runs across the whole column here.) Tj T* (It has a second row that is a little shorter.) Tj ET",
+    );
+    let blocks = text::text_blocks(&doc, 0).unwrap();
+    assert_eq!(blocks[0].text, "Big Title");
+    let column = [blocks[1].rect[0], blocks[1].rect[2]];
+    let title = |doc: &Document| {
+        let lines = text::text_lines(doc, 0).unwrap();
+        let block = text::text_blocks(doc, 0).unwrap().into_iter().find(|b| b.text == "Big Title").unwrap();
+        block.lines.iter().map(|i| lines[*i].rect).reduce(|a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]).unwrap()
+    };
+    let centre = |doc: &mut Document| {
+        let blocks = text::text_blocks(doc, 0).unwrap();
+        let (index, block) = blocks.iter().enumerate().find(|(_, b)| b.text == "Big Title").unwrap();
+        let style = text::BlockStyle { aligns: vec![Some(added::Align::Center)], ..Default::default() };
+        text::rewrite_block(doc, 0, index, Some(&block.editor_text), &style).unwrap();
+    };
+    centre(&mut doc);
+    let centred = title(&doc);
+    assert!(((centred[0] + centred[2]) / 2.0 - (column[0] + column[1]) / 2.0).abs() < 1.0, "centred in the column: {centred:?} vs {column:?}");
+    centre(&mut doc);
+    assert!((title(&doc)[0] - centred[0]).abs() < 0.5, "centring again leaves it where it is: {:?} vs {centred:?}", title(&doc));
+}
