@@ -2,7 +2,7 @@
 
 > **Last reviewed:** 2026-10-27 | **Last updated:** 2026-10-27 | **Change:** minor (M10: OCR model downloads use verified ONNX pairs with legacy discovery fallback; estimates unchanged)
 > **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M14 localization current state: Arabic logical catalog, explicit RTL label direction and mirrored stock chrome; native/browser RTL workflows unqualified. Native release Hans face via LXGW WenKai Lite; estimates unchanged)
-> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M11: the PDF Optimizer can store black-and-white images as lossless JBIG2; estimates unchanged)
+> **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-24 · **Change:** minor (M11: the PDF Optimizer can store black-and-white images as lossless JBIG2, and Export ▸ Images reads JBIG2 images; estimates unchanged)
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M11: the PDF Optimizer and Reduce File Size store black-and-white images as CCITT Group 4 when smaller; estimates unchanged)
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M7, #2636 partial: pasting added text boxes and images in the engine and through `content_copy`; estimates unchanged)
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M11: image optimization accounts for page-local UserUnit; estimates unchanged)
@@ -257,7 +257,7 @@ Estimates unchanged.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-23 | minor | M11: lossless JBIG2 for black-and-white images (`pdfcraft_filters::encode_jbig2_generic`, a generic region coded with the MQ coder, written from the JBIG2 draft standard), as Monochrome Images ▸ JBIG2 (lossless) and `doc_optimize` `mono: jbig2`; about a third smaller than Group 4 on 300 dpi text. Symbol coding not yet. Estimates unchanged. |
+| 2026-10-23 | minor | M11: lossless JBIG2 for black-and-white images (`pdfcraft_filters::encode_jbig2_generic`, a generic region coded with the MQ coder, written from the JBIG2 draft standard), as Monochrome Images ▸ JBIG2 (lossless) and `doc_optimize` `mono: jbig2`; about a third smaller than Group 4 on 300 dpi text. Export ▸ Images reads JBIG2 images (`hayro-jbig2`, with `/JBIG2Globals`). Symbol coding not yet. Estimates unchanged. |
 | 2026-10-23 | minor | M11: black-and-white images (1-bit, and image masks) are stored losslessly as CCITT Group 4 when that is smaller: PDF Optimizer ▸ Images ▸ Monochrome Images (on by default, so Reduce File Size too), `doc_optimize` `mono`; `pdfcraft_filters::encode_g4`. JBIG2 and monochrome downsampling not yet. Estimates unchanged. |
 | 2026-10-27 | minor | M10: OCR stages SHA-256-verified ONNX models after the upstream RTEN URL brownout; discovery prefers a complete ONNX pair per directory, falls back to a complete RTEN pair, and never mixes formats or directories; language/web limits and estimates unchanged. |
 | 2026-10-24 | minor | M3, #3970 follow-up: the button release given back after a window move or resize goes before the pointer leaving, so hover doesn't stick. Estimates unchanged. |
