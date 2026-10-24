@@ -705,7 +705,8 @@ pub(crate) fn downsample_bits(data: &[u8], w: u32, h: u32, nw: u32, nh: u32, dar
 ///   covers more would turn its tones solid (a 50% screen black, a 25% one white).
 /// - **Stored** as CCITT Group 4 with `CcittG4`, or as 1-bit Flate when that is smaller, which only
 ///   a resampled image or one packed from eight bits may be: a 1-bit image that is only stored again
-///   becomes Group 4 or stays. With `Retain`, a resampled image keeps its kind of compression
+///   becomes Group 4 or stays. Group 4 alone is only decoded to be resampled; Group 3 is stored
+///   again like any other. With `Retain`, a resampled image keeps its kind of compression
 ///   (CCITT, or Flate), and nothing else changes: eight-bit grey stays a grey image like any
 ///   other, which the grey settings handle.
 ///
@@ -714,13 +715,13 @@ fn mono(doc: &Document, s: &Stream, ppi: f64, settings: &MonoSettings) -> Option
     let d = &s.dict;
     let downsample = settings.downsample && ppi.is_finite() && ppi > settings.above_ppi && settings.target_ppi > 0.0 && !d.contains(b"SMask");
     let retain = settings.compression == MonoCompression::Retain;
-    let chain = s.filters();
+    let fax = doc.fax_params(s);
     // Its kind of compression, which Retain keeps, behind any other filters.
-    let ccitt = matches!(chain.last(), Some((pdfcraft_filters::Filter::CcittFax, _)));
-    // A fax image is only worth decoding to resample it; behind ASCII85Decode, say, storing it
-    // again as Group 4 also drops that filter.
-    let fax_alone = ccitt && chain.len() == 1;
-    if (retain || fax_alone) && !downsample {
+    let ccitt = fax.is_some();
+    // Group 4 alone is only worth decoding to resample it. Group 3, or Group 4 behind
+    // ASCII85Decode, say, can be smaller stored again as Group 4 alone.
+    let g4_alone = fax.is_some_and(|p| p.k < 0) && s.filters().len() == 1;
+    if (retain || g4_alone) && !downsample {
         return None;
     }
     let (data, w, h, eight_bit) = one_bit(doc, s, !retain)?;
@@ -747,7 +748,7 @@ fn mono(doc: &Document, s: &Stream, ppi: f64, settings: &MonoSettings) -> Option
         Some(out) => (out, nw, nh),
         None => (data, w, h),
     };
-    if (retain || fax_alone) && !resampled {
+    if (retain || g4_alone) && !resampled {
         return None;
     }
     let mut dict = d.clone();
