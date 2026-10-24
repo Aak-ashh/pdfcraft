@@ -5131,6 +5131,28 @@ fn the_calculation_order_shows_formulas_and_what_they_cannot_read() {
     }
 }
 
+/// Every operation comes back from form_fields and form_calculation_order as form_set_props takes
+/// it, so a formula can be read and given back: product and average came back as prd and avg,
+/// which it refused.
+#[test]
+fn every_calculation_op_can_be_read_and_given_back() {
+    let dir = workdir("calcops");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    for (name, y) in [("a", 20), ("b", 60), ("total", 100)] {
+        ok(&mut a, "form_add_field", json!({ "doc": doc, "page": 1, "type": "text", "rect": [20, y, 180, y + 22], "name": name }));
+    }
+    for op in ["sum", "product", "average", "min", "max"] {
+        let calculate = json!({ "op": op, "fields": ["a", "b"] });
+        ok(&mut a, "form_set_props", json!({ "doc": doc, "field": "total", "calculate": calculate }));
+        let fields = ok(&mut a, "form_fields", json!({ "doc": doc }));
+        let shown = fields["fields"].as_array().unwrap().iter().find(|f| f["name"] == "total").unwrap()["calculate"].clone();
+        let order = ok(&mut a, "form_calculation_order", json!({ "doc": doc }));
+        assert_eq!((&shown, &order["fields"][0]["formula"]), (&calculate, &calculate), "{op}");
+        ok(&mut a, "form_set_props", json!({ "doc": doc, "field": "total", "calculate": shown }));
+    }
+}
+
 #[test]
 fn page_tab_orders_are_read_and_set_per_page_through_tools() {
     let dir = workdir("pagetabs");

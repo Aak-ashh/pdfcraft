@@ -121,12 +121,11 @@ fn calculate_arg(v: &Value) -> Result<Calculate> {
         return Ok(Calculate::Notation(n.to_string()));
     }
     let op = match o.get("op").and_then(Value::as_str).unwrap_or("") {
-        "sum" => CalcOp::Sum,
-        "product" => CalcOp::Product,
-        "average" => CalcOp::Average,
-        "min" | "minimum" => CalcOp::Minimum,
-        "max" | "maximum" => CalcOp::Maximum,
-        x => return Err(bad(format!("unknown op {x:?} (sum, product, average, min, max)"))),
+        "minimum" => CalcOp::Minimum,
+        "maximum" => CalcOp::Maximum,
+        x => {
+            CalcOp::ALL.into_iter().find(|&op| op_name(op) == x).ok_or_else(|| bad(format!("unknown op {x:?} (sum, product, average, min, max)")))?
+        }
     };
     let fields: Vec<String> =
         o.get("fields").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default();
@@ -136,11 +135,22 @@ fn calculate_arg(v: &Value) -> Result<Calculate> {
     Ok(Calculate::Simple { op, fields })
 }
 
+/// An operation's name in `calculate`, as `form_set_props` takes it and the listings show it.
+fn op_name(op: CalcOp) -> &'static str {
+    match op {
+        CalcOp::Sum => "sum",
+        CalcOp::Product => "product",
+        CalcOp::Average => "average",
+        CalcOp::Minimum => "min",
+        CalcOp::Maximum => "max",
+    }
+}
+
 /// A field's calculation as `form_fields` and `form_calculation_order` show it, in
 /// `form_set_props`'s shape, or `{"script": …}` for a custom Calculate script; `None` without one.
 fn calculate_json(f: &FormField) -> Option<Value> {
     match (&f.actions.calculate, &f.actions.scripts.calculate) {
-        (Calculate::Simple { op, fields }, _) => Some(json!({ "op": op.code().to_lowercase(), "fields": fields })),
+        (Calculate::Simple { op, fields }, _) => Some(json!({ "op": op_name(*op), "fields": fields })),
         (Calculate::Notation(n), _) => Some(json!({ "notation": n })),
         (Calculate::None, Some(js)) => Some(json!({ "script": js })),
         (Calculate::None, None) => None,
