@@ -38,6 +38,7 @@ pub mod signature_scan;
 mod stamp_preview;
 pub mod text_fonts;
 mod text_preview;
+pub mod text_style_bookmarks;
 pub mod word_count;
 pub mod xfa;
 
@@ -617,6 +618,12 @@ impl Document {
     /// A counter that changes with every edit (for caches of derived data).
     pub fn edit_generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The styles the document's text is set in, the largest first, for bookmarks from text
+    /// styles (#1693).
+    pub fn text_styles(&self) -> Vec<text_style_bookmarks::TextStyleUse> {
+        self.editor.as_ref().map(|e| text_style_bookmarks::styles(&e.cos)).unwrap_or_default()
     }
 
     /// Edit a PDF ▸ Edit text: the lines of existing text on `page` (0-based).
@@ -1488,6 +1495,11 @@ pub enum Edit {
     /// Bookmarks for the tagged headings (H, H1–H6), nested by level under a new first
     /// "Untitled" bookmark (New Bookmarks from Structure).
     BookmarksFromStructure,
+    /// Bookmarks for the lines set in `levels`' styles (the first is level 1, the next nests
+    /// under it, …), under a new first "Untitled" bookmark (#1693; see [`text_style_bookmarks`]).
+    BookmarksFromTextStyles {
+        levels: Vec<text_style_bookmarks::TextStyle>,
+    },
     /// Label pages `from..=to` (0-based) as Acrobat's "Number pages" does; later pages keep their labels.
     NumberPages {
         from: usize,
@@ -2015,6 +2027,7 @@ pub const EDIT_LABELS: &[&str] = &[
     "Colour",
     "Style",
     "New bookmarks from structure",
+    "New bookmarks from text styles",
     "Number pages",
     "Measure distance",
     "Measure perimeter",
@@ -2162,6 +2175,7 @@ impl Edit {
             Edit::SetBookmarkColor { .. } => Label::of("Colour"),
             Edit::SetBookmarkStyle { .. } => Label::of("Style"),
             Edit::BookmarksFromStructure => Label::of("New bookmarks from structure"),
+            Edit::BookmarksFromTextStyles { .. } => Label::of("New bookmarks from text styles"),
             Edit::NumberPages { .. } => Label::of("Number pages"),
             // What was measured is part of the wording too, for the same reason.
             Edit::AddMeasurement(m) => Label::of(match m.kind {
@@ -2334,6 +2348,7 @@ fn check_permission(edit: &Edit, p: &pdfcraft_cos::Permissions) -> Result<(), Ed
         | Edit::SetBookmarkColor { .. }
         | Edit::SetBookmarkStyle { .. }
         | Edit::BookmarksFromStructure
+        | Edit::BookmarksFromTextStyles { .. }
         | Edit::NumberPages { .. } => {
             if p.assemble() {
                 Ok(())
@@ -2586,8 +2601,18 @@ fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> 
         Edit::BookmarksFromStructure => {
             let entries: Vec<_> = pdfcraft_a11y::headings(doc)
                 .into_iter()
-                .map(|h| pdfcraft_organize::OutlineEntry { level: h.level, title: h.title, page: h.page, element: h.obj })
+                .map(|h| pdfcraft_organize::OutlineEntry { level: h.level, title: h.title, page: h.page, element: h.obj, top: None })
                 .collect();
+            pdfcraft_organize::add_bookmark_tree(doc, "Untitled", &entries)?;
+        }
+        Edit::BookmarksFromTextStyles { levels } => {
+            if levels.is_empty() {
+                return Err(EditError::Invalid("choose a text style for at least one bookmark level".into()));
+            }
+            let entries = text_style_bookmarks::headings(doc, levels);
+            if entries.is_empty() {
+                return Err(EditError::Invalid("no text is set in the chosen styles".into()));
+            }
             pdfcraft_organize::add_bookmark_tree(doc, "Untitled", &entries)?;
         }
         Edit::NumberPages { from, to, style, prefix, first } => pdfcraft_organize::number_pages(doc, *from, *to, *style, prefix, *first)?,

@@ -81,6 +81,7 @@ pub use optimize_ui::{OptimizeDraft, OptimizeTab};
 pub use sign_ui::{DigitalIdEntry, SignDraft, SignGraphic, SignStep};
 mod autoscroll;
 mod bidi;
+pub mod bookmark_styles_ui;
 pub mod bulk_fields;
 mod dialogs;
 mod edit_text_ui;
@@ -295,6 +296,8 @@ pub enum Dialog {
     NumberPages,
     /// Protect Using Password.
     Protect,
+    /// Bookmarks ▸ New bookmarks from text styles (#1693).
+    BookmarksFromTextStyles,
     /// Set Page Boxes (crop, trim, bleed, art, media).
     PageBoxes,
     /// Add / Update Header and Footer, Watermark, Background.
@@ -937,6 +940,8 @@ pub struct PdfCraftApp {
     pub(crate) word_count_draft: word_count_ui::Draft,
     /// Protect Using Password dialog state.
     pub protect_draft: protect::ProtectDraft,
+    /// New bookmarks from text styles dialog state (#1693).
+    pub text_style_draft: bookmark_styles_ui::TextStyleDraft,
     /// Set Page Boxes dialog state.
     pub boxes_draft: pageboxes::BoxesDraft,
     /// Header & footer / watermark / background dialog state.
@@ -1256,6 +1261,7 @@ impl PdfCraftApp {
             pending_full_screen: None,
             pending_remote_link: None,
             protect_draft: Default::default(),
+            text_style_draft: Default::default(),
             boxes_draft: Default::default(),
             marks_draft: Default::default(),
             export_draft: Default::default(),

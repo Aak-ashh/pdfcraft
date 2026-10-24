@@ -421,6 +421,34 @@ impl Automation {
                 out["next"] = listing["next"].clone();
                 out
             }
+            "text_styles" => {
+                // The samples are the document's text, as text_lines is.
+                let doc = self.doc_to_copy(&a)?;
+                let styles: Vec<Value> = doc
+                    .text_styles()
+                    .into_iter()
+                    .map(|u| {
+                        json!({
+                            "font": u.style.font,
+                            "size": u.style.size,
+                            "bold": u.style.bold,
+                            "italic": u.style.italic,
+                            "lines": u.lines,
+                            "pages": u.pages,
+                            "sample": u.sample,
+                        })
+                    })
+                    .collect();
+                json!({ "styles": styles })
+            }
+            "bookmark_from_text_styles" => {
+                let levels = text_style_levels(&a)?;
+                let mut out = self.apply(&a, Edit::BookmarksFromTextStyles { levels })?;
+                let listing = self.bookmark_listing(&a)?;
+                out["bookmarks"] = listing["bookmarks"].clone();
+                out["next"] = listing["next"].clone();
+                out
+            }
             "doc_protect" => self.doc_protect(&a)?,
             "page_replace" => {
                 let pages = self.pages(&a, "pages")?;
@@ -2418,6 +2446,36 @@ fn parse_style_ranges(value: Option<&Value>) -> Result<Vec<pdfcraft_engine::Rang
                 char_spacing: a.opt_num("char_spacing")?,
                 scale: a.opt_num("scale")?,
             })
+        })
+        .collect()
+}
+
+/// The most bookmark levels `bookmark_from_text_styles` takes.
+const MAX_STYLE_LEVELS: usize = 9;
+
+/// bookmark_from_text_styles' `levels`: one style per bookmark level, the first level 1, each
+/// `{ font, size, bold, italic }` as text_styles lists them.
+fn text_style_levels(a: &Args) -> Result<Vec<pdfcraft_engine::text_style_bookmarks::TextStyle>> {
+    let levels =
+        a.get("levels").and_then(Value::as_array).ok_or_else(|| ToolError::InvalidArgs("levels must list a style for each bookmark level".into()))?;
+    if levels.is_empty() || levels.len() > MAX_STYLE_LEVELS {
+        return Err(ToolError::InvalidArgs(format!("levels must list 1 to {MAX_STYLE_LEVELS} styles")));
+    }
+    levels
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let bad = |what: &str| ToolError::InvalidArgs(format!("levels[{i}]: {what}"));
+            let font =
+                v.get("font").and_then(Value::as_str).filter(|f| !f.is_empty()).ok_or_else(|| bad("font must be a font name from text_styles"))?;
+            let size =
+                v.get("size").and_then(Value::as_f64).filter(|s| s.is_finite() && *s > 0.0).ok_or_else(|| bad("size must be a positive number"))?;
+            let flag = |key: &str| match v.get(key) {
+                None | Some(Value::Null) => Ok(false),
+                Some(Value::Bool(b)) => Ok(*b),
+                Some(_) => Err(bad(&format!("{key} must be true or false"))),
+            };
+            Ok(pdfcraft_engine::text_style_bookmarks::TextStyle { font: font.to_string(), size, bold: flag("bold")?, italic: flag("italic")? })
         })
         .collect()
 }

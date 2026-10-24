@@ -734,6 +734,10 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                                     bm_action = Some(BmAction::FromStructure);
                                     ui.close();
                                 }
+                                if bm_editable && ui.button(tl!("New bookmarks from text styles…")).clicked() {
+                                    bm_action = Some(BmAction::FromTextStyles);
+                                    ui.close();
+                                }
                                 if !info.outline.is_empty() {
                                     for (levels, label) in [
                                         (usize::MAX, tl!("Expand all bookmarks")),
@@ -1048,6 +1052,8 @@ pub enum BmAction {
     Outdent(Vec<usize>),
     /// Bookmarks from the tagged headings, under a new first "Untitled" bookmark.
     FromStructure,
+    /// Open New bookmarks from text styles, to choose a style per bookmark level (#1693).
+    FromTextStyles,
 }
 
 /// Matching titles plus their ancestors, keeping document paths rather than filtered indexes.
