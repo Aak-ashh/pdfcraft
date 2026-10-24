@@ -2657,3 +2657,64 @@ fn text_comments_can_save_a_zero_width_default() {
     assert_eq!(restored.comment_prefs.style(CommentTool::TextBox).width, 0.0);
     assert_eq!(restored.comment_prefs.style(CommentTool::Callout).width, 0.0);
 }
+
+/// Moving a rectangle or an oval showed only its blue frame going while the shape stayed where
+/// it was until release. Now the comment itself is drawn where it goes (the page beneath shows it
+/// where it was until the move is applied), and the pointer frames change nothing.
+#[test]
+fn a_moved_comment_is_drawn_where_it_goes_before_release() {
+    let _gpu = crate::gpu();
+    let mut h = harness(|_| {});
+    let id = h.state().views[0].id;
+    for shape in
+        [pdfcraft_engine::Shape::Rectangle { rect: [30.0, 30.0, 70.0, 70.0] }, pdfcraft_engine::Shape::Oval { rect: [230.0, 30.0, 270.0, 70.0] }]
+    {
+        let style = pdfcraft_engine::Style { color: [1.0, 0.0, 0.0], opacity: 1.0, width: 2.0, fill: Some([1.0, 0.0, 0.0]) };
+        assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::AddAnnotation(pdfcraft_engine::NewAnnotation {
+            page: 0,
+            shape,
+            style,
+            contents: String::new(),
+            author: "Tester".into(),
+        })));
+    }
+    h.state_mut().views[0].comments.selected = None;
+    crate::support::settle(&mut h);
+    let red = |v: [u8; 4]| v[0] > 200 && v[1] < 80 && v[2] < 80;
+    for ((x, y), (tx, ty)) in [((50.0, 50.0), (150.0, 120.0)), ((250.0, 50.0), (200.0, 150.0))] {
+        let generation = h.state().session.get(id).unwrap().edit_generation();
+        let (from, to) = (at(&h, x, y), at(&h, tx, ty));
+        // Beside the pointer, whose arrow is drawn over the page.
+        let (was, goes) = (at(&h, x - 10.0, y - 10.0), at(&h, tx - 10.0, ty - 10.0));
+        let px = |pixels: &image::RgbaImage, p: Pos2| pixels.get_pixel(p.x.round() as u32, p.y.round() as u32).0;
+        h.hover_at(from);
+        h.run_steps(1);
+        h.drag_at(from);
+        h.run_steps(1);
+        for k in 1..=4 {
+            h.hover_at(from + (to - from) * (k as f32 / 4.0));
+            h.run_steps(1);
+        }
+        let mut shown = false;
+        for _ in 0..100 {
+            h.run_steps(2);
+            let pixels = h.render().unwrap();
+            if red(px(&pixels, goes)) {
+                shown = true;
+                assert!(red(px(&pixels, was)), "the page still shows it where it was");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(shown, "the comment at ({x}, {y}) is drawn under the pointer before release");
+        assert_eq!(h.state().session.get(id).unwrap().edit_generation(), generation, "pointer frames never edit the document");
+        h.drop_at(to);
+        h.run_steps(3);
+        let doc = h.state().session.get(id).unwrap();
+        assert_eq!(doc.can_undo(), Some("Move comment"));
+        crate::support::settle(&mut h);
+        let pixels = h.render().unwrap();
+        assert!(!red(px(&pixels, was)), "once applied it is gone from where it was");
+        assert!(red(px(&pixels, goes)), "and shown where it went");
+    }
+}

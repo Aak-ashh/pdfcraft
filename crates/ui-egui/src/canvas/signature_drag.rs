@@ -1,5 +1,6 @@
 //! Cached page and stamp layers: a stamp (an image signature, a Fill & Sign mark, any other stamp)
-//! follows each pointer frame, moved or resized, without editing the PDF.
+//! follows each pointer frame, moved or resized, without editing the PDF. Any other comment
+//! follows the pointer while it is moved: its own layer is drawn where it goes.
 
 use egui::{ColorImage, TextureHandle, TextureOptions, pos2, vec2};
 use pdfcraft_engine::{Document, Edit};
@@ -16,6 +17,16 @@ pub(crate) struct SignatureDrag {
     key: Option<(u64, usize, usize)>,
     aspect_ratio: Option<f32>,
     layers: Option<Layers>,
+    /// The comment being moved that has no stamp layers: (edit generation, page, index), and
+    /// the comment alone, drawn over the page where it goes.
+    moving: Option<((u64, usize, usize), Moving)>,
+}
+
+struct Moving {
+    /// The comment's layer: `from` is its box when the move started.
+    layer: StampLayer,
+    /// Released and applied: keep it where it went until the page shows it there.
+    settling: bool,
 }
 
 struct Layers {
@@ -109,29 +120,14 @@ impl SignatureDrag {
         let mut pending = layers.received_tag != Some(tag);
         // The stamp itself is small: it stays sharp at every zoom.
         if let Front::Stamp(stamp) = &mut layers.front {
-            let Some((scale, tile)) = stamp_tile(p, stamp.from, scale) else {
+            match stamp.update(ctx, page, p, scale) {
+                Some(waiting) => pending |= waiting,
                 // Nothing to lay over the page: the frame alone follows the pointer, as before.
-                self.layers = None;
-                return;
-            };
-            let tag = (scale * 1000.0) as u64;
-            if stamp.tag != Some(tag) {
-                stamp.renderer.set_queue(vec![RenderRequest { page, scale, tag, tile: Some(tile), ..Default::default() }]);
-                stamp.tag = Some(tag);
-            }
-            if let Some(out) = stamp.renderer.try_recv()
-                && out.request.tag == tag
-            {
-                let (Some(t), None) = (out.request.tile, &out.error) else {
+                None => {
                     self.layers = None;
                     return;
-                };
-                let s = out.request.scale;
-                let area = [t.x as f32 / s, t.y as f32 / s, t.x.saturating_add(t.w) as f32 / s, t.y.saturating_add(t.h) as f32 / s];
-                let image = crate::canvas::texture_image([out.width as usize, out.height as usize], out.rgba);
-                stamp.pixels = Some((tag, ctx.load_texture("signature-drag-stamp", image, TextureOptions::LINEAR), area));
+                }
             }
-            pending |= stamp.pixels.as_ref().is_none_or(|(received, ..)| *received != tag);
         }
         if pending {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
@@ -150,6 +146,14 @@ impl SignatureDrag {
 
     /// Movement/resizing only change this stamp's geometry, so its layers are reusable.
     pub fn committed(&mut self, edit: &Edit, generation: u64) {
+        if let Some((key, m)) = self.moving.as_mut()
+            && matches!(edit, Edit::MoveAnnotation { page, index, .. } if (*page, *index) == (key.1, key.2))
+        {
+            key.0 = generation;
+            m.settling = true;
+        } else {
+            self.moving = None;
+        }
         if let Edit::MoveAnnotation { page, index, .. } | Edit::ResizeAnnotation { page, index, .. } = edit
             && self.contains(*page, *index)
         {
@@ -158,7 +162,7 @@ impl SignatureDrag {
                 layers.settling = true;
             }
         } else {
-            *self = Self::default();
+            *self = Self { moving: self.moving.take(), ..Self::default() };
         }
     }
 
@@ -199,26 +203,113 @@ impl SignatureDrag {
                 *turn,
                 egui::Color32::from_white_alpha((opacity * 255.0).round() as u8),
             ),
-            Front::Stamp(stamp) => {
-                let Some((_, texture, area)) = &stamp.pixels else { return };
-                // Where the stamp's pixels were rendered, stretched as its box is from `from` to `rect`.
-                let from = cx.xf.user_rect(cx.info, page, stamp.from);
-                if from.width() < 0.01 || from.height() < 0.01 {
-                    return;
-                }
-                let stretch = vec2(rect.width() / from.width(), rect.height() / from.height());
-                let mut mesh = egui::Mesh::with_texture(texture.id());
-                for (u, v) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
-                    let (x, y) = (area[0] + u * (area[2] - area[0]), area[1] + v * (area[3] - area[1]));
-                    let at = cx.xf.norm_to_screen(x / cx.xf.pw, y / cx.xf.ph);
-                    let pos = rect.min + (at - from.min) * stretch;
-                    mesh.vertices.push(egui::epaint::Vertex { pos, uv: pos2(u, v), color: egui::Color32::WHITE });
-                }
-                mesh.add_triangle(0, 1, 2);
-                mesh.add_triangle(0, 2, 3);
-                painter.add(egui::Shape::mesh(mesh));
-            }
+            Front::Stamp(stamp) => stamp.paint(&painter, cx, page, rect),
         }
+    }
+
+    /// The page of the comment being moved, whose raster [`Self::prepare_move`] asks about.
+    pub fn moving_page(&self) -> Option<usize> {
+        self.moving.as_ref().map(|((_, page, _), _)| *page)
+    }
+
+    /// While a comment without stamp layers is moved, its own layer: rendered when the move
+    /// starts, kept after release until the page's raster shows it where it went (`stale`: the
+    /// page is still drawn as before its last change).
+    pub fn prepare_move(&mut self, ctx: &egui::Context, doc: &Document, cv: &CommentView, pending: Option<&Edit>, stale: bool, scale: f32) {
+        let generation = doc.edit_generation();
+        let dragged = match cv.gesture {
+            Some(Gesture::Move { page, index, .. }) if !self.contains(page, index) => Some((generation, page, index)),
+            _ => None,
+        };
+        let keep = |key: (u64, usize, usize), m: &Moving| {
+            let (_, page, index) = key;
+            dragged == Some(key)
+                || matches!(pending, Some(Edit::MoveAnnotation { page: p, index: i, .. }) if (*p, *i) == (page, index))
+                || m.settling && stale
+        };
+        if self.moving.as_ref().is_some_and(|(key, m)| !keep(*key, m)) {
+            self.moving = None;
+        }
+        if self.moving.is_none()
+            && let Some(key @ (_, page, index)) = dragged
+            && let Some(a) = doc.info.annotations.iter().find(|a| a.page == page && a.index == index && !a.locked)
+            && let Ok(Some(alone)) = doc.comment_layer(page, &[index])
+        {
+            let layer = StampLayer { renderer: alone.renderer(), from: a.rect, tag: None, pixels: None };
+            self.moving = Some((key, Moving { layer, settling: false }));
+        }
+        let Some(((_, page, _), m)) = self.moving.as_mut() else { return };
+        let Some(p) = doc.info.pages.get(*page) else { return };
+        match m.layer.update(ctx, *page, p, scale) {
+            Some(pending) => {
+                if pending {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                }
+            }
+            // Nothing to lay over the page: the frame alone follows the pointer, as before.
+            None => self.moving = None,
+        }
+    }
+
+    /// The comment being moved, drawn where it goes (as far as its frame has gone).
+    pub fn paint_move(&self, painter: &egui::Painter, cx: &PageCx<'_>, cv: &CommentView, pending: Option<&Edit>) {
+        let Some(((_, page, index), m)) = &self.moving else { return };
+        if *page != cx.page || cx.hidden {
+            return;
+        }
+        let Some(a) = cx.get(*index) else { return };
+        let (pointer, shift) = painter.ctx().input(|i| (i.pointer.hover_pos(), i.modifiers.shift));
+        // As far as its frame has gone from where the move started (once applied, its box is
+        // already where it went).
+        let rect = cx.adjusted_rect(a, cv.gesture.as_ref(), pointer, shift, pending);
+        let from = cx.xf.user_rect(cx.info, *page, m.layer.from);
+        let painter = painter.with_clip_rect(painter.clip_rect().intersect(cx.xf.rect));
+        m.layer.paint(&painter, cx, *page, from.translate(rect.min - from.min));
+    }
+}
+
+impl StampLayer {
+    /// Render the layer's tile at `scale` (or less, within [`MAX_STAMP_SIDE`]) and take it when
+    /// it arrives. `Some(true)` while the pixels at this scale are still on their way, `None`
+    /// when there is nothing to draw.
+    fn update(&mut self, ctx: &egui::Context, page: usize, p: &PageInfo, scale: f32) -> Option<bool> {
+        let (scale, tile) = stamp_tile(p, self.from, scale)?;
+        let tag = (scale * 1000.0) as u64;
+        if self.tag != Some(tag) {
+            self.renderer.set_queue(vec![RenderRequest { page, scale, tag, tile: Some(tile), ..Default::default() }]);
+            self.tag = Some(tag);
+        }
+        if let Some(out) = self.renderer.try_recv()
+            && out.request.tag == tag
+        {
+            let (Some(t), None) = (out.request.tile, &out.error) else { return None };
+            let s = out.request.scale;
+            let area = [t.x as f32 / s, t.y as f32 / s, t.x.saturating_add(t.w) as f32 / s, t.y.saturating_add(t.h) as f32 / s];
+            let image = crate::canvas::texture_image([out.width as usize, out.height as usize], out.rgba);
+            self.pixels = Some((tag, ctx.load_texture("signature-drag-stamp", image, TextureOptions::LINEAR), area));
+        }
+        Some(self.pixels.as_ref().is_none_or(|(received, ..)| *received != tag))
+    }
+
+    /// The layer's pixels where its box goes on screen, `rect`: moved, and stretched as its box
+    /// is from `from` to `rect`.
+    fn paint(&self, painter: &egui::Painter, cx: &PageCx<'_>, page: usize, rect: egui::Rect) {
+        let Some((_, texture, area)) = &self.pixels else { return };
+        let from = cx.xf.user_rect(cx.info, page, self.from);
+        if from.width() < 0.01 || from.height() < 0.01 {
+            return;
+        }
+        let stretch = vec2(rect.width() / from.width(), rect.height() / from.height());
+        let mut mesh = egui::Mesh::with_texture(texture.id());
+        for (u, v) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+            let (x, y) = (area[0] + u * (area[2] - area[0]), area[1] + v * (area[3] - area[1]));
+            let at = cx.xf.norm_to_screen(x / cx.xf.pw, y / cx.xf.ph);
+            let pos = rect.min + (at - from.min) * stretch;
+            mesh.vertices.push(egui::epaint::Vertex { pos, uv: pos2(u, v), color: egui::Color32::WHITE });
+        }
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        painter.add(egui::Shape::mesh(mesh));
     }
 }
 
