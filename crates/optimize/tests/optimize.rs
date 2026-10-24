@@ -475,9 +475,10 @@ fn group_4_takes_images_of_one_bit_a_pixel_up_to_the_pixel_limit() {
 /// An image whose /DecodeParms are a reference, or hold numbers given by reference
 /// (`/Predictor 9 0 R`, which `Dict::int` doesn't follow), is read through them, as one with them
 /// direct: a predictor's tag bytes would otherwise shift every row, and the image would be stored
-/// again wrong. Here a 1-bit image with a PNG predictor (stored again as Group 4) and an eight-bit
-/// grey one with a PNG predictor at 600 ppi (resampled) come out byte for byte as with direct
-/// parameters.
+/// again wrong. Here a 1-bit image with a PNG predictor (stored again as Group 4), an eight-bit
+/// grey one with a PNG predictor at 600 ppi (resampled), and an eight-bit one of only black and
+/// white with PNG predictor 10 (each row's tag a 0, so the shifted rows would still be black and
+/// white; packed to one bit) come out byte for byte as with direct parameters.
 #[test]
 fn images_whose_decode_parms_are_references_come_out_as_with_them_direct() {
     let build = |how: &str| {
@@ -485,6 +486,7 @@ fn images_whose_decode_parms_are_references_come_out_as_with_them_direct() {
         let (w, h) = (1200u32, 480u32);
         let grey = [("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))];
         let one_bit = mono_image(&mut doc, w, h, &bilevel(w, h, false), Some(15), &grey);
+        let black_and_white_samples = eight_bit(&bilevel(w, h, false), w, h);
         let shades: Vec<u8> = (0..w * h).map(|i| ((i % w) * 255 / w) as u8 ^ ((i / w) as u8 & 0x0F)).collect();
         let params = pdfcraft_filters::Params { predictor: 15, colors: 1, bits_per_component: 8, columns: w as i64, early_change: 1 };
         let mut parms = Dict::new();
@@ -500,8 +502,15 @@ fn images_whose_decode_parms_are_references_come_out_as_with_them_direct() {
         d.set(b"Filter".to_vec(), Object::name("FlateDecode"));
         d.set(b"DecodeParms".to_vec(), Object::Dict(parms));
         let coded = pdfcraft_filters::encode(&pdfcraft_filters::Filter::Flate, &params, &shades).unwrap();
-        let eight_bit = doc.add(Object::Stream(Stream::from_raw(d, coded)));
-        for r in [one_bit, eight_bit] {
+        let eight_bit = doc.add(Object::Stream(Stream::from_raw(d.clone(), coded)));
+        let params = pdfcraft_filters::Params { predictor: 10, ..params };
+        let mut parms = Dict::new();
+        parms.set(b"Predictor".to_vec(), Object::Int(10));
+        parms.set(b"Columns".to_vec(), Object::Int(w as i64));
+        d.set(b"DecodeParms".to_vec(), Object::Dict(parms));
+        let black_and_white = pdfcraft_filters::encode(&pdfcraft_filters::Filter::Flate, &params, &black_and_white_samples).unwrap();
+        let packed = doc.add(Object::Stream(Stream::from_raw(d, black_and_white)));
+        for r in [one_bit, eight_bit, packed] {
             let mut s = stream(&doc, r);
             let Some(Object::Dict(mut parms)) = s.dict.get(b"DecodeParms").cloned() else { panic!("{:?}", s.dict) };
             let made = match how {
@@ -519,13 +528,18 @@ fn images_whose_decode_parms_are_references_come_out_as_with_them_direct() {
             doc.set(r, Object::Stream(s));
         }
         // 300 × 120 pt is 288 ppi; 144 × 57.6 pt is 600 ppi.
-        page(&mut doc, &[("A", one_bit), ("B", eight_bit)], "q 300 0 0 120 20 600 cm /A Do Q q 144 0 0 57.6 20 400 cm /B Do Q");
-        let before = [one_bit, eight_bit].map(|r| stream(&doc, r).raw);
+        page(
+            &mut doc,
+            &[("A", one_bit), ("B", eight_bit), ("C", packed)],
+            "q 300 0 0 120 20 600 cm /A Do Q q 144 0 0 57.6 20 400 cm /B Do Q q 300 0 0 120 20 200 cm /C Do Q",
+        );
+        let before = [one_bit, eight_bit, packed].map(|r| stream(&doc, r).raw);
         let r = optimize(&mut doc, &Settings::default()).unwrap();
-        assert_eq!((r.images_resampled, r.images_recompressed), (1, 1), "{r:?}");
-        let after = [one_bit, eight_bit].map(|r| stream(&doc, r));
-        assert!(before.iter().zip(&after).all(|(b, a)| *b != a.raw), "both stored again");
+        assert_eq!((r.images_resampled, r.images_recompressed), (1, 2), "{r:?}");
+        let after = [one_bit, eight_bit, packed].map(|r| stream(&doc, r));
+        assert!(before.iter().zip(&after).all(|(b, a)| *b != a.raw), "all stored again");
         assert_eq!(after[0].dict.name(b"Filter"), Some(&b"CCITTFaxDecode"[..]));
+        assert_eq!((after[2].dict.int(b"BitsPerComponent"), after[2].dict.name(b"Filter")), (Some(1), Some(&b"CCITTFaxDecode"[..])));
         after.map(|s| s.raw)
     };
     let direct = build("direct");
