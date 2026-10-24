@@ -84,8 +84,10 @@ impl PdfCraftApp {
         if self.combine_showing() && matches!(spec.needs, commands::Needs::Undo | commands::Needs::Redo) {
             return self.combine_can_undo(spec.needs == commands::Needs::Undo);
         }
-        // Redo also takes back what Undo took in a box open on the page, with no document step.
+        // Undo also takes back typing in a box open on the page, and Redo what Undo took there,
+        // with no document step.
         (commands::is_enabled(spec, &self.session, self.active_ids().map(|(_, id)| id))
+            || spec.needs == commands::Needs::Undo && self.page_typing_unapplied()
             || spec.needs == commands::Needs::Redo && self.open_box_can_redo())
             && (spec.id != "edit.copy"
                 || self

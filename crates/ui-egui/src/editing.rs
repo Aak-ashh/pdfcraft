@@ -219,9 +219,29 @@ impl PdfCraftApp {
         }
         if self.combine_showing() {
             self.combine_history_step(true);
-        } else {
+        } else if !self.undo_in_page_box() {
             self.history_step(true);
         }
+    }
+
+    /// Undo from the menu or toolbar while a box on the page holds typing the page doesn't have
+    /// yet: the box takes the step, as it does for the key, one step of its typing at a time.
+    /// Applying the typing first was a new edit, which dropped the document's Redo, and then the
+    /// typing was taken back all at once. True when the box took the step.
+    fn undo_in_page_box(&mut self) -> bool {
+        let Some(ctx) = self.ctx.clone() else { return false };
+        let Some(view) = self.active.and_then(|i| self.views.get_mut(i)) else { return false };
+        if let Some(ed) = view.line_editor.as_mut().filter(|ed| ed.has_unsaved_text()) {
+            let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, true) else { return false };
+            ed.text = text;
+            return true;
+        }
+        if let Some(d) = view.content.draft.as_mut().filter(|d| d.has_unapplied_typing()) {
+            let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, true) else { return false };
+            d.text = text;
+            return true;
+        }
+        false
     }
 
     pub fn redo(&mut self) {
@@ -240,13 +260,13 @@ impl PdfCraftApp {
         let Some(ctx) = self.ctx.clone() else { return false };
         let Some(view) = self.active.and_then(|i| self.views.get_mut(i)) else { return false };
         if let Some(ed) = view.line_editor.as_mut() {
-            let Some(text) = redo_typing(&ctx, crate::edit_text_ui::input_id(), &ed.text) else { return ed.has_unsaved_text() };
+            let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, false) else { return ed.has_unsaved_text() };
             let before = std::mem::replace(&mut ed.text, text);
             ed.follow_rows(&before);
             return true;
         }
         if let Some(d) = view.content.draft.as_mut() {
-            let Some(text) = redo_typing(&ctx, crate::content_ui::input_id(), &d.text) else { return d.has_unapplied_typing() };
+            let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, false) else { return d.has_unapplied_typing() };
             d.style.aligns = pdfcraft_engine::paragraph_align::remap(&d.text, &text, &d.style.aligns);
             d.text = text;
             return true;
@@ -1143,18 +1163,6 @@ impl PdfCraftApp {
 
 /// The single page a content edit changes (`None` for other edits). Like comment edits,
 /// these leave every other page's bytes, geometry and text alone, so their rasters stay valid.
-/// What the page text box `id`, showing `text`, gets back from its own Redo history, if anything;
-/// its caret goes where the Redo puts it.
-fn redo_typing(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<String> {
-    let mut state = egui::TextEdit::load_state(ctx, id)?;
-    let mut undoer = state.undoer();
-    let (range, redone) = undoer.redo(&(state.cursor.char_range()?, text.to_owned()))?.clone();
-    state.set_undoer(undoer);
-    state.cursor.set_char_range(Some(range));
-    egui::TextEdit::store_state(ctx, id, state);
-    Some(redone)
-}
-
 fn content_page(edit: &Edit) -> Option<usize> {
     match edit {
         Edit::MoveObjects { page, .. }
@@ -1366,6 +1374,20 @@ fn has_typing_to_redo(ctx: &egui::Context, id: egui::Id, text: &str) -> bool {
     egui::TextEdit::load_state(ctx, id)
         .is_some_and(|state| state.cursor.char_range().is_some_and(|range| state.undoer().has_redo(&(range, text.to_owned()))))
 }
+
+/// The box's own Undo (or Redo), as the key does it: the box's text one step back (or forward) in
+/// its typing, with the box's history and cursor moved along. None when there is no such step.
+fn typing_step(ctx: &egui::Context, id: egui::Id, text: &str, undo: bool) -> Option<String> {
+    let mut state = egui::TextEdit::load_state(ctx, id)?;
+    let mut undoer = state.undoer();
+    let current = (state.cursor.char_range()?, text.to_owned());
+    let (range, stepped) = if undo { undoer.undo(&current) } else { undoer.redo(&current) }?.clone();
+    state.set_undoer(undoer);
+    state.cursor.set_char_range(Some(range));
+    egui::TextEdit::store_state(ctx, id, state);
+    Some(stepped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SaveTarget, is_mail_temp_copy, save_dialog_folder, write_atomically, write_atomically_syncing, write_atomically_with};
