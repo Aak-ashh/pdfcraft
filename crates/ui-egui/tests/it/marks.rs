@@ -216,6 +216,38 @@ fn the_background_dialog_offers_to_replace_a_white_backdrop_and_warns_about_scan
     assert_eq!(backdrop(&h, 0), None, "Update keeps the backdrop replaced");
 }
 
+/// The preview shows what OK will do to each page: the colour on bare paper and on a page whose
+/// white backdrop is replaced, none on a scan, and none on that page with Replace unticked.
+#[test]
+fn the_background_preview_follows_the_replace_checkbox() {
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("doc.pdf", None, backdrop_fixture()).unwrap();
+        app
+    });
+    h.run_steps(4);
+    assert!(h.state_mut().execute("edit.background"));
+    h.run_steps(3);
+    let replace = "Page 1 paints its own white backdrop, which would hide the background. Replace it";
+    h.get_by_label(replace);
+    let [red, green, blue] = pdfcraft_engine::Background::default().color.map(|c| (c * 255.0).round() as u8);
+    let colour = egui::Color32::from_rgb(red, green, blue);
+    let tint = |h: &mut Harness<'static, PdfCraftApp>, page: usize| {
+        h.state_mut().marks_draft.preview = Some(page);
+        h.run_steps(2);
+        wait_for_picture(h, page).2
+    };
+    assert_eq!(tint(&mut h, 0), colour, "page 1's backdrop is replaced, so the colour shows");
+    assert_eq!(tint(&mut h, 1), egui::Color32::WHITE, "a picture covers page 2");
+    assert_eq!(tint(&mut h, 2), colour, "page 3 is bare paper");
+    h.get_by_label(replace).click();
+    h.run_steps(2);
+    assert!(!h.state().marks_draft.bg.replace_backdrop);
+    assert_eq!(tint(&mut h, 0), egui::Color32::WHITE, "unticked, page 1 keeps its backdrop, which hides the colour");
+    assert_eq!(tint(&mut h, 2), colour, "page 3 has no backdrop to keep");
+}
+
 /// Remove background says which pages keep their own white backdrop off: here one whose
 /// backdrop copy changed before the fill since the background replaced it.
 #[test]

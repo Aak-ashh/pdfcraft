@@ -138,6 +138,15 @@ impl BackdropCheck {
         }
         n
     }
+
+    /// What the check found on `page` (0-based) of this version of `doc`: `None` until it has
+    /// looked, `Some(None)` for a page with no backdrop of its own.
+    pub fn found(&self, doc: &pdfcraft_engine::Document, page: usize) -> Option<Option<Backdrop>> {
+        if self.key != Some((doc.id, doc.edit_generation())) {
+            return None;
+        }
+        self.pages.get(page).copied().flatten()
+    }
 }
 
 impl MarksDraft {
@@ -277,6 +286,19 @@ fn rgb32(c: [f64; 3]) -> Color32 {
 fn behind(color: [f64; 3], opacity: f64) -> Color32 {
     let a = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
     rgb32(color.map(|c| 1.0 - a * (1.0 - c)))
+}
+
+/// The preview's tint for a background colour on a page whose own backdrop is `found` (`None`
+/// when it has none, or the check hasn't reached it): no colour where the page will still hide
+/// the background after OK, because a picture covers it (a scan) or it keeps its white backdrop
+/// with Replace unticked.
+fn background_tint(d: &MarksDraft, found: Option<Backdrop>) -> Color32 {
+    let hidden = match found {
+        Some(Backdrop::Image) => true,
+        Some(Backdrop::Fill) => !d.bg.replace_backdrop,
+        None => false,
+    };
+    if hidden { Color32::WHITE } else { behind(d.bg.color, d.bg.opacity) }
 }
 
 /// The page (0-based) the preview shows: the current one when the range selects it, otherwise the
@@ -487,7 +509,8 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens, kind: M
         view.need_thumbnail(target, true);
         view.thumb_id(target)
     });
-    let tint = if kind == MarkKind::Background && !d.use_file { behind(d.bg.color, d.bg.opacity) } else { Color32::WHITE };
+    let tint =
+        if kind == MarkKind::Background && !d.use_file { background_tint(d, d.backdrops.found(doc, target).flatten()) } else { Color32::WHITE };
     let hf = d.hf.clone();
     let size_h = page.1.max(1.0);
     let (wm, fit) = (d.wm.clone(), d.fit);
@@ -823,6 +846,19 @@ mod tests {
         assert_eq!(behind([1.0, 0.0, 0.0], 0.0), Color32::WHITE);
         assert_eq!(behind([0.0, 0.0, 0.0], 0.5), Color32::from_rgb(128, 128, 128));
         assert_eq!(behind([0.2, 0.4, 0.6], f64::NAN), behind([0.2, 0.4, 0.6], 1.0), "opaque, as the engine has it");
+    }
+
+    #[test]
+    fn the_preview_shows_a_background_only_where_ok_lets_it_show() {
+        let mut d = MarksDraft::default();
+        let colour = behind(d.bg.color, d.bg.opacity);
+        assert_ne!(colour, Color32::WHITE);
+        assert_eq!(background_tint(&d, None), colour, "no backdrop of its own");
+        assert_eq!(background_tint(&d, Some(Backdrop::Fill)), colour, "its white backdrop is replaced");
+        assert_eq!(background_tint(&d, Some(Backdrop::Image)), Color32::WHITE, "a picture covers it");
+        d.bg.replace_backdrop = false;
+        assert_eq!(background_tint(&d, Some(Backdrop::Fill)), Color32::WHITE, "its white backdrop stays and hides it");
+        assert_eq!(background_tint(&d, None), colour, "unticked changes nothing without a backdrop");
     }
 
     #[test]
