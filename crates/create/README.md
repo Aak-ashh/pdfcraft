@@ -34,4 +34,4 @@ The existing 16-bit path still uses each sample's high byte.
 JPEG image Decode handling remains limited.
 ICC transforms and calibrated color conversion remain outside this export path.
 CCITT fax images (Group 3 and 4) are decoded for export through `hayro-ccitt` with their `/DecodeParms`
-(`/Columns` has to be the image's width); JPEG 2000 and JBIG2 images are still reported, not exported.
+(`/Columns` has to be the image's width), behind other filters such as `ASCII85Decode` too; JPEG 2000 and JBIG2 images are still reported, not exported.
