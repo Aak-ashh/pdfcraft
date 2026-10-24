@@ -1893,7 +1893,15 @@ mod revert_draft_tests {
     fn text_typed_into_a_new_text_box_counts_as_unsaved_work() {
         use crate::content_ui::{TextDraft, default_style};
         let mut app = app();
-        let draft = |text: &str| TextDraft { page: 0, index: None, rect: [0.0; 4], text: text.into(), style: default_style(), focus: true, typing_from: None };
+        let draft = |text: &str| TextDraft {
+            page: 0,
+            index: None,
+            rect: [0.0; 4],
+            text: text.into(),
+            style: default_style(),
+            focus: true,
+            typing_from: None,
+        };
         assert!(!app.has_unsaved_work(0));
         app.views[0].content.draft = Some(draft("  \n"));
         assert!(!app.has_unsaved_work(0));
@@ -1918,7 +1926,8 @@ mod revert_draft_tests {
             let mut app = PdfCraftApp::new();
             app.open_bytes("source.pdf", Some(path.clone()), bytes).unwrap();
             let rect = [72.0, 72.0, 272.0, 92.0];
-            app.views[0].content.draft = Some(TextDraft { page: 0, index: None, rect, text: "Typed".into(), style: default_style(), focus: true, typing_from: None });
+            app.views[0].content.draft =
+                Some(TextDraft { page: 0, index: None, rect, text: "Typed".into(), style: default_style(), focus: true, typing_from: None });
             let ctx = egui::Context::default();
             if quit {
                 assert!(!app.request_quit(&ctx));
