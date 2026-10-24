@@ -6383,6 +6383,29 @@ fn redo_from_the_menu_with_typing_in_the_box_keeps_the_documents_redo() {
     assert_eq!(s.session.get(s.views[0].id).unwrap().can_redo(), Some("Edit text"), "the document's Redo still waits");
 }
 
+/// Redo from the menu after Undo in the box took the typing back, with nothing for the document
+/// to redo: the menu item follows the box's own Redo too, and puts the typing back. It was
+/// disabled, as it followed only the document's Redo, and only the key could do it.
+#[test]
+fn redo_from_the_menu_is_enabled_for_the_boxs_own_typing() {
+    let mut h = harness(1, |_| {});
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    open_paragraph(&mut h);
+    let original = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.event(egui::Event::Text(" more".into()));
+    h.run_steps(2);
+    let typed = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(3);
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().text, original, "the typing is taken back");
+    assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().can_redo(), None, "the document has nothing to redo");
+    assert!(h.state_mut().execute("edit.redo"), "Redo is enabled for the box's own step");
+    h.run_steps(3);
+    assert_eq!(h.state().views[0].line_editor.as_ref().expect("still open").text, typed, "Redo puts the typing back");
+}
+
 /// Two copies of a document, the same paragraph open in each. The paragraph boxes share one text
 /// box, and so one Undo history: a box opened on the same text as another tab's didn't clear it.
 /// Typing in one tab, taken back with Undo, then came back with Redo in the other tab.

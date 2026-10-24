@@ -331,8 +331,19 @@ impl PdfCraftApp {
         } else {
             return false;
         };
-        egui::TextEdit::load_state(ctx, id)
-            .is_some_and(|state| state.cursor.char_range().is_some_and(|range| state.undoer().has_redo(&(range, text.clone()))))
+        has_typing_to_redo(ctx, id, text)
+    }
+
+    /// Whether the box open on the page has a Redo of its own, the step
+    /// [`Self::redo_in_page_box`] takes for Redo from the menu or toolbar: focus has moved to the
+    /// menu by then, so unlike [`Self::page_box_can_redo`] this doesn't ask for it.
+    pub(crate) fn open_box_can_redo(&self) -> bool {
+        let Some(ctx) = &self.ctx else { return false };
+        let Some(view) = self.active.and_then(|i| self.views.get(i)) else { return false };
+        if let Some(ed) = &view.line_editor {
+            return has_typing_to_redo(ctx, crate::edit_text_ui::input_id(), &ed.text);
+        }
+        view.content.draft.as_ref().is_some_and(|d| has_typing_to_redo(ctx, crate::content_ui::input_id(), &d.text))
     }
 
     /// Typing in a box on the page (a paragraph being edited, added text) that the page doesn't
@@ -1327,6 +1338,13 @@ fn bookmark_at<'a>(items: &'a [pdfcraft_render::OutlineItem], path: &[usize]) ->
     let (first, rest) = path.split_first()?;
     let item = items.get(*first)?;
     if rest.is_empty() { Some(item) } else { bookmark_at(&item.children, rest) }
+}
+
+/// Whether the page text box `id`, showing `text`, has typing its own Redo would put back: the
+/// test egui makes when it handles the key.
+fn has_typing_to_redo(ctx: &egui::Context, id: egui::Id, text: &str) -> bool {
+    egui::TextEdit::load_state(ctx, id)
+        .is_some_and(|state| state.cursor.char_range().is_some_and(|range| state.undoer().has_redo(&(range, text.to_owned()))))
 }
 
 /// The box's own Redo, as the key does it: the typing Undo took back, put back in the box's text,
