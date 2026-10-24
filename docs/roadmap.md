@@ -2,6 +2,7 @@
 
 > **Last reviewed:** 2026-10-27 | **Last updated:** 2026-10-27 | **Change:** minor (M10: OCR model downloads use verified ONNX pairs with legacy discovery fallback; estimates unchanged)
 > **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M14 localization current state: Arabic logical catalog, explicit RTL label direction and mirrored stock chrome; native/browser RTL workflows unqualified. Native release Hans face via LXGW WenKai Lite; estimates unchanged)
+> **Last reviewed:** 2026-10-24 · **Last updated:** 2026-10-24 · **Change:** minor (M11: the optimizer stores Group 3 fax images as Group 4, and packs black-and-white RGB and two-entry indexed images to one bit; estimates unchanged)
 > **Last reviewed:** 2026-10-24 · **Last updated:** 2026-10-24 · **Change:** minor (M11: black-and-white images above 450 ppi are averaged down to 300 ppi by the optimizer; estimates unchanged)
 > **Last reviewed:** 2026-10-24 · **Last updated:** 2026-10-24 · **Change:** minor (M11: black-and-white pictures stay one bit when PDFs are created and optimized; CCITT images export; estimates unchanged)
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M11: the PDF Optimizer and Reduce File Size store black-and-white images as CCITT Group 4 when smaller; estimates unchanged)
@@ -258,6 +259,7 @@ Estimates unchanged.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-24 | minor | M11: the PDF Optimizer and Reduce File Size store Group 3 fax images as Group 4 when smaller (`Document::fax_params`), and pack eight-bit `DeviceRGB` of only black and white (as grey) and indexed images of 2, 4 or 8 bits that use only palette entries 0 and 1 (keeping the palette) to one bit, so Monochrome Images compresses and downsamples them. Estimates unchanged. |
 | 2026-10-24 | minor | M11: monochrome downsampling: the PDF Optimizer and Reduce File Size average black-and-white images (1-bit, CCITT fax, eight-bit black-and-white grey) above 450 ppi down to 300 ppi, by area with ties black, as Monochrome Images ▸ Downsample to and `doc_optimize` `mono: { downsample, ppi, above_ppi }`; CCITT decoding moves into `pdfcraft-filters` (`decode_ccitt`) behind `Document::decoded_image`. Estimates unchanged. |
 | 2026-10-24 | minor | M11: Create PDF stores pictures of only black and white at one bit (Group 4 or Flate, whichever is smaller) instead of eight-bit grey; the optimizer packs eight-bit black-and-white grey images to one bit before Monochrome Images compresses them, unless the grey settings make them smaller, as they can a dithered scan, soft mask counted; Export ▸ Images decodes CCITT fax images. Estimates unchanged. |
 | 2026-10-23 | minor | M11: black-and-white images (1-bit, and image masks) are stored losslessly as CCITT Group 4 when that is smaller: PDF Optimizer ▸ Images ▸ Monochrome Images (on by default, so Reduce File Size too), `doc_optimize` `mono`; `pdfcraft_filters::encode_g4`. JBIG2 and monochrome downsampling not yet. Estimates unchanged. |
