@@ -1,5 +1,41 @@
 use super::*;
 
+/// /DecodeParms given by reference, whole or as array entries, are read once made direct: here a
+/// Flate predictor, which the stream alone doesn't see. Only the entries the filters use are
+/// resolved, and nothing is for a chain longer than a decoder takes.
+#[test]
+fn decode_parms_given_by_reference_are_read_once_direct() {
+    let rows = [1u8, 2, 3, 4, 5, 6, 7, 8];
+    let params = pdfcraft_filters::Params { predictor: 12, colors: 1, bits_per_component: 8, columns: 4, early_change: 1 };
+    let coded = pdfcraft_filters::encode(&pdfcraft_filters::Filter::Flate, &params, &rows).unwrap();
+    let mut parms = Dict::new();
+    parms.set(b"Predictor".to_vec(), Object::Int(12));
+    parms.set(b"Columns".to_vec(), Object::Int(4));
+    let mut doc = Document::new_empty();
+    let r = doc.add(Object::Dict(parms.clone()));
+    let array = doc.add(Object::Array(vec![Object::Ref(r)]));
+    let stream = |filters: usize, p: Object| {
+        let mut d = Dict::new();
+        d.set(b"Filter".to_vec(), Object::Array(vec![Object::name("FlateDecode"); filters]));
+        d.set(b"DecodeParms".to_vec(), p);
+        Stream::from_raw(d, coded.clone())
+    };
+    for p in [Object::Ref(r), Object::Array(vec![Object::Ref(r)]), Object::Ref(array)] {
+        let s = stream(1, p.clone());
+        assert_ne!(s.decoded().unwrap(), rows, "{p:?} read as it is");
+        assert_eq!(doc.with_direct_parms(&s).decoded().unwrap(), rows, "{p:?}");
+    }
+    let direct = stream(1, Object::Dict(parms));
+    assert!(matches!(doc.with_direct_parms(&direct), Cow::Borrowed(_)), "nothing to resolve");
+    assert_eq!(direct.decoded().unwrap(), rows);
+    // Entries past the filters' are left out, unresolved; so is everything past the chain limit.
+    let many = stream(1, Object::Array(vec![Object::Ref(r); 1000]));
+    let made = doc.with_direct_parms(&many);
+    assert_eq!(made.dict.get(b"DecodeParms").and_then(Object::as_array).map(Vec::len), Some(1));
+    let long = stream(pdfcraft_filters::MAX_CHAIN + 1, Object::Array(vec![Object::Ref(r); 9]));
+    assert!(matches!(doc.with_direct_parms(&long), Cow::Borrowed(_)));
+}
+
 #[test]
 fn a_read_state_matches_a_clone_and_no_changed_document() {
     let mut doc = Document::new_empty();

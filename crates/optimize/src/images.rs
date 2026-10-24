@@ -258,7 +258,9 @@ fn count_decoded(_n: u64) {
     DECODED_PIXELS.with(|c| c.set(c.get().saturating_add(_n)));
 }
 
-/// 8-bit samples of an image (`n` components), decoded. `None` for a JPEG whose colour transform
+/// 8-bit samples of an image (`n` components), decoded, with `/DecodeParms` given by reference
+/// too ([`Document::with_direct_parms`]): read without them, a predictor's tag bytes would shift
+/// every row, and the image would be written back wrong. `None` for a JPEG whose colour transform
 /// readers may disagree about ([`ycc_encoded`]).
 pub(crate) fn pixels(doc: &Document, s: &Stream, n: usize) -> Option<Vec<u8>> {
     let (w, h) = (u32::try_from(s.dict.int(b"Width")?).ok()?, u32::try_from(s.dict.int(b"Height")?).ok()?);
@@ -275,7 +277,7 @@ pub(crate) fn pixels(doc: &Document, s: &Stream, n: usize) -> Option<Vec<u8>> {
         count_decoded(u64::from(w) * u64::from(h));
         (v.len() == bytes).then_some(v)
     } else {
-        let v = s.decoded().ok()?;
+        let v = doc.with_direct_parms(s).decoded().ok()?;
         Some(v.get(..bytes)?.to_vec())
     }
 }
@@ -573,7 +575,8 @@ fn mono(doc: &Document, s: &Stream, compression: MonoCompression) -> Option<Stre
     if w == 0 || h == 0 || w > pdfcraft_filters::MAX_G4_COLUMNS || u64::from(w) * u64::from(h) > MAX_PIXELS {
         return None;
     }
-    let g4 = pdfcraft_filters::encode_g4(&s.decoded().ok()?, w, h).ok()?;
+    // Through its parameters given by reference too, as `pixels` reads.
+    let g4 = pdfcraft_filters::encode_g4(&doc.with_direct_parms(s).decoded().ok()?, w, h).ok()?;
     let mut new = d.clone();
     for k in [&b"Filter"[..], b"DecodeParms", b"Length", b"DL"] {
         new.remove(k);

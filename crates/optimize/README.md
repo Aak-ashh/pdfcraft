@@ -31,7 +31,9 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   image masks, decode arrays, more than 8 bits, JPEG 2000, JBIG2 and CCITT. A JPEG is read with
   its colour transform (an Adobe marker's, else `/ColorTransform`, ISO 32000-2 §7.4.8), so one
   stored untransformed keeps its colours; one whose marker and `/ColorTransform` disagree is left
-  alone, since readers differ on which wins.
+  alone, since readers differ on which wins. Samples are read with `/DecodeParms` given by
+  reference too (`Document::with_direct_parms`), here and below: without them a predictor's tag
+  bytes would shift every row of an image written back.
 - **Monochrome images** (`Settings::mono`, CCITT Group 4 by default): a 1-bit image with one
   colour component (grey, indexed, a separation) or an image mask, stored with no filter or with
   general-purpose ones, is stored again as CCITT Group 4 (`pdfcraft_filters::encode_g4`) when

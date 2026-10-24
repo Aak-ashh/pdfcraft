@@ -1,7 +1,7 @@
 use super::reader::find;
 use super::state::{LENGTHS, LoadGuard, ObjStm, ObjectReader, ReadState, Slot, SourceIdentity, objstm_member, owned_bytes};
 use super::xref::{Revision, XrefEntry};
-use super::{Arc, CosError, Dict, Document, Lexer, ObjRef, Object, is_whitespace, parse_indirect_shared};
+use super::{Arc, CosError, Cow, Dict, Document, Lexer, ObjRef, Object, Stream, is_whitespace, parse_indirect_shared};
 
 impl Document {
     pub fn bytes(&self) -> &Arc<Vec<u8>> {
@@ -156,6 +156,39 @@ impl Document {
             Object::Ref(r) => self.get(*r),
             other => Arc::new(other.clone()),
         }
+    }
+
+    /// `s` with the `/DecodeParms` its filters use made direct, so [`Stream::decoded`] reads them:
+    /// an indirect dictionary resolved, and of an array (itself perhaps indirect), the entries at
+    /// the filters' places (`/Crypt` counts, ISO 32000-2 §7.4.1) resolved, the rest dropped. `s`
+    /// itself when none of those is indirect, or when the chain is longer than any decoder takes
+    /// ([`pdfcraft_filters::MAX_CHAIN`]), so at most that many objects are copied.
+    pub fn with_direct_parms<'s>(&self, s: &'s Stream) -> Cow<'s, Stream> {
+        let Some(p) = s.dict.get(b"DecodeParms") else { return Cow::Borrowed(s) };
+        let filters = match s.dict.get(b"Filter") {
+            Some(Object::Array(a)) => a.len(),
+            Some(_) => 1,
+            None => 0,
+        };
+        if filters > pdfcraft_filters::MAX_CHAIN {
+            return Cow::Borrowed(s);
+        }
+        let whole = matches!(p, Object::Ref(_));
+        let resolved = self.resolve(p);
+        let direct = match &*resolved {
+            Object::Array(a) => {
+                let used = a.get(..filters.min(a.len())).unwrap_or_default();
+                if !whole && !used.iter().any(|e| matches!(e, Object::Ref(_))) {
+                    return Cow::Borrowed(s);
+                }
+                Object::Array(used.iter().map(|e| (*self.resolve(e)).clone()).collect())
+            }
+            other if whole => other.clone(),
+            _ => return Cow::Borrowed(s),
+        };
+        let mut s = s.clone();
+        s.dict.set(b"DecodeParms".to_vec(), direct);
+        Cow::Owned(s)
     }
 
     /// Resolve and return a dictionary (a stream's dictionary counts).
