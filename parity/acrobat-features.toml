@@ -783,7 +783,7 @@ status = "partial"
 commands = []
 tools = []
 evidence = []
-notes = "hayro bootstrap with vendored patches"
+notes = "hayro bootstrap with vendored patches. Text rendering modes follow ISO 32000-2 §9.3.6 for Type 3 fonts: 3 and 7 render nothing, the others render the glyph descriptions filled (never stroked), and 4 to 7 add nothing to the clipping path (hayro-interpret patches 42 and 64). Coverage is synthetic fixtures; no fidelity comparison across a Type 3 corpus yet"
 
 [[feature]]
 id = "view.render-cid-fonts"
@@ -3935,6 +3935,18 @@ evidence = ["crates/ui-egui/tests/it/comments.rs::make_current_properties_defaul
 notes = "colour, opacity and line width become the tool's defaults (canvas and Comments panel menus, and Acrobat's Make Properties Default box in Comment Properties, applied on OK with the edited look) and survive a restart: the per-tool styles are persisted with the settings and restored through their clamping setters (#340)"
 
 [[feature]]
+id = "comment.keep-tool-selected"
+title = "Keep annotation tools selected between uses and restarts"
+area = "E"
+tier = "P2"
+milestone = "M14"
+status = "shipped"
+commands = ["comment.line"]
+tools = []
+evidence = ["crates/ui-egui/tests/it/comment_pin.rs::pin_from_quick_bar_survives_restart_and_unpinning", "crates/ui-egui/tests/it/comment_pin.rs::legacy_settings_keep_the_default_and_other_preferences", "crates/ui-egui/tests/it/comment_pin.rs::malformed_pin_values_preserve_the_current_choice", "crates/ui-egui/tests/it/control.rs::comment_pin_is_reported_and_persistent"]
+notes = "The annotation quick bar's shared pin survives restarts as a boolean setting (#4253); unpinning is remembered too. Old settings default to one-shot use, and malformed values keep the current choice. UI-only preference, reachable through opt-in ui.set key=comment-tool-pinned and reported by ui.state.comment_tool_pinned. Startup uses Select; the shared pin applies when an annotation tool is picked. Independent per-tool pins and restoring the active tool are outside this preference."
+
+[[feature]]
 id = "comment.author-identity"
 title = "Author name from identity preferences"
 area = "E"
@@ -4499,8 +4511,8 @@ milestone = "M6"
 status = "shipped"
 commands = ["form.fields"]
 tools = ["form_fill"]
-evidence = ["crates/ui-egui/tests/it/forms.rs::check_boxes_radios_and_choices", "crates/forms/src/tests.rs::choices_accept_exports_or_display_text"]
-notes = "combo and list boxes, multi-select lists; editable combo boxes accept free text"
+evidence = ["crates/ui-egui/tests/it/forms.rs::check_boxes_radios_and_choices", "crates/forms/src/tests.rs::choices_accept_exports_or_display_text", "crates/ui-egui/tests/it/forms.rs::an_editable_combo_box_takes_a_typed_value", "crates/ui-egui/tests/it/forms.rs::a_combo_box_without_edit_takes_no_typing", "crates/automation/tests/it/automation.rs::form_fill_takes_free_text_only_in_an_editable_combo_box"]
+notes = "combo and list boxes, multi-select lists; an editable combo box (Edit flag) has a text box over the field as well as its list, and takes typed text on the page and through form_fill; a combo box without Edit takes only its options. No type-ahead or spell check in the typed box"
 
 [[feature]]
 id = "form.push-buttons"
