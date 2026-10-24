@@ -1,7 +1,7 @@
 use super::reader::find;
 use super::state::{LENGTHS, LoadGuard, ObjStm, ObjectReader, ReadState, Slot, SourceIdentity, objstm_member, owned_bytes};
 use super::xref::{Revision, XrefEntry};
-use super::{Arc, CosError, Cow, Dict, Document, Lexer, ObjRef, Object, Stream, is_whitespace, parse_indirect_shared};
+use super::{Arc, CosError, Cow, Dict, Document, Lexer, MAX_DECODED, ObjRef, Object, Stream, is_whitespace, parse_indirect_shared};
 
 impl Document {
     pub fn bytes(&self) -> &Arc<Vec<u8>> {
@@ -222,6 +222,60 @@ impl Document {
     /// Resolve and return a dictionary (a stream's dictionary counts).
     pub fn dict(&self, o: &Object) -> Option<Dict> {
         self.resolve(o).as_dict().cloned()
+    }
+
+    /// The samples of image `s`, decoded: through its filters ([`Stream::decoded`]), or, for a
+    /// CCITT fax image (its last filter), through the filters before it and then
+    /// [`pdfcraft_filters::decode_ccitt`] with its `/DecodeParms` (resolved; the dictionary of a
+    /// lone filter, or its entry in an array), as `CCITTFaxDecode` gives them (ISO 32000-2 §7.4.6).
+    /// Parameters given by reference count, for every filter ([`Document::with_direct_parms`]).
+    /// A fax image's `/Columns` has to be its `/Width`. Up to its `/Height` rows are decoded,
+    /// whatever `/Rows` says, within [`MAX_DECODED`] bytes; damaged data gives fewer, so a caller
+    /// checks it has the rows it needs.
+    pub fn decoded_image(&self, s: &Stream) -> Result<Vec<u8>, CosError> {
+        let s = &*self.with_direct_parms(s);
+        let chain = s.readable_filters().map_err(|e| CosError::Filter(e.to_string()))?;
+        let Some(((pdfcraft_filters::Filter::CcittFax, _), before)) = chain.split_last() else { return s.decoded() };
+        // Its place in /Filter, /Crypt included, pairs it with its /DecodeParms entry (§7.4.1).
+        let index = match s.dict.get(b"Filter") {
+            Some(Object::Array(a)) => a.len().saturating_sub(1),
+            _ => 0,
+        };
+        let parms = match s.dict.get(b"DecodeParms").map(|p| self.resolve(p)).as_deref() {
+            Some(Object::Array(a)) => a.get(index).and_then(|p| self.dict(p)),
+            Some(p) if index == 0 => p.as_dict().cloned(),
+            _ => None,
+        }
+        .unwrap_or_default();
+        let int = |key: &[u8], default: i64| parms.get(key).and_then(|v| self.resolve(v).as_int()).unwrap_or(default);
+        let flag = |key: &[u8], default: bool| match parms.get(key).map(|v| self.resolve(v)).as_deref() {
+            Some(Object::Bool(b)) => *b,
+            _ => default,
+        };
+        let d = pdfcraft_filters::CcittParams::default();
+        let p = pdfcraft_filters::CcittParams {
+            k: int(b"K", d.k),
+            columns: int(b"Columns", d.columns),
+            // As many rows as the image has: a /Rows below /Height would cut the picture short,
+            // and rows past /Height aren't drawn.
+            rows: 0,
+            end_of_line: flag(b"EndOfLine", d.end_of_line),
+            encoded_byte_align: flag(b"EncodedByteAlign", d.encoded_byte_align),
+            end_of_block: flag(b"EndOfBlock", d.end_of_block),
+            black_is_1: flag(b"BlackIs1", d.black_is_1),
+        };
+        if s.dict.int(b"Width") != Some(p.columns) {
+            return Err(CosError::Filter("a fax image's /Columns aren't its /Width".into()));
+        }
+        let height = s.dict.int(b"Height").and_then(|h| u32::try_from(h).ok()).unwrap_or(0);
+        let stride = usize::try_from(p.columns).unwrap_or(usize::MAX).div_ceil(8).max(1);
+        let rows = u32::try_from(MAX_DECODED / stride).unwrap_or(u32::MAX).min(height);
+        // The filters before it, such as ASCII85Decode, are undone first.
+        let data = match before {
+            [] => Cow::Borrowed(&s.raw[..]),
+            _ => Cow::Owned(pdfcraft_filters::decode_tolerant(before, &s.raw, MAX_DECODED).map_err(|e| CosError::Filter(e.to_string()))?.0),
+        };
+        pdfcraft_filters::decode_ccitt(&data, &p, rows).map_err(|e| CosError::Filter(e.to_string()))
     }
 
     pub fn try_get(&self, num: u32) -> Result<Arc<Object>, CosError> {

@@ -5,7 +5,8 @@ use std::sync::Arc;
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, SaveOptions, Stream, write_full};
 use pdfcraft_filters::{Filter, Params};
 use pdfcraft_optimize::{
-    Compatibility, Compression, ImageSettings, MonoCompression, OptimizeError, Settings, SpaceCategory, audit_space, effective_resolutions, optimize,
+    Compatibility, Compression, ImageSettings, MonoCompression, MonoSettings, OptimizeError, Settings, SpaceCategory, audit_space,
+    effective_resolutions, optimize,
 };
 
 fn image(doc: &mut Document, w: u32, h: u32, n: usize, jpeg: bool, smask: Option<ObjRef>) -> ObjRef {
@@ -394,7 +395,7 @@ fn black_and_white_images_become_ccitt_group_4() {
     let untouched = [noise, rgb, wide, tiny, named].map(|r| raw(&doc, r));
 
     let mut kept = doc.clone();
-    let r = optimize(&mut kept, &Settings { mono: MonoCompression::Retain, ..Settings::default() }).unwrap();
+    let r = optimize(&mut kept, &Settings { mono: RETAIN, ..Settings::default() }).unwrap();
     assert_eq!(r.images_recompressed, 0, "Retain keeps every image as it is");
     assert!([gray, mask, indexed, predicted].iter().all(|i| raw(&kept, *i) == raw(&doc, *i)));
 
@@ -456,7 +457,16 @@ fn group_4_takes_images_of_one_bit_a_pixel_up_to_the_pixel_limit() {
     let past_limit = mono_image(&mut doc, 10_000, 8_001, &bilevel(10_000, 8_001, false), None, &grey);
     let all = [icc_1, icc_3, spot, two_spots, mask_1, mask_8, at_limit, past_limit];
     let names: Vec<String> = (0..all.len()).map(|i| format!("Im{i}")).collect();
-    let content: String = (0..all.len()).map(|i| format!("q 200 0 0 80 {} {} cm /Im{i} Do Q ", 6 + 200 * (i % 3), 690 - 100 * (i / 3))).collect();
+    // 200 × 80 pt is 432 ppi, 1800 × 1440 pt 400 ppi: below where monochrome downsampling starts.
+    let content: String = (0..all.len())
+        .map(|i| {
+            if i < 6 {
+                format!("q 200 0 0 80 {} {} cm /Im{i} Do Q ", 6 + 200 * (i % 3), 690 - 100 * (i / 3))
+            } else {
+                format!("q 1800 0 0 1440 0 0 cm /Im{i} Do Q ")
+            }
+        })
+        .collect();
     page(&mut doc, &names.iter().map(String::as_str).zip(all).collect::<Vec<_>>(), &content);
     let converted = [icc_1, spot, mask_1, at_limit];
     let left = [icc_3, two_spots, mask_8, past_limit];
@@ -614,6 +624,9 @@ fn images_whose_data_decodes_far_past_their_samples_are_left_alone() {
     assert_eq!(stream(&doc, packed).dict.int(b"BitsPerComponent"), Some(1), "8-bit black-and-white hex text in lines: packed");
 }
 
+/// Monochrome Images keeping each image's compression (and resampling as by default).
+const RETAIN: MonoSettings = MonoSettings { compression: MonoCompression::Retain, ..MonoSettings::REDUCE };
+
 /// Eight-bit samples (0 or 255) from rows of one-bit ones.
 fn eight_bit(bits: &[u8], w: u32, h: u32) -> Vec<u8> {
     let stride = (w as usize).div_ceil(8);
@@ -667,7 +680,7 @@ fn eight_bit_black_and_white_takes_the_smaller_of_one_bit_and_the_grey_settings(
         let (mut doc, img) = build();
         optimize(&mut doc, &Settings::default()).unwrap();
         let (mut retained, _) = build();
-        optimize(&mut retained, &Settings { mono: MonoCompression::Retain, ..Settings::default() }).unwrap();
+        optimize(&mut retained, &Settings { mono: RETAIN, ..Settings::default() }).unwrap();
         let (s, kept) = (stream(&doc, img), stream(&retained, img));
         let bits = if what == "dither" { 8 } else { 1 };
         assert_eq!(s.dict.int(b"BitsPerComponent"), Some(bits), "{what}: {} bytes, {} with Retain", s.raw.len(), kept.raw.len());
@@ -757,7 +770,7 @@ fn eight_bit_black_and_white_images_become_one_bit() {
     let settings = Settings { gray: keep, ..Settings::default() };
 
     let mut kept = doc.clone();
-    let r = optimize(&mut kept, &Settings { mono: MonoCompression::Retain, ..settings.clone() }).unwrap();
+    let r = optimize(&mut kept, &Settings { mono: RETAIN, ..settings.clone() }).unwrap();
     assert_eq!(r.images_recompressed, 0, "Retain keeps every image as it is");
 
     let untouched = [shade, indexed, keyed].map(|r| raw(&doc, r));
@@ -773,6 +786,141 @@ fn eight_bit_black_and_white_images_become_one_bit() {
     assert_eq!(stream(&doc, inverted).dict.get(b"Decode"), Some(&decode), "the decode array stays");
     assert_eq!([shade, indexed, keyed].map(|r| raw(&doc, r)), untouched);
     assert!(render(&doc) == before, "the page looks the same");
+}
+
+/// Black-and-white images above 450 ppi are averaged down to 300 ppi, by default: 1-bit Flate, CCITT
+/// Group 4 (alone and behind ASCIIHexDecode), an image mask (its inverting decode array stays) and
+/// eight-bit grey of only black and white, all drawn at 600 ppi, are stored at half the size (as
+/// Group 4, or 1-bit Flate when that is smaller, as it is on this clean text), each new pixel the
+/// majority of the 2 × 2 it covers (a tie black). Left at their size: an image at 400 ppi (stored
+/// again as Group 4), a Group 4 one at 400 ppi (not even decoded), one behind ASCIIHexDecode at
+/// 400 ppi (stored again as Group 4 alone), and one with a soft mask. The page looks the same at
+/// screen size. With `downsample` off nothing is resampled; with Retain, Flate stays Flate, CCITT
+/// stays CCITT, and eight-bit grey is left to the grey settings.
+#[test]
+fn black_and_white_images_above_450_ppi_are_averaged_down_to_300() {
+    let mut doc = Document::new_empty();
+    let (w, h) = (1200u32, 480u32);
+    let text = bilevel(w, h, false);
+    let grey = [("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))];
+    let g4 = |doc: &mut Document, entries: &[(&str, Object)]| {
+        let mut d = Dict::new();
+        d.set(b"Subtype".to_vec(), Object::name("Image"));
+        d.set(b"Width".to_vec(), Object::Int(w.into()));
+        d.set(b"Height".to_vec(), Object::Int(h.into()));
+        d.set(b"Filter".to_vec(), Object::Array(vec![Object::name("CCITTFaxDecode")]));
+        let mut parms = Dict::new();
+        parms.set(b"K".to_vec(), Object::Int(-1));
+        parms.set(b"Columns".to_vec(), Object::Int(w.into()));
+        d.set(b"DecodeParms".to_vec(), Object::Array(vec![Object::Dict(parms)]));
+        for (k, v) in entries {
+            d.set(k.as_bytes().to_vec(), v.clone());
+        }
+        doc.add(Object::Stream(Stream::from_raw(d, pdfcraft_filters::encode_g4(&text, w, h).unwrap())))
+    };
+    // Group 4 behind ASCIIHexDecode, its parameters second in the array.
+    let behind_hex = |doc: &mut Document| {
+        let r = g4(doc, &grey);
+        let s = stream(doc, r);
+        let mut d = s.dict.clone();
+        let parms = d.get(b"DecodeParms").and_then(Object::as_array).and_then(|a| a.first()).cloned().unwrap();
+        d.set(b"Filter".to_vec(), Object::Array(vec![Object::name("ASCIIHexDecode"), Object::name("CCITTFaxDecode")]));
+        d.set(b"DecodeParms".to_vec(), Object::Array(vec![Object::Null, parms]));
+        let hex = s.raw.iter().map(|b| format!("{b:02x}")).chain([">".to_string()]).collect::<String>().into_bytes();
+        doc.set(r, Object::Stream(Stream::from_raw(d, hex)));
+        r
+    };
+    let flate = mono_image(&mut doc, w, h, &text, None, &grey);
+    let fax = g4(&mut doc, &grey);
+    let hex_fax = behind_hex(&mut doc);
+    let hex_at_400 = behind_hex(&mut doc);
+    let decode = Object::Array(vec![1.into(), 0.into()]);
+    let mask = mono_image(&mut doc, w, h, &text, None, &[("ImageMask", Object::Bool(true)), ("Decode", decode.clone())]);
+    let mut d = Dict::new();
+    d.set(b"Subtype".to_vec(), Object::name("Image"));
+    d.set(b"Width".to_vec(), Object::Int(w.into()));
+    d.set(b"Height".to_vec(), Object::Int(h.into()));
+    d.set(b"BitsPerComponent".to_vec(), Object::Int(8));
+    d.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+    let eight = doc.add(Object::Stream(Stream::flate(d, &eight_bit(&text, w, h))));
+    let at_400 = mono_image(&mut doc, w, h, &text, None, &grey);
+    let fax_at_400 = g4(&mut doc, &grey);
+    let mut sm = Dict::new();
+    sm.set(b"Subtype".to_vec(), Object::name("Image"));
+    sm.set(b"Width".to_vec(), Object::Int(2));
+    sm.set(b"Height".to_vec(), Object::Int(1));
+    sm.set(b"BitsPerComponent".to_vec(), Object::Int(8));
+    sm.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+    let smask = doc.add(Object::Stream(Stream::flate(sm, &[255, 200])));
+    let soft = mono_image(&mut doc, w, h, &text, None, &[grey[0].clone(), grey[1].clone(), ("SMask", Object::Ref(smask))]);
+    // 144 × 57.6 pt is 2 × 0.8 in: 600 ppi. 216 × 86.4 pt is 400 ppi.
+    page(
+        &mut doc,
+        &[("A", flate), ("B", fax), ("C", mask), ("D", eight), ("E", at_400), ("F", fax_at_400), ("G", soft), ("H", hex_fax), ("I", hex_at_400)],
+        "q 144 0 0 57.6 20 700 cm /A Do Q q 144 0 0 57.6 200 700 cm /B Do Q q 0 0 1 rg 144 0 0 57.6 380 700 cm /C Do Q \
+         q 144 0 0 57.6 20 600 cm /D Do Q q 216 0 0 86.4 200 580 cm /E Do Q q 216 0 0 86.4 20 480 cm /F Do Q \
+         q 144 0 0 57.6 260 480 cm /G Do Q q 144 0 0 57.6 430 600 cm /H Do Q q 216 0 0 86.4 20 360 cm /I Do Q",
+    );
+    let before = render(&doc);
+    let raw = |doc: &Document, r: ObjRef| stream(doc, r).raw;
+    let size = |doc: &Document, r: ObjRef| {
+        let d = stream(doc, r).dict;
+        (d.int(b"Width").unwrap(), d.int(b"Height").unwrap())
+    };
+    // Each new pixel: 1 when more than two of the 2 × 2 it covers are.
+    let stride = (w as usize).div_ceil(8);
+    let bit = |x: usize, y: usize| text[y * stride + x / 8] & (0x80 >> (x % 8)) != 0;
+    let mut halved = vec![0u8; (w as usize / 2).div_ceil(8) * h as usize / 2];
+    for y in 0..h as usize / 2 {
+        for x in 0..w as usize / 2 {
+            let ones = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().filter(|(dx, dy)| bit(2 * x + dx, 2 * y + dy)).count();
+            if ones > 2 {
+                halved[y * (w as usize / 2).div_ceil(8) + x / 8] |= 0x80 >> (x % 8);
+            }
+        }
+    }
+
+    // The grey settings left alone too: an eight-bit image would otherwise take them when smaller.
+    let mut off = doc.clone();
+    let keep = ImageSettings { downsample: false, target_ppi: 150.0, above_ppi: 225.0, compression: Compression::Retain };
+    let mono = MonoSettings { downsample: false, ..MonoSettings::REDUCE };
+    let r = optimize(&mut off, &Settings { mono, gray: keep, ..Settings::default() }).unwrap();
+    assert_eq!(r.images_resampled, 0, "{r:?}");
+    assert!([flate, fax, mask, eight, hex_fax].iter().all(|i| size(&off, *i) == (1200, 480)));
+
+    let mut kept = doc.clone();
+    let r = optimize(&mut kept, &Settings { mono: RETAIN, ..Settings::default() }).unwrap();
+    assert_eq!(r.images_resampled, 5, "{r:?}");
+    assert_eq!(stream(&kept, flate).dict.name(b"Filter"), Some(&b"FlateDecode"[..]), "Retain: Flate stays Flate");
+    for i in [fax, hex_fax] {
+        assert_eq!(stream(&kept, i).dict.name(b"Filter"), Some(&b"CCITTFaxDecode"[..]), "and CCITT stays CCITT: {i:?}");
+    }
+    assert_eq!(raw(&kept, hex_at_400), raw(&doc, hex_at_400), "and nothing else changes");
+    for i in [flate, fax, hex_fax] {
+        assert_eq!((size(&kept, i), kept.decoded_image(&stream(&kept, i)).unwrap()), ((600, 240), halved.clone()), "{i:?}");
+    }
+    assert_eq!(stream(&kept, eight).dict.int(b"BitsPerComponent"), Some(8), "Retain leaves eight bits to the grey settings");
+
+    let untouched = [fax_at_400].map(|r| raw(&doc, r));
+    let hex_len = raw(&doc, hex_at_400).len();
+    let r = optimize(&mut doc, &Settings::default()).unwrap();
+    assert_eq!((r.images_resampled, r.images_recompressed), (5, 3), "{r:?}");
+    for i in [flate, fax, mask, eight, hex_fax] {
+        let s = stream(&doc, i);
+        assert_eq!((size(&doc, i), s.dict.int(b"BitsPerComponent")), ((600, 240), if i == mask { None } else { Some(1) }));
+        assert!(matches!(s.dict.name(b"Filter"), Some(b"CCITTFaxDecode" | b"FlateDecode")), "{i:?}");
+        assert_eq!(doc.decoded_image(&s).unwrap(), halved, "{i:?}");
+    }
+    assert_eq!(stream(&doc, mask).dict.get(b"Decode"), Some(&decode), "the decode array stays");
+    for i in [at_400, soft, hex_at_400] {
+        assert_eq!((size(&doc, i), stream(&doc, i).dict.name(b"Filter")), ((1200, 480), Some(&b"CCITTFaxDecode"[..])), "{i:?}");
+    }
+    assert!(raw(&doc, hex_at_400).len() < hex_len, "the ASCIIHexDecode is dropped");
+    assert_eq!(doc.decoded_image(&stream(&doc, hex_at_400)).unwrap(), text, "and the picture kept");
+    assert_eq!([fax_at_400].map(|r| raw(&doc, r)), untouched);
+    let after = render(&doc);
+    let differ = before.iter().zip(&after).filter(|(a, b)| a.abs_diff(**b) > 64).count();
+    assert!(differ * 200 < before.len(), "{differ} of {} channel values differ visibly", before.len());
 }
 
 #[test]
