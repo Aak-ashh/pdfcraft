@@ -6675,11 +6675,12 @@ fn typing_in_one_tab_never_reaches_another_tabs_paragraph() {
     // The copy, its paragraph still open: Redo there has nothing of its own to put back.
     h.state_mut().active = Some(1);
     h.run_steps(3);
+    assert!(h.state().views[1].line_editor.is_some(), "the copy's paragraph is still open");
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     h.run_steps(3);
     let s = h.state();
-    let text = s.views[1].line_editor.as_ref().map(|ed| ed.text.clone());
-    assert!(!text.as_deref().unwrap_or_default().contains("secret"), "the other tab's typing came in: {text:?}");
+    let text = &s.views[1].line_editor.as_ref().expect("the copy's paragraph stays open through Redo").text;
+    assert!(!text.contains("secret"), "the other tab's typing came in: {text:?}");
     assert_eq!(s.session.get(s.views[1].id).unwrap().text_blocks(0)[0].text, s.session.get(s.views[0].id).unwrap().text_blocks(0)[0].text);
 }
 
