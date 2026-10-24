@@ -161,7 +161,7 @@ pub fn calculation_order(doc: &Document, fields: &[Field]) -> CalculationOrder {
         .collect();
     let links = links(calculated.iter().map(|(f, _)| f.name.as_str()), &reads);
     let component = components(&links);
-    let mut all: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    let mut all: Vec<(&str, usize)> = fields.iter().map(|f| (f.name.as_str(), f.widgets.len())).collect();
     all.sort_unstable();
     let name = |k: usize| calculated.get(k).map(|(f, _)| f.name.clone()).unwrap_or_default();
     let mut out = Vec::with_capacity(calculated.len());
@@ -193,14 +193,22 @@ pub fn calculation_order(doc: &Document, fields: &[Field]) -> CalculationOrder {
     CalculationOrder { fields: out, extra, fixed }
 }
 
-/// Whether a formula's read `name` finds a field in `names` (sorted): the field of that name, a
-/// field under it (`row` for `row.1`), or a widget of one (`price.0`, as `getField` numbers them).
-fn found(names: &[&str], name: &str) -> bool {
-    let has = |n: &str| names.binary_search(&n).is_ok();
+/// Whether a formula's read `name` finds a field in `fields` (names with their widget counts,
+/// sorted): the field of that name, a field under it (`row` for `row.1`), or one of a field's
+/// widgets (`price.0`, as Acrobat's `getField` numbers them, up to its last widget).
+fn found(fields: &[(&str, usize)], name: &str) -> bool {
+    // The most widgets a field called `n` has (a malformed form can have two such fields).
+    let widgets = |n: &str| {
+        let at = fields.partition_point(|(f, _)| *f < n);
+        fields.get(at..).unwrap_or_default().iter().take_while(|(f, _)| *f == n).map(|&(_, w)| w).max()
+    };
     let prefix = format!("{name}.");
-    let under = names.partition_point(|n| *n < prefix.as_str());
-    let widget = name.rsplit_once('.').is_some_and(|(base, i)| !i.is_empty() && i.bytes().all(|b| b.is_ascii_digit()) && has(base));
-    has(name) || names.get(under).is_some_and(|n| n.starts_with(&prefix)) || widget
+    let under = fields.partition_point(|(f, _)| *f < prefix.as_str());
+    // A field with one widget, or none, is still `.0` (digits only: `parse` would take `+0`).
+    let widget = name.rsplit_once('.').is_some_and(|(base, i)| {
+        i.bytes().all(|b| b.is_ascii_digit()) && i.parse::<usize>().is_ok_and(|i| widgets(base).is_some_and(|w| i < w.max(1)))
+    });
+    widgets(name).is_some() || fields.get(under).is_some_and(|(f, _)| f.starts_with(&prefix)) || widget
 }
 
 /// For each calculated field (by its place in `names`), the places of the calculated fields it
@@ -410,14 +418,16 @@ mod tests {
 
     #[test]
     fn a_read_name_finds_a_field_a_group_or_a_widget() {
-        let mut names = vec!["price", "row.1", "row.2", "rows", "total"];
-        names.sort_unstable();
-        for name in ["price", "row", "row.1", "rows", "price.0", "price.12"] {
-            assert!(found(&names, name), "{name}");
+        let mut fields = vec![("price", 1), ("qty", 3), ("row.1", 1), ("row.2", 1), ("rows", 1), ("total", 1), ("bare", 0)];
+        fields.sort_unstable();
+        for name in ["price", "row", "row.1", "rows", "price.0", "qty.0", "qty.2", "bare", "bare.0"] {
+            assert!(found(&fields, name), "{name}");
         }
-        for name in ["pric", "ro", "row.3", "price.", "price.x", "price.-1", "total.0.1", ""] {
-            assert!(!found(&names, name), "{name}");
+        // Past a field's last widget there is no widget to find.
+        for name in ["pric", "ro", "row.3", "price.", "price.x", "price.-1", "price.+0", "price.1", "price.12", "qty.3", "bare.1", "total.0.1", ""] {
+            assert!(!found(&fields, name), "{name}");
         }
+        assert!(!found(&fields, "qty.99999999999999999999999"), "a number too big for usize is no widget");
     }
 
     /// Two thousand formulas each reading a group of two thousand fields would be four million
