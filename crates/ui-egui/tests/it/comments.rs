@@ -2718,3 +2718,62 @@ fn a_moved_comment_is_drawn_where_it_goes_before_release() {
         assert!(red(px(&pixels, goes)), "and shown where it went");
     }
 }
+
+/// A comment kept upright on a turned page (NoRotate on a /Rotate 90 page) is drawn where it goes
+/// while it is dragged too: its layer is cut from the box it is drawn in, not from its /Rect.
+#[test]
+fn an_upright_comment_on_a_turned_page_is_drawn_where_it_goes_before_release() {
+    let _gpu = crate::gpu();
+    let pdf = String::from_utf8_lossy(TEXT_FIXTURE)
+        .replace("/Contents 5 0 R /Resources", "/Contents 5 0 R /Rotate 90 /Annots [8 0 R] /Resources")
+        .replace(
+            "trailer",
+            "8 0 obj << /Type /Annot /Subtype /Square /Rect [40 60 160 90] /F 20 /C [1 0 0] /IC [1 0 0] /BS << /W 2 >> >> endobj\ntrailer",
+        )
+        .into_bytes();
+    let mut h = harness_with_bytes(pdf, |_| {});
+    crate::support::settle(&mut h);
+    let id = h.state().views[0].id;
+    let drawn = {
+        let app = h.state();
+        let v = &app.views[0];
+        let info = &app.session.get(v.id).unwrap().info;
+        let a = info.annotations.iter().find(|a| a.subtype == "Square").expect("the square");
+        assert!(a.no_rotate, "kept upright");
+        let page = &info.pages[0];
+        let xf =
+            pdfcraft_ui_egui::canvas::PageXform { rect: v.page_screen_rect(0).expect("on screen"), rot: v.rotation, pw: page.width, ph: page.height };
+        xf.user_rect(info, 0, a.shown_rect(page.rotation))
+    };
+    let red = |v: [u8; 4]| v[0] > 200 && v[1] < 80 && v[2] < 80;
+    let px = |pixels: &image::RgbaImage, p: Pos2| pixels.get_pixel(p.x.round() as u32, p.y.round() as u32).0;
+    // Beside the pointer, which is drawn over the page.
+    let (from, delta) = (drawn.center(), egui::vec2(160.0, 120.0));
+    let was = pos2(drawn.left() + 6.0, drawn.center().y);
+    let goes = was + delta;
+    assert!(red(px(&h.render().unwrap(), was)), "drawn in its upright box");
+    let generation = h.state().session.get(id).unwrap().edit_generation();
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    for k in 1..=4 {
+        h.hover_at(from + delta * (k as f32 / 4.0));
+        h.run_steps(1);
+    }
+    let mut shown = false;
+    for _ in 0..100 {
+        h.run_steps(2);
+        let pixels = h.render().unwrap();
+        if red(px(&pixels, goes)) {
+            shown = true;
+            assert!(red(px(&pixels, was)), "the page still shows it where it was");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(shown, "the upright comment is drawn under the pointer before release");
+    assert_eq!(h.state().session.get(id).unwrap().edit_generation(), generation, "pointer frames never edit the document");
+    h.drop_at(from + delta);
+    h.run_steps(3);
+}

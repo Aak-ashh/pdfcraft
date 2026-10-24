@@ -235,7 +235,10 @@ impl SignatureDrag {
             && let Some(a) = doc.info.annotations.iter().find(|a| a.page == page && a.index == index && !a.locked)
             && let Ok(Some(alone)) = doc.comment_layer(page, &[index])
         {
-            let layer = StampLayer { renderer: alone.renderer(), from: a.rect, tag: None, pixels: None };
+            // The box it is drawn in: a comment kept upright on a turned page (NoRotate) isn't
+            // drawn in its /Rect, and the frame it follows is that box too.
+            let rotation = doc.info.pages.get(page).map_or(0, |p| p.rotation);
+            let layer = StampLayer { renderer: alone.renderer(), from: a.shown_rect(rotation), tag: None, pixels: None };
             self.moving = Some((key, Moving { layer, settling: false }));
         }
         let Some(((_, page, _), m)) = self.moving.as_mut() else { return };
