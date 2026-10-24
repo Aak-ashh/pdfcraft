@@ -222,9 +222,29 @@ impl PdfCraftApp {
     pub fn redo(&mut self) {
         if self.combine_showing() {
             self.combine_history_step(false);
-        } else {
+        } else if !self.redo_in_page_box() {
             self.history_step(false);
         }
+    }
+
+    /// Redo from the menu or toolbar while a box on the page has typing of its own: the step is
+    /// the box's, as the key's is. What Undo took back in the box comes back; typing the page
+    /// doesn't have yet stays as it is, since applying it first is a new edit, which drops the
+    /// document's Redo. True when the box took the step.
+    fn redo_in_page_box(&mut self) -> bool {
+        let Some(ctx) = self.ctx.clone() else { return false };
+        let Some(view) = self.active.and_then(|i| self.views.get_mut(i)) else { return false };
+        if let Some(ed) = view.line_editor.as_mut() {
+            let Some(text) = redo_typing(&ctx, crate::edit_text_ui::input_id(), &ed.text) else { return ed.has_unsaved_text() };
+            ed.text = text;
+            return true;
+        }
+        if let Some(d) = view.content.draft.as_mut() {
+            let Some(text) = redo_typing(&ctx, crate::content_ui::input_id(), &d.text) else { return d.has_unapplied_typing() };
+            d.text = text;
+            return true;
+        }
+        false
     }
 
     fn history_step(&mut self, undo: bool) {
@@ -274,12 +294,13 @@ impl PdfCraftApp {
         }
         let added = self.session.get(id).map(|d| d.added().to_vec()).unwrap_or_default();
         let Some(view) = self.views.get_mut(i) else { return true };
-        let draft = view.content.draft.clone();
+        // Finishing new text also asks for it to be selected once it exists: put that back too.
+        let (draft, select_added) = (view.content.draft.clone(), view.content.select_added);
         if let Some(edit) = view.content.finish_draft(&added)
             && !self.apply_edit(edit)
         {
             if let Some(view) = self.views.get_mut(i) {
-                view.content.draft = draft;
+                (view.content.draft, view.content.select_added) = (draft, select_added);
             }
             return false;
         }
@@ -1217,6 +1238,18 @@ fn bookmark_at<'a>(items: &'a [pdfcraft_render::OutlineItem], path: &[usize]) ->
     if rest.is_empty() { Some(item) } else { bookmark_at(&item.children, rest) }
 }
 
+/// The box's own Redo, as the key does it: the typing Undo took back, put back in the box's text,
+/// with the box's history and cursor moved along. None when the box has nothing to redo.
+fn redo_typing(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<String> {
+    let mut state = egui::TextEdit::load_state(ctx, id)?;
+    let mut undoer = state.undoer();
+    let (range, redone) = undoer.redo(&(state.cursor.char_range()?, text.to_owned()))?.clone();
+    state.set_undoer(undoer);
+    state.cursor.set_char_range(Some(range));
+    egui::TextEdit::store_state(ctx, id, state);
+    Some(redone)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SaveTarget, is_mail_temp_copy, write_atomically, write_atomically_syncing, write_atomically_with};
@@ -1491,6 +1524,45 @@ mod tests {
         }
         out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
         out
+    }
+
+    /// `one_page_pdf`, opening without a password, whose permissions refuse changes.
+    fn no_changes_pdf() -> Vec<u8> {
+        let mut doc = pdfcraft_cos::Document::open(std::sync::Arc::new(one_page_pdf())).unwrap();
+        let encryption = pdfcraft_cos::NewEncryption {
+            algorithm: pdfcraft_cos::Algorithm::Aes256,
+            user_password: "",
+            owner_password: "owner",
+            permissions: -1 ^ 8,
+            encrypt_metadata: true,
+            seed: [4; 32],
+        };
+        doc.set_encryption(&encryption).unwrap();
+        pdfcraft_cos::write_full(&doc, &Default::default()).unwrap()
+    }
+
+    /// Undo with a new text box open on a document that refuses changes: the box is put back as
+    /// it was. Finishing it had asked for the new item to be selected, and that request stayed
+    /// behind once the add was refused.
+    #[test]
+    fn a_refused_text_box_is_put_back_whole() {
+        let mut app = crate::PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("a.pdf", None, no_changes_pdf()).unwrap();
+        let style = crate::content_ui::default_style();
+        app.views[0].content.draft = Some(crate::content_ui::TextDraft {
+            page: 0,
+            index: None,
+            rect: [20.0, 20.0, 120.0, 40.0],
+            text: "Typed".into(),
+            style,
+            focus: false,
+            typing_from: None,
+        });
+        app.undo();
+        let content = &app.views[0].content;
+        assert_eq!(content.draft.as_ref().map(|d| d.text.as_str()), Some("Typed"), "the refused box stays open");
+        assert_eq!(content.select_added, None, "nothing was added to select");
     }
 
     #[test]

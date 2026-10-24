@@ -6068,6 +6068,46 @@ fn redo_after_undoing_typing_puts_the_typing_back() {
     assert_eq!((doc.can_redo(), doc.text_blocks(0)[0].base_font.as_str()), (Some("Edit text"), "Helvetica"), "the document's Redo still waits");
 }
 
+/// Redo from the menu or toolbar with typing in the box the page doesn't have yet. Closing the
+/// box first applied the typing, a new edit that dropped the document's waiting Redo, and the
+/// Redo itself then failed: the step was gone. The typing now stays in the box and the Redo
+/// waits; once Undo in the box takes the typing back, Redo from the menu puts it back there.
+#[test]
+fn redo_from_the_menu_with_typing_in_the_box_keeps_the_documents_redo() {
+    let mut h = harness(1, |_| {});
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    open_paragraph(&mut h);
+    h.get_by_label("Bold").click();
+    h.run_steps(4);
+    // Undo the bold (closing the editor), so the document has it to redo.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(4);
+    open_paragraph(&mut h);
+    let original = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.event(egui::Event::Text(" more".into()));
+    h.run_steps(2);
+    let typed = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    assert!(h.state_mut().execute("edit.redo"));
+    h.run_steps(3);
+    {
+        let s = h.state();
+        let ed = s.views[0].line_editor.as_ref().expect("the box stays open");
+        assert_eq!(ed.text, typed, "the typing stays in the box, unapplied");
+        let doc = s.session.get(s.views[0].id).unwrap();
+        assert_eq!((doc.can_redo(), doc.text_blocks(0)[0].base_font.as_str()), (Some("Edit text"), "Helvetica"), "the document's Redo still waits");
+    }
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(3);
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().text, original, "Undo takes the typing back in the box");
+    assert!(h.state_mut().execute("edit.redo"));
+    h.run_steps(3);
+    let s = h.state();
+    assert_eq!(s.views[0].line_editor.as_ref().expect("still open").text, typed, "Redo from the menu puts the typing back");
+    assert_eq!(s.session.get(s.views[0].id).unwrap().can_redo(), Some("Edit text"), "the document's Redo still waits");
+}
+
 /// Two copies of a document, the same paragraph open in each. The paragraph boxes share one text
 /// box, and so one Undo history: a box opened on the same text as another tab's didn't clear it.
 /// Typing in one tab, taken back with Undo, then came back with Redo in the other tab.
