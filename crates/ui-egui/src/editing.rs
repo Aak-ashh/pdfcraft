@@ -296,12 +296,13 @@ impl PdfCraftApp {
         }
         let added = self.session.get(id).map(|d| d.added().to_vec()).unwrap_or_default();
         let Some(view) = self.views.get_mut(i) else { return true };
-        let draft = view.content.draft.clone();
+        // Finishing new text also asks for it to be selected once it exists: put that back too.
+        let (draft, select_added) = (view.content.draft.clone(), view.content.select_added);
         if let Some(edit) = view.content.finish_draft(&added)
             && !self.apply_edit(edit)
         {
             if let Some(view) = self.views.get_mut(i) {
-                view.content.draft = draft;
+                (view.content.draft, view.content.select_added) = (draft, select_added);
             }
             return false;
         }
@@ -1581,6 +1582,46 @@ mod tests {
         }
         out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
         out
+    }
+
+    /// `one_page_pdf`, opening without a password, whose permissions refuse changes.
+    fn no_changes_pdf() -> Vec<u8> {
+        let mut doc = pdfcraft_cos::Document::open(std::sync::Arc::new(one_page_pdf())).unwrap();
+        let encryption = pdfcraft_cos::NewEncryption {
+            algorithm: pdfcraft_cos::Algorithm::Aes256,
+            user_password: "",
+            owner_password: "owner",
+            permissions: -1 ^ 8,
+            encrypt_metadata: true,
+            seed: [4; 32],
+        };
+        doc.set_encryption(&encryption).unwrap();
+        pdfcraft_cos::write_full(&doc, &Default::default()).unwrap()
+    }
+
+    /// Undo with a new text box open on a document that refuses changes: the box is put back as
+    /// it was. Finishing it had asked for the new item to be selected, and that request stayed
+    /// behind once the add was refused.
+    #[test]
+    fn a_refused_text_box_is_put_back_whole() {
+        let mut app = crate::PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("a.pdf", None, no_changes_pdf()).unwrap();
+        let style = crate::content_ui::default_style();
+        app.views[0].content.draft = Some(crate::content_ui::TextDraft {
+            page: 0,
+            index: None,
+            rect: [20.0, 20.0, 120.0, 40.0],
+            text: "Typed".into(),
+            style,
+            focus: false,
+            selection: None,
+            typing_from: None,
+        });
+        app.undo();
+        let content = &app.views[0].content;
+        assert_eq!(content.draft.as_ref().map(|d| d.text.as_str()), Some("Typed"), "the refused box stays open");
+        assert_eq!(content.select_added, None, "nothing was added to select");
     }
 
     #[test]
