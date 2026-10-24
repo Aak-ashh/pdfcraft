@@ -971,6 +971,32 @@ fn redo_from_the_menu_with_retyping_in_the_box_keeps_the_documents_redo() {
     assert_eq!(s.session.get(s.views[0].id).unwrap().can_redo(), Some("Edit content"), "the document's Redo still waits");
 }
 
+/// Undo from the menu with retyping the page doesn't have yet in an added text box: the box takes
+/// it back and stays open, and the document's waiting Redo stays.
+#[test]
+fn undo_from_the_menu_takes_back_retyping_in_the_added_text_box() {
+    let mut h = harness();
+    let rect = [40.0, 195.0, 240.0, 210.0];
+    let text = pdfcraft_engine::AddedText { rect, text: "Reviewed".into(), ..Default::default() };
+    assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::AddText { page: 0, text: text.clone() }));
+    let bold = pdfcraft_engine::AddedText { bold: true, ..text };
+    assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::UpdateContent { page: 0, index: 0, content: pdfcraft_engine::AddedContent::Text(bold) }));
+    assert!(h.state_mut().execute("edit.undo"));
+    assert!(h.state_mut().execute("edit.text"));
+    h.run_steps(3);
+    let point = at(&h, 45.0, 195.0);
+    click(&mut h, point);
+    assert_eq!(h.state().views[0].content.draft.as_ref().and_then(|d| d.index), Some(0), "the editor opened on the text");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::End);
+    h.event(egui::Event::Text(" twice".into()));
+    h.run_steps(2);
+    assert!(h.state_mut().execute("edit.undo"));
+    h.run_steps(3);
+    assert_eq!(h.state().views[0].content.draft.as_ref().map(|d| d.text.as_str()), Some("Reviewed"), "Undo takes it back in the box");
+    let s = h.state();
+    assert_eq!(s.session.get(s.views[0].id).unwrap().can_redo(), Some("Edit content"), "the document's Redo still waits");
+}
+
 /// Redo from the menu after Undo in an added text box, with nothing for the document to redo: the
 /// menu item follows the box's own Redo too, and puts the typing back.
 #[test]

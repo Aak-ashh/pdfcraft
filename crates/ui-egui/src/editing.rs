@@ -214,9 +214,29 @@ impl PdfCraftApp {
         }
         if self.combine_showing() {
             self.combine_history_step(true);
-        } else {
+        } else if !self.undo_in_page_box() {
             self.history_step(true);
         }
+    }
+
+    /// Undo from the menu or toolbar while a box on the page holds typing the page doesn't have
+    /// yet: the box takes the step, as it does for the key, one step of its typing at a time.
+    /// Applying the typing first was a new edit, which dropped the document's Redo, and then the
+    /// typing was taken back all at once. True when the box took the step.
+    fn undo_in_page_box(&mut self) -> bool {
+        let Some(ctx) = self.ctx.clone() else { return false };
+        let Some(view) = self.active.and_then(|i| self.views.get_mut(i)) else { return false };
+        if let Some(ed) = view.line_editor.as_mut().filter(|ed| ed.has_unsaved_text()) {
+            let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, true) else { return false };
+            ed.text = text;
+            return true;
+        }
+        if let Some(d) = view.content.draft.as_mut().filter(|d| d.has_unapplied_typing()) {
+            let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, true) else { return false };
+            d.text = text;
+            return true;
+        }
+        false
     }
 
     pub fn redo(&mut self) {
@@ -235,12 +255,12 @@ impl PdfCraftApp {
         let Some(ctx) = self.ctx.clone() else { return false };
         let Some(view) = self.active.and_then(|i| self.views.get_mut(i)) else { return false };
         if let Some(ed) = view.line_editor.as_mut() {
-            let Some(text) = redo_typing(&ctx, crate::edit_text_ui::input_id(), &ed.text) else { return ed.has_unsaved_text() };
+            let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, false) else { return ed.has_unsaved_text() };
             ed.text = text;
             return true;
         }
         if let Some(d) = view.content.draft.as_mut() {
-            let Some(text) = redo_typing(&ctx, crate::content_ui::input_id(), &d.text) else { return d.has_unapplied_typing() };
+            let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, false) else { return d.has_unapplied_typing() };
             d.text = text;
             return true;
         }
@@ -1347,16 +1367,17 @@ fn has_typing_to_redo(ctx: &egui::Context, id: egui::Id, text: &str) -> bool {
         .is_some_and(|state| state.cursor.char_range().is_some_and(|range| state.undoer().has_redo(&(range, text.to_owned()))))
 }
 
-/// The box's own Redo, as the key does it: the typing Undo took back, put back in the box's text,
-/// with the box's history and cursor moved along. None when the box has nothing to redo.
-fn redo_typing(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<String> {
+/// The box's own Undo (or Redo), as the key does it: the box's text one step back (or forward) in
+/// its typing, with the box's history and cursor moved along. None when there is no such step.
+fn typing_step(ctx: &egui::Context, id: egui::Id, text: &str, undo: bool) -> Option<String> {
     let mut state = egui::TextEdit::load_state(ctx, id)?;
     let mut undoer = state.undoer();
-    let (range, redone) = undoer.redo(&(state.cursor.char_range()?, text.to_owned()))?.clone();
+    let current = (state.cursor.char_range()?, text.to_owned());
+    let (range, stepped) = if undo { undoer.undo(&current) } else { undoer.redo(&current) }?.clone();
     state.set_undoer(undoer);
     state.cursor.set_char_range(Some(range));
     egui::TextEdit::store_state(ctx, id, state);
-    Some(redone)
+    Some(stepped)
 }
 
 #[cfg(test)]

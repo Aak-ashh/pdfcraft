@@ -6383,6 +6383,35 @@ fn redo_from_the_menu_with_typing_in_the_box_keeps_the_documents_redo() {
     assert_eq!(s.session.get(s.views[0].id).unwrap().can_redo(), Some("Edit text"), "the document's Redo still waits");
 }
 
+/// Undo from the menu or toolbar with typing in the box the page doesn't have yet: the box takes
+/// the typing back, as the key does, and stays open, and the document's waiting Redo stays. The
+/// menu applied the typing first (a new edit, which dropped that Redo), closed the box and undid
+/// the typing all at once.
+#[test]
+fn undo_from_the_menu_takes_back_typing_in_the_box() {
+    let mut h = harness(1, |_| {});
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    open_paragraph(&mut h);
+    h.get_by_label("Bold").click();
+    h.run_steps(4);
+    // Undo the bold (closing the editor), so the document has it to redo and nothing to undo.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(4);
+    open_paragraph(&mut h);
+    let original = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.event(egui::Event::Text(" more".into()));
+    h.run_steps(2);
+    assert!(h.state_mut().execute("edit.undo"), "Undo is enabled for the box's typing");
+    h.run_steps(3);
+    let s = h.state();
+    let ed = s.views[0].line_editor.as_ref().expect("the box stays open");
+    assert_eq!(ed.text, original, "the typing is taken back in the box");
+    let doc = s.session.get(s.views[0].id).unwrap();
+    assert_eq!((doc.can_redo(), doc.can_undo()), (Some("Edit text"), None), "the document is untouched");
+}
+
 /// Redo from the menu after Undo in the box took the typing back, with nothing for the document
 /// to redo: the menu item follows the box's own Redo too, and puts the typing back. It was
 /// disabled, as it followed only the document's Redo, and only the key could do it.
