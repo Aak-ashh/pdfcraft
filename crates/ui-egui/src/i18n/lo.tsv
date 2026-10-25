@@ -2465,3 +2465,11 @@ animation effects	Off	ປິດ
 	Rotate the selected pages clockwise	ໝູນໜ້າທີ່ເລືອກຕາມເຂັມໂມງ
 	Extract the selected pages…	ແຍກໜ້າທີ່ເລືອກອອກ…
 	Delete the selected pages	ລຶບໜ້າທີ່ເລືອກ
+
+# Untranslated: English text until a translator fills these in.
+	Reads {name}, which the form doesn't have, so it gets no value there.	Reads {name}, which the form doesn't have, so it gets no value there.
+	Its script also reads fields whose names it builds as it runs, so those reads can't be checked.	Its script also reads fields whose names it builds as it runs, so those reads can't be checked.
+	Missing field	Missing field
+	Unchecked reads	Unchecked reads
+	{field} reads fields named as it runs	{field} reads fields named as it runs
+	Some names are built as it runs	Some names are built as it runs
