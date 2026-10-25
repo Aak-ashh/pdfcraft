@@ -6975,6 +6975,26 @@ fn one_row_of_a_paragraph_takes_its_own_alignment() {
     assert!((row("eight")[2] - block.rect[2]).abs() < 1.0, "the second row ends at the right edge: {:?} vs {}", row("eight"), block.rect[2]);
 }
 
+/// Only a row given an alignment of its own is rewritten. The others keep their source operators,
+/// `TJ` word gaps included, so their words stay exactly where they were: rebuilt from the text,
+/// the first row's words moved by about a point and a half while its outer width stayed the same.
+#[test]
+fn rows_without_their_own_alignment_keep_their_operators() {
+    let first = "[(One) -250 (two) -250 (three) -250 (four)] TJ";
+    let mut doc = text_page(&format!("BT /F1 10 Tf 12 TL 72 700 Td {first} T* [(five) -250 (six) -250 (seven) -250 (eight)] TJ T* (nine ten) Tj ET"));
+    let block = text::text_blocks(&doc, 0).unwrap()[0].clone();
+    assert_eq!(block.editor_text.matches('\n').count(), 2, "one paragraph of three rows: {:?}", block.editor_text);
+    let row = |doc: &Document, starts: &str| text::text_lines(doc, 0).unwrap().into_iter().find(|l| l.text.starts_with(starts)).expect("the row");
+    let ink = row(&doc, "One").ink;
+    let style = text::BlockStyle { aligns: vec![None, None, Some(added::Align::Right)], ..Default::default() };
+    text::rewrite_block(&mut doc, 0, 0, Some(&block.editor_text), &style).unwrap();
+    let doc = reopen(&doc);
+    assert_eq!(row(&doc, "One").ink, ink, "the first row's words stay where they were");
+    let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
+    assert!(content.contains(first), "the first row keeps its operator: {content}");
+    assert!((row(&doc, "nine").rect[2] - block.rect[2]).abs() < 1.0, "the last row is right-aligned: {:?}", row(&doc, "nine").rect);
+}
+
 /// The same in a region of several styles: only the short first row is centred.
 #[test]
 fn one_row_of_a_styled_region_takes_its_own_alignment() {

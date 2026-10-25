@@ -874,10 +874,16 @@ pub(super) fn rewrite_styled_block(
     let pieces = Pieces::join(&streams.iter().map(|(_, d)| d.as_slice()).collect::<Vec<_>>());
     let ops = pieces.parse().ops;
     // A row the edit doesn't reach keeps its source operators, so its kerning, TJ word gaps and
-    // glyph widths stay exactly as they were instead of being rebuilt from the text state.
-    let plain = BlockStyle { ranges: Vec::new(), ..style.clone() } == BlockStyle::default();
+    // glyph widths stay exactly as they were instead of being rebuilt from the text state. A row
+    // aligned on its own is reached; the rows around it are not.
+    let plain = BlockStyle { ranges: Vec::new(), aligns: Vec::new(), ..style.clone() } == BlockStyle::default();
     let mut kept = if plain {
-        untouched_rows(block, draft, &row_ranges).into_iter().zip(&rows).map(|(same, row)| same && row.iter().all(|c| c.1 < source_count)).collect()
+        untouched_rows(block, draft, &row_ranges)
+            .into_iter()
+            .zip(&rows)
+            .zip(&row_lines)
+            .map(|((same, row), line)| same && row.iter().all(|c| c.1 < source_count) && style.aligns.get(*line).copied().flatten().is_none())
+            .collect()
     } else {
         vec![false; rows.len()]
     };
