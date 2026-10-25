@@ -624,7 +624,8 @@ fn one_bit(doc: &Document, s: &Stream, eight_bit: bool) -> Option<(Vec<u8>, u32,
 /// Whether sample 1 is the dark one of the 1-bit image `d` describes, after its decode array
 /// (`[0 1]` when it has none of two numbers): the painted part of an image mask and black in grey
 /// decode to 0, and full ink in a separation (or a DeviceN of one colourant) to 1. An indexed image
-/// says 0, as its palette, not its decode array, says which entry is darker.
+/// says 0: its palette, not its decode array, says which entry is darker, and the palette isn't
+/// read yet, so a tie goes to entry 0 whatever its colour.
 fn dark_is_one(doc: &Document, d: &Dict) -> bool {
     let number = |v: Option<&Object>| v.and_then(|v| doc.resolve(v).as_f64());
     let (d0, d1) = match d.get(b"Decode").map(|v| doc.resolve(v)).as_deref() {
