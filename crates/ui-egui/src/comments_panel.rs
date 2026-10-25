@@ -3,7 +3,8 @@
 //! Header "Comments N" (comments, as Acrobat counts them) with "N replies" under it and search;
 //! an "Add a comment" box that posts a sticky note on the current page; cards grouped by page.
 //! Selecting a card selects the comment on the page and opens its reply box and "…" menu (Edit,
-//! Set status, Delete). Status replies show as a badge.
+//! Set status, Delete), and gives each reply a "…" of its own (Edit, Copy text, Delete). Status
+//! replies show as a badge.
 
 use std::collections::HashMap;
 
@@ -358,27 +359,10 @@ fn card(
             });
             egui::Frame::NONE.inner_margin(egui::Margin { left: 34, right: 0, top: 4, bottom: 0 }).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                if editing && let Some((_, _, text)) = view.comments.editing.as_mut() {
-                    let r = ui.add(crate::widgets::block(text).desired_rows(2).desired_width(f32::INFINITY).id_salt(("comment-edit", key)));
-                    match view.comments.editor_focus.take() {
-                        Some(crate::comments::EditorFocus::Take) => r.request_focus(),
-                        Some(crate::comments::EditorFocus::Release) => r.surrender_focus(),
-                        None => {}
+                if editing {
+                    if let Some(e) = inline_editor(ui, t, view, key, 2) {
+                        edit = Some(e);
                     }
-                    let submit = crate::comments::submit_key(ui, &r, false);
-                    ui.horizontal(|ui| {
-                        if (ui
-                            .add(egui::Button::new(egui::RichText::new(tl!("Save")).color(Color32::WHITE)).fill(t.accent).corner_radius(12))
-                            .clicked()
-                            || submit)
-                            && let Some((page, index, text)) = view.comments.editing.take()
-                        {
-                            edit = Some(Edit::SetAnnotationContents { page, index, text });
-                        }
-                        if ui.button(tl!("Cancel")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                            view.comments.editing = None;
-                        }
-                    });
                 } else {
                     let body = a.contents.as_deref().unwrap_or("");
                     if body.is_empty() {
@@ -405,6 +389,7 @@ fn card(
             for r in &replies {
                 ui.add_space(8.0);
                 let mut me = egui::Rect::NOTHING;
+                let reply_key = (r.page, r.index);
                 ui.horizontal(|ui| {
                     me = avatar(ui, t, None, Some(&initials(r.author.as_deref().unwrap_or("?"))), t.text_faint);
                     ui.vertical(|ui| {
@@ -415,8 +400,25 @@ fn card(
                             if let Some(m) = &r.modified {
                                 ui.add(egui::Label::new(egui::RichText::new(m).font(theme::regular(11.0)).color(t.text_faint)).truncate());
                             }
+                            // Each reply has its own "…" (Edit, Copy text, Delete), as in Acrobat.
+                            // A Replace Text caret is half of its comment, not a reply: it has none.
+                            if selected && allowed && !r.grouped {
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    let more = icons::button(ui, "ellipsis", 20.0, false, tl!("Options for this reply"));
+                                    if let Some(e) = reply_menu(ui, view, r, &more) {
+                                        edit = Some(e);
+                                    }
+                                });
+                            }
                         });
-                        widgets::wrapped_text(ui, r.contents.as_deref().unwrap_or(""), theme::regular(12.5), t.text, false);
+                        let open = view.comments.editing.as_ref().is_some_and(|(p, i, _)| (*p, *i) == reply_key);
+                        if open {
+                            if let Some(e) = inline_editor(ui, t, view, reply_key, 1) {
+                                edit = Some(e);
+                            }
+                        } else {
+                            widgets::wrapped_text(ui, r.contents.as_deref().unwrap_or(""), theme::regular(12.5), t.text, false);
+                        }
                     });
                 });
                 // The circles are 12 px in radius; leave a 1 px gap at each end.
@@ -525,6 +527,65 @@ fn card(
             if ui.add_enabled(!a.locked, egui::Button::new(tl!("Delete"))).clicked() {
                 view.comments.selected = None;
                 edit = Some(Edit::DeleteAnnotation { page: a.page, index: a.index });
+                ui.close();
+            }
+        });
+    edit
+}
+
+/// The inline editor open on comment or reply `key` in the panel, with Save and Cancel; returns
+/// the edit Save makes.
+fn inline_editor(ui: &mut egui::Ui, t: &Tokens, view: &mut DocView, key: (usize, usize), rows: usize) -> Option<Edit> {
+    let mut edit = None;
+    let (_, _, text) = view.comments.editing.as_mut()?;
+    let r = ui.add(crate::widgets::block(text).desired_rows(rows).desired_width(f32::INFINITY).id_salt(("comment-edit", key)));
+    match view.comments.editor_focus.take() {
+        Some(crate::comments::EditorFocus::Take) => r.request_focus(),
+        Some(crate::comments::EditorFocus::Release) => r.surrender_focus(),
+        None => {}
+    }
+    let submit = crate::comments::submit_key(ui, &r, false);
+    ui.horizontal(|ui| {
+        if (ui.add(egui::Button::new(egui::RichText::new(tl!("Save")).color(Color32::WHITE)).fill(t.accent).corner_radius(12)).clicked() || submit)
+            && let Some((page, index, text)) = view.comments.editing.take()
+        {
+            edit = Some(Edit::SetAnnotationContents { page, index, text });
+        }
+        if ui.button(tl!("Cancel")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            view.comments.editing = None;
+        }
+    });
+    edit
+}
+
+/// A reply's "…" menu, hung from its button `more`: Edit, Copy text and Delete. Delete takes
+/// the reply alone, with what hangs off it (its own replies, status changes and pop-up), as
+/// deleting a comment takes its thread; the comment and its other replies stay. Returns the
+/// edit to apply.
+fn reply_menu(ui: &egui::Ui, view: &mut DocView, r: &Annotation, more: &egui::Response) -> Option<Edit> {
+    let mut edit = None;
+    let menu_id = ui.scope_id().with(("reply-menu", r.page, r.index));
+    if more.clicked() {
+        egui::Popup::open_id(ui.ctx(), menu_id);
+    }
+    egui::Popup::new(menu_id, ui.ctx().clone(), egui::PopupAnchor::ParentRect(more.rect), ui.layer_id())
+        .open_memory(None)
+        .kind(egui::PopupKind::Menu)
+        .layout(Layout::top_down_justified(Align::Min))
+        .show(|ui| {
+            ui.set_min_width(140.0);
+            if ui.button(tl_ctx!("comment menu", "Edit")).clicked() {
+                view.comments.open_editor(r.page, r.index, r.contents.clone().unwrap_or_default());
+                ui.close();
+            }
+            if ui.button(tl!("Copy text")).clicked() {
+                ui.ctx().copy_text(r.contents.clone().unwrap_or_default());
+                ui.close();
+            }
+            ui.separator();
+            // The card stays selected: the app finds its comment again after the delete.
+            if ui.add_enabled(!r.locked, egui::Button::new(tl!("Delete"))).clicked() {
+                edit = Some(Edit::DeleteAnnotation { page: r.page, index: r.index });
                 ui.close();
             }
         });

@@ -53,6 +53,12 @@ impl PdfCraftApp {
         } else {
             (None, 0, false)
         };
+        // A deletion moves the comments after it on the page: these say where the selected one,
+        // and the one open in the panel's editor, went.
+        let annots_before = match (&edit, self.session.get(id)) {
+            (Edit::DeleteAnnotation { page, .. }, Some(d)) => d.info.annotations.iter().filter(|a| a.page == *page).cloned().collect(),
+            _ => Vec::new(),
+        };
         match self.session.apply(id, edit.clone()) {
             Ok(()) => {
                 let Some(doc) = self.session.get(id) else { return true };
@@ -172,7 +178,7 @@ impl PdfCraftApp {
                             view.comments.open_editor(a.page, n, String::new());
                         }
                     }
-                    Edit::DeleteAnnotation { .. } => view.comments.selected = None,
+                    Edit::DeleteAnnotation { page, index } => view.comments.annotation_deleted(&annots_before, &info.annotations, (page, index)),
                     _ => {}
                 }
                 if std::mem::take(&mut view.comments.tool_done) && !self.comment_prefs.pinned {

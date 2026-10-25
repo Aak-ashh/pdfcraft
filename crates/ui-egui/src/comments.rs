@@ -12,6 +12,8 @@
 //! Everything is turned into `pdfcraft_engine::Edit`s, queued on the view as `pending_edit` and
 //! applied by the app, so each change is one undo step.
 
+use std::collections::HashMap;
+
 use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use pdfcraft_engine::{Edit, LineEnding, Markup, NewAnnotation, NoteIcon, ReviewState, Rgb, Shape, Style};
 use pdfcraft_render::{Annotation, DocInfo, PageInfo, PageText};
@@ -578,6 +580,61 @@ impl CommentView {
             self.editor_focus = None;
         }
     }
+
+    /// The annotation at `gone` was just deleted; `before` and `after` are the document's
+    /// annotations until then and now. The selection and the inline editor stay on what they
+    /// were on, where it now is (deleting a reply keeps its comment selected), and close when it
+    /// went too.
+    pub(crate) fn annotation_deleted(&mut self, before: &[Annotation], after: &[Annotation], gone: (usize, usize)) {
+        self.selected = self.selected.and_then(|k| after_delete(before, after, gone, k));
+        self.editing = self.editing.take().and_then(|(p, i, text)| after_delete(before, after, gone, (p, i)).map(|(p, i)| (p, i, text)));
+        if self.editing.is_none() {
+            self.editor_focus = None;
+        }
+    }
+}
+
+/// Where the annotation at `keep` is once the one at `gone` was deleted, or `None` when it went
+/// with it. Deleting takes the annotation's replies (at any depth) and pop-ups out of its page's
+/// `/Annots` (`pdfcraft_annot::delete_annotation`), and everything after them moves up, so `keep`
+/// is found by its place among the page's annotations that stay. When the page lost other
+/// annotations than those, or the one in that place reads differently, it is not guessed at.
+fn after_delete(before: &[Annotation], after: &[Annotation], gone: (usize, usize), keep: (usize, usize)) -> Option<(usize, usize)> {
+    if keep == gone {
+        return None;
+    }
+    if keep.0 != gone.0 {
+        return Some(keep);
+    }
+    let (old, new) = (on_page(before, gone.0), on_page(after, gone.0));
+    // Only replies on the page go with it: `/IRT` is followed through the page's `/Annots`.
+    let parents: HashMap<usize, usize> = old.iter().filter_map(|a| a.parent.filter(|p| p.0 == gone.0).map(|p| (a.index, p.1))).collect();
+    let goes = |mut i: usize| {
+        // `link_replies` settles every chain within 64 steps.
+        for _ in 0..=64 {
+            if i == gone.1 {
+                return true;
+            }
+            let Some(&up) = parents.get(&i) else { return false };
+            i = up;
+        }
+        false
+    };
+    let stays: Vec<&Annotation> = old.iter().copied().filter(|a| !goes(a.index)).collect();
+    if stays.len() != new.len() {
+        return None;
+    }
+    let rank = stays.iter().position(|a| a.index == keep.1)?;
+    let (was, now) = (stays.get(rank)?, new.get(rank)?);
+    let same = (&was.subtype, &was.name, &was.author, &was.contents, was.rect) == (&now.subtype, &now.name, &now.author, &now.contents, now.rect);
+    same.then_some((now.page, now.index))
+}
+
+/// The annotations listed on `page`, in `/Annots` order.
+fn on_page(list: &[Annotation], page: usize) -> Vec<&Annotation> {
+    let mut v: Vec<&Annotation> = list.iter().filter(|a| a.page == page).collect();
+    v.sort_by_key(|a| a.index);
+    v
 }
 
 /// Comments panel order (Acrobat: Sort by page, author, date, type, colour).
@@ -2351,6 +2408,66 @@ mod tests {
             };
             assert_eq!(edited_in_view(&cx, 0, viewport), in_view, "no_rotate: {no_rotate}");
         }
+    }
+
+    /// A listed comment or reply at `index` on `page`, replying to `parent`.
+    fn listed(page: usize, index: usize, contents: &str, parent: Option<(usize, usize)>) -> Annotation {
+        Annotation {
+            page,
+            subtype: "Text".into(),
+            author: None,
+            contents: Some(contents.into()),
+            modified: None,
+            name: None,
+            in_reply_to: None,
+            parent,
+            grouped: false,
+            rect: [0.0, 0.0, 20.0, 20.0],
+            color: None,
+            index,
+            state: None,
+            quads: Vec::new(),
+            locked: false,
+            intent: None,
+            fill_sign: false,
+            no_rotate: false,
+            points: Vec::new(),
+        }
+    }
+
+    /// What stays selected or open in the editor after a delete is found where it moved to: the
+    /// reply's own replies go with it (pop-ups, unlisted, are gone too), and a page that lost
+    /// something else, or whose annotation in that place reads differently, keeps nothing.
+    #[test]
+    fn a_kept_comment_is_found_where_a_delete_moved_it() {
+        // Page 0's `/Annots`: reply A, its pop-up (unlisted), the comment, reply B, a reply to A.
+        let before = vec![
+            listed(0, 0, "A", Some((0, 2))),
+            listed(0, 2, "comment", None),
+            listed(0, 3, "B", Some((0, 2))),
+            listed(0, 4, "to A", Some((0, 0))),
+            listed(1, 0, "other page", None),
+        ];
+        // Deleting A takes its pop-up and the reply to it: the comment and B move up two places.
+        let after = vec![listed(0, 0, "comment", None), listed(0, 1, "B", Some((0, 0))), listed(1, 0, "other page", None)];
+        let gone = (0, 0);
+        assert_eq!(after_delete(&before, &after, gone, (0, 2)), Some((0, 0)), "the comment");
+        assert_eq!(after_delete(&before, &after, gone, (0, 3)), Some((0, 1)), "the other reply");
+        assert_eq!(after_delete(&before, &after, gone, (0, 4)), None, "the reply to A went with it");
+        assert_eq!(after_delete(&before, &after, gone, gone), None, "the deleted one");
+        assert_eq!(after_delete(&before, &after, gone, (1, 0)), Some((1, 0)), "another page keeps its places");
+        // The page lost more than A and its replies: nothing is guessed.
+        assert_eq!(after_delete(&before, &after[..1], gone, (0, 2)), None);
+        // Another annotation in the comment's place.
+        let changed = vec![listed(0, 0, "something else", None), listed(0, 1, "B", Some((0, 0)))];
+        assert_eq!(after_delete(&before, &changed, gone, (0, 2)), None);
+
+        let mut view = CommentView { selected: Some((0, 2)), editing: Some((0, 3, "typed".into())), ..Default::default() };
+        view.annotation_deleted(&before, &after, gone);
+        assert_eq!((view.selected, view.editing), (Some((0, 0)), Some((0, 1, "typed".into()))), "both follow");
+        let mut view = CommentView { editing: Some((0, 4, "typed".into())), editor_focus: Some(EditorFocus::Take), ..Default::default() };
+        view.annotation_deleted(&before, &after, gone);
+        assert_eq!((view.editing, view.editor_focus), (None, None), "the editor closes with the reply it was open on");
     }
 
     use pdfcraft_render::TextGlyph;
