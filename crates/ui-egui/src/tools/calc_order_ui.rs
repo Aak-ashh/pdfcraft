@@ -18,6 +18,7 @@ use crate::canvas::PageToolContext;
 use crate::theme::{self, Tokens};
 use crate::{LeftPanel, PdfCraftApp, icons, widgets};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Sense, Shape, Stroke, Vec2, pos2, vec2};
+use pdfcraft_cos::ObjRef;
 use pdfcraft_engine::form_scripts::{CalcOp, Calculate, format_value};
 use pdfcraft_engine::{CalculatedField, CalculationIssue, CalculationOrder, Edit, FormField, FormFieldKind};
 
@@ -54,9 +55,9 @@ enum Tone {
 pub struct CalcOrderView {
     cache: Option<(u64, Arc<Listed>)>,
     /// The field whose row is under the pointer, this frame.
-    hover_row: Option<String>,
+    hover_row: Option<Focus>,
     /// The field under the pointer on the page, last frame.
-    hover_page: Option<String>,
+    hover_page: Option<Focus>,
     /// Links on page is off.
     hide_links: bool,
     /// The selected field the list last scrolled to, so a new selection (on the page too) brings
@@ -88,7 +89,45 @@ struct Row {
 struct Link {
     from: String,
     to: String,
+    /// The calculated field `to` names, whose formula reads `from`.
+    reader: ObjRef,
     tone: Tone,
+}
+
+/// The field in focus: its name, and its object when the focus is one field (its row, or its
+/// widget on the page). The Prepare selection has only a name, so it stands for every field of
+/// that name: two fields can share a name in a malformed form.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Focus {
+    name: String,
+    obj: Option<ObjRef>,
+}
+
+impl Focus {
+    fn named(name: &str) -> Self {
+        Self { name: name.to_owned(), obj: None }
+    }
+
+    /// A calculated field's row.
+    fn row(f: &CalculatedField) -> Self {
+        Self { name: f.name.clone(), obj: Some(f.obj) }
+    }
+
+    /// Whether field `name`, object `obj`, is in focus.
+    fn is(&self, name: &str, obj: ObjRef) -> bool {
+        self.name == name && self.obj.is_none_or(|o| o == obj)
+    }
+
+    /// `l` brings a value into the focus: its formula reads `l.from`.
+    fn reads(&self, l: &Link) -> bool {
+        self.is(&l.to, l.reader)
+    }
+
+    /// `l` takes the focus's value to a formula. A formula reads by name, so it reads every field
+    /// of the focus's name alike.
+    fn read_by(&self, l: &Link) -> bool {
+        l.from == self.name
+    }
 }
 
 impl CalcOrderView {
@@ -112,13 +151,13 @@ impl CalcOrderView {
     }
 
     /// The field under the pointer on the page, for the next frame.
-    pub(crate) fn set_hover_page(&mut self, name: Option<String>) {
-        self.hover_page = name;
+    pub(crate) fn set_hover_page(&mut self, field: Option<Focus>) {
+        self.hover_page = field;
     }
 
     /// The field whose links show: under the pointer in the list or on the page, else selected.
-    fn focus(&self, selected: Option<&str>) -> Option<String> {
-        self.hover_row.clone().or_else(|| self.hover_page.clone()).or_else(|| selected.map(str::to_owned))
+    fn focus(&self, selected: Option<&str>) -> Option<Focus> {
+        self.hover_row.clone().or_else(|| self.hover_page.clone()).or_else(|| selected.map(Focus::named))
     }
 }
 
@@ -200,7 +239,7 @@ fn links(calculated: &[CalculatedField], mut names: Vec<&str>) -> Vec<Link> {
                 } else {
                     Tone::Ok
                 };
-                out.push(Link { from: from.to_owned(), to: c.name.clone(), tone });
+                out.push(Link { from: from.to_owned(), to: c.name.clone(), reader: c.obj, tone });
             }
         }
     }
@@ -256,25 +295,31 @@ fn names(list: &[&str]) -> String {
 }
 
 /// What the focused field reads and what reads it: "total reads sub and tax · No field reads it".
-/// `calculated` is the focus in the order, if it calculates: the fields it reads that the form
-/// doesn't have, and names its script builds as it runs, are said too.
-fn trace(links: &[Link], focus: &str, calculated: Option<&CalculatedField>) -> String {
+/// If the focus calculates (its fields in the order's `calculated`), the fields it reads that the
+/// form doesn't have, and names its script builds as it runs, are said too.
+fn trace(links: &[Link], focus: &Focus, calculated: &[CalculatedField]) -> String {
     let lang = crate::i18n::current();
     let mut reads: Vec<&str> = Vec::new();
     let mut read_by: Vec<&str> = Vec::new();
     for l in links {
-        if l.to == focus && !reads.contains(&l.from.as_str()) {
+        if focus.reads(l) && !reads.contains(&l.from.as_str()) {
             reads.push(&l.from);
         }
-        if l.from == focus && !read_by.contains(&l.to.as_str()) {
+        if focus.read_by(l) && !read_by.contains(&l.to.as_str()) {
             read_by.push(&l.to);
         }
     }
-    let issues = calculated.map(|c| c.issues.as_slice()).unwrap_or_default();
-    let missing: Vec<&str> =
-        issues.iter().filter_map(|i| if let CalculationIssue::MissingField { field } = i { Some(field.as_str()) } else { None }).collect();
-    let built = issues.contains(&CalculationIssue::BuiltNames);
+    let (mut missing, mut said): (Vec<&str>, HashSet<&str>) = (Vec::new(), HashSet::new());
+    let mut built = false;
+    for issue in calculated.iter().filter(|c| focus.is(&c.name, c.obj)).flat_map(|c| &c.issues) {
+        match issue {
+            CalculationIssue::MissingField { field } if said.insert(field) => missing.push(field),
+            CalculationIssue::BuiltNames => built = true,
+            _ => {}
+        }
+    }
     reads.extend(&missing);
+    let focus = focus.name.as_str();
     let mut parts = vec![if !reads.is_empty() {
         crate::i18n::fmt(tl!("{field} reads {fields}"), &[("field", focus), ("fields", &names(&reads))])
     } else if built {
@@ -661,14 +706,14 @@ pub(crate) fn panel(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens) {
             }
             let pointed = ui.rect_contains_pointer(rect);
             if pointed {
-                hover_row = Some(f.name.clone());
+                hover_row = Some(Focus::row(f));
             }
             let visible = ui.is_rect_visible(rect);
             // The arrows' column, kept for every row so nothing moves when they show.
             let arrows_x = rect.right() - 26.0;
             if visible {
                 let press = theme::Press::track(ui, &resp);
-                if !is_selected && focus_page.as_deref() == Some(f.name.as_str()) {
+                if !is_selected && focus_page.as_ref().is_some_and(|p| p.is(&f.name, f.obj)) {
                     ui.painter().rect_filled(rect, CornerRadius::same(8), t.hover);
                 }
                 press.wash(ui, rect, 8, is_selected);
@@ -815,6 +860,16 @@ pub(crate) fn panel(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens) {
     }
 }
 
+/// The focus's links, and whether a field is at either end of one or is the focus itself: the
+/// fields it reads go by name, as a read name stands for every field of that name, and the
+/// formulas that read it by object.
+fn focus_links<'a>(links: &'a [Link], focus: &'a Focus) -> (Vec<&'a Link>, impl Fn(&str, ObjRef) -> bool + 'a) {
+    let shown: Vec<&Link> = links.iter().filter(|l| focus.reads(l) || focus.read_by(l)).collect();
+    let names: HashSet<&str> = shown.iter().filter(|l| focus.reads(l)).map(|l| l.from.as_str()).collect();
+    let readers: HashSet<ObjRef> = shown.iter().filter(|l| focus.read_by(l)).map(|l| l.reader).collect();
+    (shown, move |name: &str, obj: ObjRef| focus.is(name, obj) || names.contains(name) || readers.contains(&obj))
+}
+
 /// The calculation order on page `page`: the links of the field in focus, with the fields it has
 /// nothing to do with faded, and the steps of the focus and its linked fields; with nothing in
 /// focus, the steps of the fields whose place is wrong. A form with many calculations stays
@@ -825,48 +880,50 @@ pub(crate) fn paint_page(
     view: &CalcOrderView,
     generation: u64,
     selected: Option<&str>,
-) -> Option<String> {
+) -> Option<Focus> {
     let PageToolContext { ui, xf, page, info, ptr, .. } = cx;
     let painter = ui.painter();
     let pointer = ptr.pos;
     let listed = view.current(generation)?;
     // Each field's first widget on this page.
-    let mut on_page: Vec<(&str, Rect)> = Vec::new();
+    let mut on_page: Vec<(&str, ObjRef, Rect)> = Vec::new();
     for f in form {
         if let Some(w) = f.widgets.iter().find(|w| w.page == Some(page) && !w.hidden) {
             let r = w.rect;
-            on_page.push((&f.name, xf.user_rect(info, page, [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32])));
+            on_page.push((&f.name, f.obj, xf.user_rect(info, page, [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32])));
         }
     }
     if on_page.is_empty() {
         return None;
     }
-    let hovered = pointer.and_then(|p| on_page.iter().rev().find(|(_, r)| r.contains(p))).map(|(n, _)| (*n).to_owned());
-    let at: HashMap<&str, Rect> = on_page.iter().copied().collect();
+    let hovered = pointer
+        .and_then(|p| on_page.iter().rev().find(|(_, _, r)| r.contains(p)))
+        .map(|(name, obj, _)| Focus { name: (*name).to_owned(), obj: Some(*obj) });
+    // Arrows start at a read name's field (one of them, if fields share it) and end at the formula's.
+    let by_name: HashMap<&str, Rect> = on_page.iter().map(|(name, _, r)| (*name, *r)).collect();
+    let by_obj: HashMap<ObjRef, Rect> = on_page.iter().map(|(_, obj, r)| (*obj, *r)).collect();
     let zoom = xf.zoom().clamp(0.5, 3.0);
     let focus = if view.hide_links { None } else { view.focus(selected) };
-    // The focus's links, and the fields at either end of them (with the focus itself).
-    let shown: Vec<&Link> = focus.as_deref().map(|f| listed.links.iter().filter(|l| l.from == f || l.to == f).collect()).unwrap_or_default();
-    let related: Option<HashSet<&str>> = focus.as_deref().map(|f| shown.iter().flat_map(|l| [l.from.as_str(), l.to.as_str()]).chain([f]).collect());
-    if let (Some(focus), Some(related)) = (focus.as_deref(), &related) {
-        for (name, r) in &on_page {
-            if !related.contains(name) {
+    let focused = focus.as_ref().map(|f| focus_links(&listed.links, f));
+    if let (Some(focus), Some((shown, related))) = (&focus, &focused) {
+        for (name, obj, r) in &on_page {
+            if !related(name, *obj) {
                 painter.rect_filled(r.expand(1.0), CornerRadius::ZERO, Color32::from_white_alpha(150));
             } else {
-                let width = if *name == focus { 2.0 } else { 1.0 };
+                let width = if focus.is(name, *obj) { 2.0 } else { 1.0 };
                 painter.rect_stroke(r.expand(1.0), CornerRadius::same(2), Stroke::new(width, LINK_OK), egui::StrokeKind::Outside);
             }
         }
-        for l in &shown {
-            if let (Some(a), Some(b)) = (at.get(l.from.as_str()), at.get(l.to.as_str())) {
+        for l in shown {
+            if let (Some(a), Some(b)) = (by_name.get(l.from.as_str()), by_obj.get(&l.reader)) {
                 arrow(painter, *a, *b, l.tone, zoom);
             }
         }
     }
     for (k, (f, row)) in listed.order.fields.iter().zip(&listed.rows).enumerate() {
-        let Some(r) = at.get(f.name.as_str()) else { continue };
-        let shown = match &related {
-            Some(related) => related.contains(f.name.as_str()),
+        let Some(r) = by_obj.get(&f.obj) else { continue };
+        let shown = match &focused {
+            Some((_, related)) => related(f.name.as_str(), f.obj),
             None => row.tone != Tone::Ok || !f.listed,
         };
         if !shown {
@@ -948,7 +1005,7 @@ pub(crate) fn paint_trace(ui: &egui::Ui, painter: &egui::Painter, viewport: Rect
     }
     let (Some(listed), Some(focus)) = (view.current(generation), view.focus(selected)) else { return };
     let t = Tokens::get(ui.ctx());
-    let text = trace(&listed.links, &focus, listed.order.fields.iter().find(|f| f.name == focus));
+    let text = trace(&listed.links, &focus, &listed.order.fields);
     let font = theme::regular(12.0);
     // Clear of the floating tool strip at the view's left.
     let room = (viewport.width() - 220.0).max(0.0);
@@ -968,7 +1025,7 @@ mod tests {
     use super::*;
 
     fn field(name: &str, reads: &[&str], issues: Vec<CalculationIssue>) -> CalculatedField {
-        let obj = pdfcraft_cos::ObjRef { num: 0, generation: 0 };
+        let obj = ObjRef { num: 0, generation: 0 };
         CalculatedField { name: name.into(), obj, reads: reads.iter().map(|r| (*r).to_owned()).collect(), listed: true, issues }
     }
 
@@ -983,7 +1040,7 @@ mod tests {
     }
 
     fn link(from: &str, to: &str, tone: Tone) -> Link {
-        Link { from: from.into(), to: to.into(), tone }
+        Link { from: from.into(), to: to.into(), reader: ObjRef { num: 0, generation: 0 }, tone }
     }
 
     #[test]
@@ -1028,10 +1085,10 @@ mod tests {
     fn the_summary_says_what_a_field_reads_and_what_reads_it() {
         crate::i18n::set_current(crate::i18n::Lang::EN);
         let links = [link("sub", "total", Tone::Late), link("tax", "total", Tone::Ok), link("qty", "sub", Tone::Ok), link("sub", "tax", Tone::Ok)];
-        assert_eq!(trace(&links, "total", None), "total reads sub and tax · No field reads it");
-        assert_eq!(trace(&links, "sub", None), "sub reads qty · total and tax read it");
-        assert_eq!(trace(&links, "tax", None), "tax reads sub · total reads it");
-        assert_eq!(trace(&links, "qty", None), "qty reads no other field · sub reads it");
+        assert_eq!(trace(&links, &Focus::named("total"), &[]), "total reads sub and tax · No field reads it");
+        assert_eq!(trace(&links, &Focus::named("sub"), &[]), "sub reads qty · total and tax read it");
+        assert_eq!(trace(&links, &Focus::named("tax"), &[]), "tax reads sub · total reads it");
+        assert_eq!(trace(&links, &Focus::named("qty"), &[]), "qty reads no other field · sub reads it");
     }
 
     /// A field the form doesn't have is read too, and said to be missing; a script's names built
@@ -1042,13 +1099,71 @@ mod tests {
         let missing = |names: &[&str]| names.iter().map(|n| CalculationIssue::MissingField { field: (*n).into() }).collect::<Vec<_>>();
         let links = [link("qty", "sub", Tone::Ok), link("sub", "total", Tone::Ok), link("tax", "total", Tone::Ok)];
         let sub = field("sub", &["qty", "discount"], missing(&["discount"]));
-        assert_eq!(trace(&links, "sub", Some(&sub)), "sub reads qty and discount · discount is missing · total reads it");
+        assert_eq!(trace(&links, &Focus::named("sub"), &[sub]), "sub reads qty and discount · discount is missing · total reads it");
         let tax = field("tax", &["subtotl", "rate"], missing(&["subtotl", "rate"]));
-        assert_eq!(trace(&links, "tax", Some(&tax)), "tax reads subtotl and rate · subtotl and rate are missing · total reads it");
+        assert_eq!(trace(&links, &Focus::named("tax"), &[tax]), "tax reads subtotl and rate · subtotl and rate are missing · total reads it");
         let rows = field("rows", &[], vec![CalculationIssue::BuiltNames]);
-        assert_eq!(trace(&links, "rows", Some(&rows)), "rows reads fields named as it runs · No field reads it");
+        assert_eq!(trace(&links, &Focus::named("rows"), &[rows]), "rows reads fields named as it runs · No field reads it");
         let both = field("total", &["sub", "tax"], vec![CalculationIssue::BuiltNames]);
-        assert_eq!(trace(&links, "total", Some(&both)), "total reads sub and tax · Some names are built as it runs · No field reads it");
+        assert_eq!(trace(&links, &Focus::named("total"), &[both]), "total reads sub and tax · Some names are built as it runs · No field reads it");
+    }
+
+    /// Two calculated fields named `total`, as a malformed form can have, each reading a field the
+    /// form doesn't have, and `grand` reading `total`.
+    fn two_totals() -> ([CalculatedField; 3], Vec<Link>) {
+        let total = |num, reads: &[&str], gone: &str| CalculatedField {
+            obj: ObjRef { num, generation: 0 },
+            ..field("total", reads, vec![CalculationIssue::MissingField { field: gone.into() }])
+        };
+        let grand = CalculatedField { obj: ObjRef { num: 3, generation: 0 }, ..field("grand", &["total"], vec![]) };
+        let calculated = [total(1, &["qty", "lost"], "lost"), total(2, &["tax", "gone"], "gone"), grand];
+        let links = links(&calculated, vec!["qty", "tax", "total", "total", "grand"]);
+        (calculated, links)
+    }
+
+    /// Hovering a row of a field that shares its name says that field's reads and missing fields,
+    /// not the first one's of that name. The selection is only a name, so it says both.
+    #[test]
+    fn a_row_sharing_its_name_is_traced_by_its_field() {
+        crate::i18n::set_current(crate::i18n::Lang::EN);
+        let (calculated, links) = two_totals();
+        let mut view = CalcOrderView::default();
+        let mut said = Vec::new();
+        for f in &calculated {
+            view.hover_row = Some(Focus::row(f));
+            let focus = view.focus(Some("total")).expect("a hovered row is the focus");
+            said.push(trace(&links, &focus, &calculated));
+        }
+        assert_eq!(
+            said,
+            [
+                "total reads qty and lost · lost is missing · grand reads it",
+                "total reads tax and gone · gone is missing · grand reads it",
+                "grand reads total · No field reads it",
+            ]
+        );
+        view.hover_row = None;
+        let selected = view.focus(Some("total")).expect("the selection is the focus");
+        assert_eq!(selected, Focus::named("total"));
+        assert_eq!(trace(&links, &selected, &calculated), "total reads qty, tax, lost and gone · lost and gone are missing · grand reads it");
+    }
+
+    /// On the page too, a field that shares its name is outlined, and its arrows drawn, as one
+    /// field: the fields it reads by name, the formulas that read it by object.
+    #[test]
+    fn a_field_sharing_its_name_is_related_on_the_page_by_its_object() {
+        let (calculated, links) = two_totals();
+        let [first, second, grand] = calculated.each_ref().map(|f| f.obj);
+        let elsewhere = ObjRef { num: 9, generation: 0 };
+        let focus = Focus::row(&calculated[0]);
+        let (shown, related) = focus_links(&links, &focus);
+        assert!(shown.iter().all(|l| l.reader == first || l.to == "grand"), "{shown:?}");
+        assert!(related("total", first) && !related("total", second), "only the field in focus");
+        assert!(related("qty", elsewhere) && !related("tax", elsewhere), "only the fields it reads");
+        assert!(related("grand", grand), "the formula that reads it");
+        let selected = Focus::named("total");
+        let (_, related) = focus_links(&links, &selected);
+        assert!(related("total", first) && related("total", second) && related("tax", elsewhere), "a selected name is every field of it");
     }
 
     /// A missing field outranks a loop on the row, but the field is still in its loop.
