@@ -18,11 +18,12 @@ clear_marks(&mut doc, None)?;                        // remove marks without app
   more than a fifth of its size (or a point) both ways; zero-size text goes when its origin is
   inside;
 - **images**: fully covered → removed; partly covered → a copy with the covered pixels cleared
-  (8/16-bit and 1/2/4-bit images, image masks; Flate/LZW/RL/A85/AHx). Codecs PdfCraft can't
-  re-encode (DCT, JPX, JBIG2, CCITT) are removed whole (fail-closed); inline images under an
-  area are removed. Images with separate `/SMask` or `/Mask` data, and images whose data decodes
-  to more than twice their declared raster (plus a byte per row and 4 KiB), are removed whole;
-  cleared copies drop `/Alternates` so alternate pixels cannot survive;
+  (8/16-bit and 1/2/4-bit images, image masks; Flate/LZW/RL/A85/AHx, and CCITT fax as the last
+  filter, decoded through `Document::decoded_image`; `/DecodeParms` given by reference count).
+  Codecs PdfCraft can't decode (DCT, JPX, JBIG2) are removed whole (fail-closed); inline images
+  under an area are removed. Images with separate `/SMask` or `/Mask` data, and images whose
+  data decodes to more than twice their declared raster (plus a byte per row and 4 KiB), are
+  removed whole; cleared copies drop `/Alternates` so alternate pixels cannot survive;
 - **vectors**: covered paths are removed; partly covered paths and shadings are clipped so
   nothing paints inside the areas;
 - **form XObjects**: rewritten recursively into new objects (pages sharing the original keep it);

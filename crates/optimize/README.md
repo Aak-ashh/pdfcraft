@@ -58,9 +58,7 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   - Apart from the downsampling it is lossless: the samples keep their meaning, so the colour
     space, decode array and `/Mask` stay. Group 4 wins on scans, whose ragged edges defeat Flate;
     on clean computer-drawn 1-bit art Flate can be smaller. Not yet: JBIG2, Group 3 to Group 4
-    without resampling, inline images, and Group 4 for rows wider than 32,767 samples. Redaction
-    doesn't decode Group 4 yet: a mark over part of an image stored this way removes the whole
-    image (nothing leaks).
+    without resampling, inline images, and Group 4 for rows wider than 32,767 samples.
 - **Discard objects:** thumbnails, alternate images, document tags, print settings.
 - **Clean up:** Flate for streams with no filter; for streams with an outer ASCII85 or ASCIIHex
   layer, that layer is removed when the result is smaller (the inner filters keep their encoded

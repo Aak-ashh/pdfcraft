@@ -8,9 +8,7 @@ Layer L4. Create a PDF (Acrobat's Create a PDF tool), execution plan M10.2:
   (`/DCTDecode`, grey, RGB or Adobe-inverted CMYK); PNG is decoded and stored with Flate,
   with transparency as a soft mask. A picture of only pure black and white (a 1-bit PNG or TIFF,
   eight-bit grey, a two-colour palette, RGB without a profile) is stored at one bit per pixel, as
-  CCITT Group 4 or Flate, whichever is smaller as stored (`pdfcraft_filters::encode_g4`).
-  Redaction doesn't decode Group 4 yet: a mark over part of such a picture removes the whole
-  picture (nothing leaks). An ICC profile in the file (JPEG `APP2 ICC_PROFILE`, PNG
+  CCITT Group 4 or Flate, whichever is smaller as stored (`pdfcraft_filters::encode_g4`). An ICC profile in the file (JPEG `APP2 ICC_PROFILE`, PNG
   `iCCP`) that matches the image's colour space is kept as an `/ICCBased` colour space with
   the device space as `/Alternate`; images with the same profile share one profile object.
   JPEG metadata scanning skips marker fill bytes and reads application segments after the

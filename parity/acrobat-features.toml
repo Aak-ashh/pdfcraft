@@ -131,7 +131,7 @@ status = "partial"
 commands = []
 tools = []
 evidence = ["crates/filters/src/ccitt.rs::decoding_gives_the_rows_back", "crates/cos/src/document/tests.rs::fax_images_decode_with_their_parameters"]
-notes = "decoded through the hayro bootstrap for display; own codecs are M1.1/M1.2. CCITT fax decoding is in filters (decode_ccitt, through hayro-ccitt), which Document::decoded_image uses for Export ▸ Images and the optimizer"
+notes = "decoded through the hayro bootstrap for display; own codecs are M1.1/M1.2. CCITT fax decoding is in filters (decode_ccitt, through hayro-ccitt), which Document::decoded_image uses for Export ▸ Images, the optimizer and redaction"
 
 [[feature]]
 id = "core.decompression-limits"
@@ -5792,8 +5792,8 @@ milestone = "M8"
 status = "shipped"
 commands = ["redact.apply"]
 tools = ["redact_apply"]
-evidence = ["crates/redact/src/tests.rs::images_are_removed_or_have_their_pixels_cleared", "crates/redact/src/tests.rs::redaction_clears_pixels_intersected_without_covering_their_centres"]
-notes = "intersected pixel footprints are cleared conservatively in a copy; DCT/JPX/JBIG2/CCITT images removed whole"
+evidence = ["crates/redact/src/tests.rs::images_are_removed_or_have_their_pixels_cleared", "crates/redact/src/tests.rs::redaction_clears_pixels_intersected_without_covering_their_centres", "crates/redact/src/tests.rs::a_fax_image_has_its_covered_pixels_cleared_instead_of_being_removed", "crates/redact/src/tests.rs::an_image_whose_predictor_is_given_by_reference_has_the_covered_pixel_cleared"]
+notes = "intersected pixel footprints are cleared conservatively in a copy, CCITT fax images (scans stored as Group 4) included; DCT/JPX/JBIG2 images removed whole"
 
 [[feature]]
 id = "protect.redact-vectors"
@@ -6885,7 +6885,7 @@ status = "shipped"
 commands = ["create.images"]
 tools = ["doc_create"]
 evidence = ["crates/create/src/tests.rs::black_and_white_images_are_stored_at_one_bit", "crates/create/src/tests.rs::jpeg_2000_images_are_embedded_as_is", "crates/create/src/tests.rs::images_export_as_jpeg_unchanged_and_others_as_png", "crates/create/src/tests.rs::embedded_icc_profiles_tag_the_image_colour_space"]
-notes = "PNG, JPEG, TIFF (multi-page), GIF (first frame), BMP, and JPEG 2000 (JP2 or codestream, embedded as JPXDecode with its capture resolution). JPEG and PNG ICC profiles are kept as /ICCBased; TIFF profiles are not read yet. A picture of only pure black and white (a 1-bit PNG or TIFF, eight-bit grey, a two-colour palette, RGB without a profile) is stored at one bit per pixel, as CCITT Group 4 or Flate, whichever is smaller. Redaction doesn't decode Group 4 yet: a mark over part of such a picture removes it whole (nothing leaks)"
+notes = "PNG, JPEG, TIFF (multi-page), GIF (first frame), BMP, and JPEG 2000 (JP2 or codestream, embedded as JPXDecode with its capture resolution). JPEG and PNG ICC profiles are kept as /ICCBased; TIFF profiles are not read yet. A picture of only pure black and white (a 1-bit PNG or TIFF, eight-bit grey, a two-colour palette, RGB without a profile) is stored at one bit per pixel, as CCITT Group 4 or Flate, whichever is smaller"
 
 [[feature]]
 id = "create.from-multipage-tiff"
@@ -7385,7 +7385,7 @@ status = "partial"
 commands = ["optimize.advanced", "optimize.reduce"]
 tools = ["doc_optimize", "doc_reduce"]
 evidence = ["crates/optimize/tests/optimize.rs::eight_bit_black_and_white_images_become_one_bit", "crates/filters/src/ccitt.rs::bitmaps_round_trip", "crates/filters/src/ccitt.rs::a_page_of_text_like_marks_round_trips_and_shrinks", "crates/filters/src/ccitt.rs::what_it_cannot_encode_is_an_error", "crates/optimize/tests/optimize.rs::black_and_white_images_become_ccitt_group_4", "crates/automation/tests/it/automation.rs::doc_optimize_stores_black_and_white_images_as_ccitt_group_4", "crates/ui-egui/tests/it/create.rs::the_pdf_optimizer_dialog_saves_an_optimized_copy"]
-notes = "CCITT Group 4, lossless: PDF Optimizer ▸ Images ▸ Monochrome Images (on by default, so Reduce File Size does it too; doc_optimize mono) stores a 1-bit image of one colour component (grey, indexed, a separation) or an image mask, kept with no filter or general-purpose ones, as Group 4 when that is smaller as stored; the samples decode to the same bits, so colour space, decode array and masks stay. An eight-bit grey image of only black and white is packed to one bit first, then stored the same way (indexed images and colour-key masks aside), unless the grey settings make it smaller still, as they can a dithered scan downsampled to JPEG, its soft mask counted. Group 4 wins on scans; on clean computer-drawn 1-bit art Flate can be smaller, and the image then stays. CCITT fax images are decoded to be downsampled (optimize.downsample-images), and a resampled image is stored as Group 4 or 1-bit Flate, whichever is smaller. Not yet: JBIG2 (lossless or lossy, which Adobe's help says beats CCITT for monochrome), Group 3 to Group 4 without resampling, inline images, soft masks and /Mask images, rows wider than 32,767 samples. Redaction doesn't decode Group 4 yet (a mark over part of such an image removes it whole; nothing leaks)."
+notes = "CCITT Group 4, lossless: PDF Optimizer ▸ Images ▸ Monochrome Images (on by default, so Reduce File Size does it too; doc_optimize mono) stores a 1-bit image of one colour component (grey, indexed, a separation) or an image mask, kept with no filter or general-purpose ones, as Group 4 when that is smaller as stored; the samples decode to the same bits, so colour space, decode array and masks stay. An eight-bit grey image of only black and white is packed to one bit first, then stored the same way (indexed images and colour-key masks aside), unless the grey settings make it smaller still, as they can a dithered scan downsampled to JPEG, its soft mask counted. Group 4 wins on scans; on clean computer-drawn 1-bit art Flate can be smaller, and the image then stays. CCITT fax images are decoded to be downsampled (optimize.downsample-images), and a resampled image is stored as Group 4 or 1-bit Flate, whichever is smaller. Not yet: JBIG2 (lossless or lossy, which Adobe's help says beats CCITT for monochrome), Group 3 to Group 4 without resampling, inline images, soft masks and /Mask images, rows wider than 32,767 samples."
 
 [[feature]]
 id = "optimize.only-if-smaller"
