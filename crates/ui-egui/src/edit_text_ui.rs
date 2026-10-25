@@ -285,8 +285,57 @@ pub(crate) fn forget_typing_before(ctx: &egui::Context, id: egui::Id, doc: pdfcr
         state.clear_undoer();
         egui::TextEdit::store_state(ctx, id, state);
     }
-    ctx.data_mut(|d| d.insert_temp(owner, doc));
+    ctx.data_mut(|d| {
+        d.insert_temp(owner, doc);
+        d.remove::<AlignHistory>(id.with(ALIGN_HISTORY));
+    });
     *from = Some(text.to_owned());
+}
+
+/// Each text a page box has shown through its own typing, with its rows' alignments then, oldest
+/// last: egui's history keeps only the text and the caret.
+type AlignHistory = Vec<(String, Vec<Vec<Option<pdfcraft_engine::TextAlign>>>)>;
+const ALIGN_HISTORY: &str = "aligns-by-text";
+/// As many texts as egui's own history keeps.
+const ALIGN_HISTORY_LEN: usize = 100;
+
+/// The page text box `id` went from `before` to `after` through its own typing (typing, Undo or
+/// Redo), and each list of row alignments in `aligns` follows. A text the box showed before gets
+/// back the alignments it had then, so Undo bringing back a deleted row brings back its
+/// alignment; a new text follows the edit ([`pdfcraft_engine::paragraph_align::remap`]). An
+/// alignment picked since makes the older texts' alignments stale, and they are dropped.
+pub(crate) fn follow_typing(
+    ctx: &egui::Context,
+    id: egui::Id,
+    before: &str,
+    after: &str,
+    aligns: &mut [&mut Vec<Option<pdfcraft_engine::TextAlign>>],
+) {
+    let now: Vec<Vec<_>> = aligns.iter().map(|a| a.to_vec()).collect();
+    let next = ctx.data_mut(|d| {
+        let seen = d.get_temp_mut_or_default::<AlignHistory>(id.with(ALIGN_HISTORY));
+        if seen.iter().any(|(text, was)| text == before && *was != now) {
+            seen.clear();
+        }
+        remember(seen, before, now.clone());
+        let next = match seen.iter().rev().find(|(text, _)| text == after) {
+            Some((_, was)) if was.len() == now.len() => was.clone(),
+            _ => now.iter().map(|a| pdfcraft_engine::paragraph_align::remap(before, after, a)).collect(),
+        };
+        remember(seen, after, next.clone());
+        next
+    });
+    for (slot, a) in aligns.iter_mut().zip(next) {
+        **slot = a;
+    }
+}
+
+fn remember(seen: &mut AlignHistory, text: &str, aligns: Vec<Vec<Option<pdfcraft_engine::TextAlign>>>) {
+    seen.retain(|(t, _)| t != text);
+    seen.push((text.to_owned(), aligns));
+    if seen.len() > ALIGN_HISTORY_LEN {
+        seen.remove(0);
+    }
 }
 
 /// Select `range` (bytes of `text`) in the page text box `id` again. egui keeps a box's selection
@@ -439,6 +488,12 @@ impl LineEditor {
         }
         self.follow_rows(&before);
         self.original = self.text.clone();
+    }
+
+    /// The text changed from `before` through the box's own typing (typing, Undo, Redo): rows
+    /// aligned on their own keep their alignment, and a row Undo brings back gets its own back.
+    pub(crate) fn follow_typed_rows(&mut self, ctx: &egui::Context, before: &str) {
+        follow_typing(ctx, input_id(), before, &self.text, &mut [&mut self.look.aligns, &mut self.look0.aligns]);
     }
 
     /// The text changed from `before`: rows aligned on their own keep their alignment.
@@ -1780,7 +1835,7 @@ pub(crate) fn overlay(ctx: &egui::Context, view: &mut DocView, info: &DocInfo) -
                 }
                 let r = output.response;
                 if r.changed() {
-                    ed.follow_rows(&before);
+                    ed.follow_typed_rows(ctx, &before);
                     // The next pass measures the updated draft with the Apply/Save rewrite.
                     ctx.request_repaint();
                 }
@@ -1850,6 +1905,71 @@ pub(crate) fn caret_color_on(fill: Color32) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Undo back to a text the box showed brings its rows' alignments back, unless an alignment
+    /// was picked since: then the older alignments are stale, and the edit is followed instead, so
+    /// Undo never takes back the pick.
+    #[test]
+    fn typing_history_restores_alignments_unless_one_was_picked_since() {
+        use pdfcraft_engine::TextAlign::{Center, Right};
+        let (ctx, id) = (egui::Context::default(), egui::Id::new("box"));
+        let mut aligns = vec![None, Some(Center), Some(Right)];
+        follow_typing(
+            &ctx,
+            id,
+            "A
+B
+C",
+            "A
+C",
+            &mut [&mut aligns],
+        );
+        assert_eq!(aligns, [None, Some(Right)], "the deleted row's entry goes");
+        follow_typing(
+            &ctx,
+            id,
+            "A
+C",
+            "A
+B
+C",
+            &mut [&mut aligns],
+        );
+        assert_eq!(aligns, [None, Some(Center), Some(Right)], "Undo brings it back");
+        follow_typing(
+            &ctx,
+            id,
+            "A
+B
+C",
+            "A
+C",
+            &mut [&mut aligns],
+        );
+        // An alignment picked for the first row, with no typing.
+        aligns = vec![Some(Right), Some(Right)];
+        let picked = aligns.clone();
+        follow_typing(
+            &ctx,
+            id,
+            "A
+C",
+            "A
+B
+C",
+            &mut [&mut aligns],
+        );
+        assert_eq!(
+            aligns,
+            pdfcraft_engine::paragraph_align::remap(
+                "A
+C", "A
+B
+C", &picked
+            ),
+            "the pick stays"
+        );
+    }
 
     #[test]
     fn the_rotate_knob_moves_below_when_there_is_no_room_above() {

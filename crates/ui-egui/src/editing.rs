@@ -233,12 +233,14 @@ impl PdfCraftApp {
         let Some(view) = self.active.and_then(|i| self.views.get_mut(i)) else { return false };
         if let Some(ed) = view.line_editor.as_mut().filter(|ed| ed.has_unsaved_text()) {
             let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, true) else { return false };
-            ed.text = text;
+            let before = std::mem::replace(&mut ed.text, text);
+            ed.follow_typed_rows(&ctx, &before);
             return true;
         }
         if let Some(d) = view.content.draft.as_mut().filter(|d| d.has_unapplied_typing()) {
             let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, true) else { return false };
-            d.text = text;
+            let before = std::mem::replace(&mut d.text, text);
+            crate::edit_text_ui::follow_typing(&ctx, crate::content_ui::input_id(), &before, &d.text, &mut [&mut d.style.aligns]);
             return true;
         }
         false
@@ -262,13 +264,13 @@ impl PdfCraftApp {
         if let Some(ed) = view.line_editor.as_mut() {
             let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, false) else { return ed.has_unsaved_text() };
             let before = std::mem::replace(&mut ed.text, text);
-            ed.follow_rows(&before);
+            ed.follow_typed_rows(&ctx, &before);
             return true;
         }
         if let Some(d) = view.content.draft.as_mut() {
             let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, false) else { return d.has_unapplied_typing() };
-            d.style.aligns = pdfcraft_engine::paragraph_align::remap(&d.text, &text, &d.style.aligns);
-            d.text = text;
+            let before = std::mem::replace(&mut d.text, text);
+            crate::edit_text_ui::follow_typing(&ctx, crate::content_ui::input_id(), &before, &d.text, &mut [&mut d.style.aligns]);
             return true;
         }
         false

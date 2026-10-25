@@ -1089,6 +1089,47 @@ fn redo_from_the_menu_is_enabled_for_the_added_text_boxs_own_typing() {
     assert_eq!(h.state().views[0].content.draft.as_ref().map(|d| d.text.as_str()), Some("Reviewed twice"), "Redo puts it back");
 }
 
+/// Saved added text of three lines aligned Left, Centre and Right: the centred line deleted
+/// with its line break, then brought back with Ctrl+Z, is centred again, and Ctrl+Shift+Z deletes
+/// it again. The box's history keeps only text, so the restored line took the first line's
+/// alignment, and finishing the box would have saved that.
+#[test]
+fn undo_brings_a_deleted_line_of_added_text_back_with_its_alignment() {
+    use pdfcraft_engine::TextAlign::{Center, Right};
+    let mut h = harness();
+    let rect = [40.0, 170.0, 240.0, 215.0];
+    let aligns = vec![None, Some(Center), Some(Right)];
+    let text = pdfcraft_engine::AddedText { rect, text: "A\nB\nC".into(), aligns: aligns.clone(), ..Default::default() };
+    assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::AddText { page: 0, text }));
+    assert!(h.state_mut().execute("edit.text"));
+    h.run_steps(3);
+    // On the first line, at the top of the box.
+    let point = at(&h, 45.0, 205.0);
+    click(&mut h, point);
+    let draft = |h: &Harness<'static, PdfCraftApp>| h.state().views[0].content.draft.clone().expect("the box is open");
+    assert_eq!((draft(&h).text, draft(&h).style.aligns), ("A\nB\nC".to_string(), aligns.clone()), "the editor opened on the text");
+    // Select the second line with its line break, and delete it.
+    h.run_steps(2);
+    // To the start of the first line, wherever the click put the caret.
+    for _ in 0..3 {
+        h.key_press(egui::Key::ArrowUp);
+    }
+    h.key_press(egui::Key::Home);
+    h.run_steps(1);
+    h.key_press(egui::Key::ArrowDown);
+    h.run_steps(1);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowDown);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!((draft(&h).text, draft(&h).style.aligns), ("A\nC".to_string(), vec![None, Some(Right)]), "the centred line is gone");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(3);
+    assert_eq!((draft(&h).text, draft(&h).style.aligns), ("A\nB\nC".to_string(), aligns), "Undo brings it back centred");
+    h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
+    h.run_steps(3);
+    assert_eq!((draft(&h).text, draft(&h).style.aligns), ("A\nC".to_string(), vec![None, Some(Right)]), "Redo deletes it again");
+}
+
 /// Redo with an added text box open and unchanged reaches the document's waiting Redo, even when
 /// the box's text ends in a space: closing the unchanged box writes nothing, so it can't clear
 /// that Redo first.

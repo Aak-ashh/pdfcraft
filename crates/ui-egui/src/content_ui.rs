@@ -645,7 +645,7 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
                 }
                 // Each paragraph keeps its own alignment through the typing.
                 if t.text != before {
-                    t.style.aligns = pdfcraft_engine::paragraph_align::remap(&before, &t.text, &t.style.aligns);
+                    crate::edit_text_ui::follow_typing(ui.ctx(), input, &before, &t.text, &mut [&mut t.style.aligns]);
                 }
                 if t.focus {
                     resp.request_focus();

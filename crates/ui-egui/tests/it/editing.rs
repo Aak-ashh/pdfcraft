@@ -6574,6 +6574,36 @@ fn aligning_a_selected_row_aligns_only_that_row_and_undo_puts_it_back() {
     assert!((row_rect(&h, "nine")[0] - last[0]).abs() < 0.5, "the last row is back");
 }
 
+/// A row aligned on its own, deleted by typing, then brought back with Undo from the menu: it
+/// comes back with its alignment, and Redo deletes it again. The box's history keeps only text,
+/// so the restored row took the alignment of the row before it.
+#[test]
+fn undo_brings_a_deleted_row_back_with_its_alignment() {
+    let mut h = three_row_paragraph();
+    // Right-align the last row on its own.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    align_by_pointer(&mut h, "Align right");
+    let ed = |h: &Harness<'static, PdfCraftApp>| h.state().views[0].line_editor.clone().expect("the paragraph stays open");
+    let (three_rows, aligned) = (ed(&h).text, ed(&h).look.aligns);
+    assert_eq!(aligned.last(), Some(&Some(pdfcraft_engine::TextAlign::Right)), "{aligned:?}");
+    // Delete the last row with the line break before it.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowLeft);
+    h.key_press(Key::Backspace);
+    h.run_steps(2);
+    let (two_rows, after_delete) = (ed(&h).text, ed(&h).look.aligns);
+    assert_eq!(pdfcraft_engine::paragraph_align::count(&two_rows), 2, "{two_rows:?}");
+    assert!(h.state_mut().execute("edit.undo"));
+    h.run_steps(3);
+    assert_eq!((ed(&h).text, ed(&h).look.aligns), (three_rows, aligned), "Undo brings the row back right-aligned");
+    assert!(h.state_mut().execute("edit.redo"));
+    h.run_steps(3);
+    assert_eq!((ed(&h).text, ed(&h).look.aligns), (two_rows, after_delete), "Redo deletes it again");
+}
+
 /// Redo after Undo in the box puts the typing back, in the box: it doesn't reach the document,
 /// whose own Redo (a formatting change waiting here) must stay waiting.
 #[test]
@@ -6771,12 +6801,14 @@ fn typing_in_one_tab_never_reaches_another_tabs_paragraph() {
     // The copy, its paragraph still open: Redo there has nothing of its own to put back.
     h.state_mut().active = Some(1);
     h.run_steps(3);
+    assert!(h.state().views[1].line_editor.is_some(), "the copy's paragraph is still open");
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     h.run_steps(3);
-    let text = h.state().views[1].line_editor.as_ref().map(|ed| ed.text.clone());
-    assert!(!text.as_deref().unwrap_or_default().contains("secret"), "the other tab's typing came in: {text:?}");
+    let text = h.state().views[1].line_editor.as_ref().expect("the copy's paragraph stays open through Redo").text.clone();
+    assert!(!text.contains("secret"), "the other tab's typing came in: {text:?}");
     // Nor through what the menu's Redo runs, which reads the box's history itself (the menu item
-    // is off here, as the copy's document has nothing to redo).
+    // is off here, as the copy's document has nothing to redo). With no Redo of its own, the box
+    // passes the step to the document and closes, so the page's text is checked too.
     h.state_mut().redo();
     h.run_steps(3);
     let s = h.state();
