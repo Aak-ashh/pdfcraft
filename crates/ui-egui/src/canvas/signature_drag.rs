@@ -261,10 +261,10 @@ impl SignatureDrag {
             return;
         }
         let Some(a) = cx.get(*index) else { return };
-        let (pointer, shift) = painter.ctx().input(|i| (i.pointer.hover_pos(), i.modifiers.shift));
+        let shift = painter.ctx().input(|i| i.modifiers.shift);
         // As far as its frame has gone from where the move started (once applied, its box is
         // already where it went).
-        let rect = cx.adjusted_rect(a, cv.gesture.as_ref(), pointer, shift, pending);
+        let rect = cx.adjusted_rect(a, cv.gesture.as_ref(), cx.ptr.pos, shift, pending);
         let from = cx.xf.user_rect(cx.info, *page, m.layer.from);
         let painter = painter.with_clip_rect(painter.clip_rect().intersect(cx.xf.rect));
         m.layer.paint(&painter, cx, *page, from.translate(rect.min - from.min));
