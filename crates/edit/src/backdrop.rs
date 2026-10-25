@@ -20,8 +20,10 @@
 //! that a redaction, Remove Hidden Information or Edit Text removed from the copy.
 //!
 //! Detection is deliberately strict: only one rectangle (`re`), in DeviceGray, DeviceRGB or
-//! DeviceCMYK, opaque in the graphics state, with an axis-aligned transform, filled before any
-//! other painting, and covering the crop box. Anything else is real content and stays.
+//! DeviceCMYK, opaque, unmasked, normally blended and with the identity transfer function as the
+//! graphics state stands after every `gs` so far (each sets only its own keys), with an
+//! axis-aligned transform, filled before any other painting, and covering the crop box.
+//! Anything else is real content and stays.
 
 use pdfcraft_content::{Matrix, Op, Pieces};
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
@@ -80,7 +82,32 @@ struct State {
     white: bool,
     /// Non-stroking colour space components (1, 3, 4), or 0 for a space we don't read.
     space: usize,
-    opaque: bool,
+    paint: Paint,
+}
+
+/// The graphics-state parameters (ExtGState, ISO 32000-2 §8.4.5) that decide whether a fill
+/// paints its colour as given. A `gs` sets only the keys its dictionary has, so each is kept on
+/// its own: a later dictionary that leaves one out keeps the earlier value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Paint {
+    /// Non-stroking alpha (`ca`) is 1.
+    full_alpha: bool,
+    /// No soft mask (`SMask` is `/None`).
+    no_soft_mask: bool,
+    /// The blend mode (`BM`) is Normal or Compatible.
+    normal_blend: bool,
+    /// The transfer function (`TR`, or `TR2`, which takes precedence) is the identity: a
+    /// function could turn white into any colour.
+    identity_transfer: bool,
+}
+
+impl Paint {
+    const INITIAL: Paint = Paint { full_alpha: true, no_soft_mask: true, normal_blend: true, identity_transfer: true };
+
+    /// A fill paints its colour exactly, opaque.
+    fn plain(self) -> bool {
+        self.full_alpha && self.no_soft_mask && self.normal_blend && self.identity_transfer
+    }
 }
 
 /// The backdrop `page` (0-based) paints, if any. Finding the page walks the page tree, so to
@@ -381,7 +408,7 @@ fn sub(doc: &Document, res: &Dict, kind: &[u8], name: &[u8]) -> Option<std::sync
 
 /// Walk the operators until the first one that paints; a backdrop is that one, or nothing.
 fn walk(doc: &Document, res: &Dict, crop: [f64; 4], ops: &[Op]) -> Option<(Backdrop, Option<std::ops::Range<usize>>)> {
-    let mut st = State { ctm: Matrix::IDENTITY, clip: Some([f64::MIN, f64::MIN, f64::MAX, f64::MAX]), white: false, space: 1, opaque: true };
+    let mut st = State { ctm: Matrix::IDENTITY, clip: Some([f64::MIN, f64::MIN, f64::MAX, f64::MAX]), white: false, space: 1, paint: Paint::INITIAL };
     let mut saved: Vec<State> = Vec::new();
     // Current path: its rectangles in user space, or `None` once it is anything else.
     let mut path: Option<Vec<[f64; 4]>> = Some(Vec::new());
@@ -402,7 +429,7 @@ fn walk(doc: &Document, res: &Dict, crop: [f64; 4], ops: &[Op]) -> Option<(Backd
                 }
                 st.ctm = m.then(&st.ctm);
             }
-            b"gs" => st.opaque = opaque_state(doc, res, op.name(0)?)?,
+            b"gs" => apply_state(doc, res, op.name(0)?, &mut st.paint)?,
             b"g" => set_colour(&mut st, 1, op),
             b"rg" => set_colour(&mut st, 3, op),
             b"k" => set_colour(&mut st, 4, op),
@@ -443,7 +470,7 @@ fn walk(doc: &Document, res: &Dict, crop: [f64; 4], ops: &[Op]) -> Option<(Backd
                     Some([r]) => st.clip.and_then(|c| intersect(*r, c)).is_some_and(|r| pdfcraft_content::contains(r, crop, COVER_EPS)),
                     _ => false,
                 };
-                return (covers && st.white && st.opaque && !clip_next).then(|| (Backdrop::Fill, Some(op.span.clone())));
+                return (covers && st.white && st.paint.plain() && !clip_next).then(|| (Backdrop::Fill, Some(op.span.clone())));
             }
             b"Do" => {
                 let xo = sub(doc, res, b"XObject", op.name(0)?)?;
@@ -472,7 +499,7 @@ fn walk(doc: &Document, res: &Dict, crop: [f64; 4], ops: &[Op]) -> Option<(Backd
 /// A picture placed by the CTM (onto the unit square) covering the crop box, opaque, unclipped.
 fn covers_unit_square(st: &State, crop: [f64; 4], image: bool) -> bool {
     image
-        && st.opaque
+        && st.paint.plain()
         && axis_aligned(&st.ctm)
         && st.clip.and_then(|c| intersect(st.ctm.bbox([0.0, 0.0, 1.0, 1.0]), c)).is_some_and(|r| pdfcraft_content::contains(r, crop, COVER_EPS))
 }
@@ -488,14 +515,28 @@ fn set_colour(st: &mut State, components: usize, op: &Op) {
         };
 }
 
-/// Does the named ExtGState keep painting opaque and normal? `None` when it can't be read.
-fn opaque_state(doc: &Document, res: &Dict, name: &[u8]) -> Option<bool> {
+/// Apply the named ExtGState's keys that [`Paint`] tracks; the keys it doesn't have leave
+/// `paint` as it was. `None` when the dictionary or one of those values can't be read.
+fn apply_state(doc: &Document, res: &Dict, name: &[u8], paint: &mut Paint) -> Option<()> {
     let gs = sub(doc, res, b"ExtGState", name)?;
     let gs = gs.as_dict()?;
-    let alpha = gs.get(b"ca").map(|a| doc.resolve(a).as_f64()).unwrap_or(Some(1.0))?;
-    let soft = gs.get(b"SMask").is_some_and(|m| doc.resolve(m).as_name() != Some(b"None"));
-    let blend = gs.get(b"BM").is_some_and(|b| !matches!(doc.resolve(b).as_name(), Some(b"Normal" | b"Compatible")));
-    Some(alpha >= 0.999 && !soft && !blend)
+    if let Some(alpha) = gs.get(b"ca") {
+        paint.full_alpha = doc.resolve(alpha).as_f64()? >= 0.999;
+    }
+    if let Some(mask) = gs.get(b"SMask") {
+        paint.no_soft_mask = doc.resolve(mask).as_name() == Some(b"None");
+    }
+    if let Some(blend) = gs.get(b"BM") {
+        paint.normal_blend = matches!(doc.resolve(blend).as_name(), Some(b"Normal" | b"Compatible"));
+    }
+    // TR2 takes precedence over TR in the same dictionary (§8.4.5, Table 57). Only the names
+    // are read: a function (or one per colourant) is taken to change white.
+    if let Some(transfer) = gs.get(b"TR2") {
+        paint.identity_transfer = matches!(doc.resolve(transfer).as_name(), Some(b"Identity" | b"Default"));
+    } else if let Some(transfer) = gs.get(b"TR") {
+        paint.identity_transfer = doc.resolve(transfer).as_name() == Some(b"Identity");
+    }
+    Some(())
 }
 
 /// Rotations by multiples of 90° and scales only: rectangles stay rectangles.

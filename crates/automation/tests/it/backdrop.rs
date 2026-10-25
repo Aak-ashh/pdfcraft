@@ -222,3 +222,48 @@ fn remove_background_warns_about_pages_whose_own_backdrop_stays_off() {
     assert_eq!(ok(&mut a, "doc_backdrops", json!({ "doc": doc }))["pages"], json!([]), "the fill stays off");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Two 200 × 100 pt pages whose full-page `1 g` fill is not a plain white backdrop (#2815
+/// review): page 1 paints it half transparent, through a `gs` that sets `ca` and a later one
+/// that only sets the line width; page 2 sends it through a transfer function that maps 1 to 0.
+fn graphics_state_pdf() -> Vec<u8> {
+    let invert = "<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>";
+    let resources = format!("<< /ExtGState << /Transparent << /ca 0.5 >> /LineOnly << /LW 2 >> /Invert << /TR {invert} >> >> >>");
+    let contents = ["/Transparent gs /LineOnly gs 1 g 0 0 200 100 re f", "/Invert gs 1 g 0 0 200 100 re f"];
+    let mut objs: Vec<String> =
+        vec!["<< /Type /Catalog /Pages 2 0 R >>".into(), "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 200 100] >>".into()];
+    for (i, c) in contents.iter().enumerate() {
+        objs.push(format!("<< /Type /Page /Parent 2 0 R /Contents {} 0 R /Resources {resources} >>", 4 + 2 * i));
+        objs.push(format!("<< /Length {} >>\nstream\n{c}\nendstream", c.len()));
+    }
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offs = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offs.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let x = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offs {
+        out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n", objs.len() + 1).as_bytes());
+    out
+}
+
+/// #2815 review: a translucent fill (its `ca` left in force by a later `gs`) and a fill through
+/// a transfer function are not backdrops, so a red background goes under them and the
+/// translucent white still lightens it.
+#[test]
+fn fills_the_graphics_state_changes_are_not_replaced() {
+    let dir = named_workdir("graphics-state");
+    std::fs::write(dir.join("gs.pdf"), graphics_state_pdf()).unwrap();
+    let mut a = Automation::new().with_root(&dir).unwrap();
+    let doc = ok(&mut a, "doc_open", json!({ "path": "gs.pdf" }))["doc"].as_u64().unwrap();
+    assert_eq!(ok(&mut a, "doc_backdrops", json!({ "doc": doc }))["pages"], json!([]), "neither fill is a backdrop");
+    ok(&mut a, "doc_background", json!({ "doc": doc, "color": "#FF0000" }));
+    let [r, g, b] = blank_spot(&mut a, doc, 1);
+    assert_eq!(r, 255, "{:?}", [r, g, b]);
+    assert!((100..=160).contains(&g) && (100..=160).contains(&b), "half-transparent white over red, not red: {:?}", [r, g, b]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

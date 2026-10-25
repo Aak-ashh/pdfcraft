@@ -30,14 +30,28 @@ fn stream(dict: &str, data: &str) -> String {
 
 /// One 300 × 200 page drawing `pieces` (objects 5…), with a font, a page-sized image `/Im0`
 /// (object 4) and two graphics states, `/Half` (ca 0.5) and `/Full` (ca 1).
+/// The graphics states [`page`] offers. `INVERT` is a transfer function that maps 1 to 0, so
+/// `1 g` through it paints black (#2815 review).
+const GRAPHICS_STATES: &str = concat!(
+    "/Half << /ca 0.5 >> /Full << /ca 1 /CA 1 >> /LineOnly << /LW 2 >> ",
+    "/Masked << /SMask << /S /Luminosity /G 4 0 R >> >> /Unmasked << /SMask /None >> ",
+    "/Multiply << /BM /Multiply >> /NormalBlend << /BM /Normal >> ",
+    "/Invert << /TR << /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >> >> ",
+    "/Invert2 << /TR2 << /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >> >> ",
+    "/IdentityTR << /TR /Identity >> /DefaultTR2 << /TR2 /Default >> ",
+    "/InvertButTR2Default << /TR << /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >> /TR2 /Default >> ",
+    "/IdentityButTR2Invert << /TR /Identity /TR2 << /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >> >>",
+);
+
 fn page(pieces: &[&str]) -> Document {
     let refs: Vec<String> = (0..pieces.len()).map(|i| format!("{} 0 R", i + 5)).collect();
     let mut objs = vec![
         "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
         format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents [{}] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> /XObject << /Im0 4 0 R >> /ExtGState << /Half << /ca 0.5 >> /Full << /ca 1 /CA 1 >> >> >> >>",
-            refs.join(" ")
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents [{}] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> /XObject << /Im0 4 0 R >> /ExtGState << {GS} >> >> >>",
+            refs.join(" "),
+            GS = GRAPHICS_STATES
         ),
         stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", "\u{80}"),
     ];
@@ -497,4 +511,48 @@ fn a_stream_listed_twice_is_replaced_in_both_slots_and_restored_in_both() {
     assert!(s[1..].iter().all(|c| c.contains("re n") && !c.contains("re f")), "no slot still paints the white fill: {s:?}");
     remove_marks(&mut doc, &[0], MarkKind::Background).unwrap();
     assert_eq!(streams(&doc), original);
+}
+
+/// #2815 review: a `gs` sets only the keys its dictionary has, so a translucent, masked,
+/// blended or transferred fill stays that way through a later `gs` that leaves the key out,
+/// and a transfer function that isn't the identity can turn `1 g` into any colour.
+#[test]
+fn graphics_state_a_later_gs_leaves_out_still_keeps_the_fill() {
+    for state in [
+        "/Half gs /LineOnly gs",
+        "/Masked gs /LineOnly gs",
+        "/Multiply gs /LineOnly gs",
+        "/Invert gs /LineOnly gs",
+        "/Invert2 gs /LineOnly gs",
+        "/Invert gs",
+        "/Invert2 gs",
+        "/IdentityButTR2Invert gs",
+        "/Invert gs q /LineOnly gs Q",
+    ] {
+        let mut doc = page(&[&format!("{state} 1 g 0 0 300 200 re f {TEXT}")]);
+        assert_eq!(page_backdrop(&doc, 0).unwrap(), None, "{state}");
+        let before = streams(&doc);
+        add_background(&mut doc, &[0], &red(), false).unwrap();
+        assert_eq!(streams(&doc)[1..], before[..], "{state}: the page's content is unchanged");
+    }
+}
+
+/// The other side of the same rule: a later `gs` that does set the key back, `TR2` naming the
+/// default over a `TR` function, and `Q` restoring what `q` saved still leave a plain white fill.
+#[test]
+fn graphics_state_set_back_before_the_fill_still_finds_the_backdrop() {
+    for state in [
+        "/Half gs /Full gs",
+        "/Masked gs /Unmasked gs",
+        "/Multiply gs /NormalBlend gs",
+        "/Invert gs /IdentityTR gs",
+        "/Invert2 gs /DefaultTR2 gs",
+        "/InvertButTR2Default gs",
+        "/LineOnly gs",
+        "q /Half gs Q",
+        "q /Invert gs Q",
+    ] {
+        let doc = page(&[&format!("{state} 1 g 0 0 300 200 re f {TEXT}")]);
+        assert_eq!(page_backdrop(&doc, 0).unwrap(), Some(Backdrop::Fill), "{state}");
+    }
 }
