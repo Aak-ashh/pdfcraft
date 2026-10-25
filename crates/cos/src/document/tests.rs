@@ -151,6 +151,8 @@ fn fax_images_decode_with_their_parameters() {
         "behind Flate"
     );
     assert_eq!(behind(&[Object::name("Crypt"), fax.clone()], &[null.clone(), own.clone()], coded.clone()).unwrap(), bits, "after /Crypt");
+    // A /Crypt belongs first (§7.4.10); one after the fax filter leaves it its own entry.
+    assert_eq!(behind(&[fax.clone(), Object::name("Crypt")], &[own.clone(), null.clone()], coded.clone()).unwrap(), bits, "before /Crypt");
     assert!(behind(&ahx, &[own.clone(), null.clone()], hex).is_err(), "the first entry is the other filter's");
     assert!(behind(&[fax.clone(), Object::name("FlateDecode")], &[own.clone(), null.clone()], flated).is_err(), "CCITT, then Flate");
     assert!(behind(&[Object::Int(5), fax], &[null, own], coded.clone()).is_err(), "a /Filter entry that isn't a name");

@@ -236,9 +236,10 @@ impl Document {
         let s = &*self.with_direct_parms(s);
         let chain = s.readable_filters().map_err(|e| CosError::Filter(e.to_string()))?;
         let Some(((pdfcraft_filters::Filter::CcittFax, _), before)) = chain.split_last() else { return s.decoded() };
-        // Its place in /Filter, /Crypt included, pairs it with its /DecodeParms entry (§7.4.1).
+        // Its place in /Filter, /Crypt included, pairs it with its /DecodeParms entry (§7.4.1): the
+        // last filter but a /Crypt, which `filters` leaves out wherever it stands.
         let index = match s.dict.get(b"Filter") {
-            Some(Object::Array(a)) => a.len().saturating_sub(1),
+            Some(Object::Array(a)) => a.iter().rposition(|f| f.as_name() != Some(b"Crypt".as_slice())).unwrap_or(0),
             _ => 0,
         };
         let parms = match s.dict.get(b"DecodeParms").map(|p| self.resolve(p)).as_deref() {
