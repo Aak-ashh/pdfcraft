@@ -1,7 +1,7 @@
 //! Clearing the pixels of an image under redaction regions. The image is decoded, every pixel
 //! whose footprint intersects a region is set to zero (no ink for image masks), and the result is
 //! written as a new Flate image; the original object is untouched (other pages may use it).
-//! CCITT fax images decode through `Document::decoded_image`. Images whose codec PdfCraft can't
+//! CCITT fax images decode through `Document::decoded_image_within`. Images whose codec PdfCraft can't
 //! decode (DCT, JPX, JBIG2) return `None`, and the caller removes the whole image instead; that
 //! is fail-closed.
 
@@ -46,16 +46,13 @@ fn decode_and_clear(doc: &Document, s: &Stream, ctm: &Matrix, rects: &[[f64; 4]]
     if s.dict.contains(b"SMask") || s.dict.contains(b"Mask") {
         return None;
     }
-    // `Stream::decoded*` reads `/DecodeParms` only when it is direct: a predictor given by
-    // reference would be skipped, and the cleared bytes would then miss the covered pixels.
-    let s = &*doc.with_direct_parms(s);
     let supported = |n: &[u8]| {
         matches!(
             n,
             b"FlateDecode" | b"Fl" | b"LZWDecode" | b"LZW" | b"ASCII85Decode" | b"A85" | b"ASCIIHexDecode" | b"AHx" | b"RunLengthDecode" | b"RL"
         )
     };
-    // A CCITT fax image (its last filter) decodes through `Document::decoded_image`, after the
+    // A CCITT fax image (its last filter) decodes through `Document::decoded_image_within`, after the
     // filters before it, so a scan stored as Group 4 is cleared like any other image.
     let fax = |f: &Object| f.as_name().is_some_and(|n| matches!(n, b"CCITTFaxDecode" | b"CCF"));
     let readable = |f: &Object| f.as_name().is_some_and(supported);
@@ -89,11 +86,18 @@ fn decode_and_clear(doc: &Document, s: &Stream, ctm: &Matrix, rects: &[[f64; 4]]
     let row_bits = row.checked_mul(8)?;
     bytes.checked_mul(8)?;
     // Decode no further than the raster can need: a filter stage may legitimately produce up to
-    // twice it (ASCIIHex text under Flate) plus a PNG predictor's byte per row. Data past that
-    // can only be a decompression bomb; the image is then removed whole. A fax image decodes to
-    // at most its /Height rows (the filters before it within `MAX_DECODED`).
-    let allowance = bytes.checked_add(h)?.checked_mul(2)?.checked_add(4096)?;
-    let mut data = if is_fax { doc.decoded_image(s).ok()? } else { s.decoded_within(allowance).ok()? };
+    // twice it (ASCIIHex text under Flate) plus a PNG predictor's byte per row. A fax image's
+    // code, which the filters before its decoder produce, takes at most about a byte per pixel
+    // plus each row's end. Data past that can only be a decompression bomb; the image is then
+    // removed whole.
+    let allowance = if is_fax {
+        w.checked_mul(h)?.checked_add(h.checked_mul(4)?)?.checked_add(4096)?
+    } else {
+        bytes.checked_add(h)?.checked_mul(2)?.checked_add(4096)?
+    };
+    // Through the document, which reads `/DecodeParms` given by reference (`Stream::decoded*`
+    // alone would skip such a predictor, and the cleared bytes would then miss the covered pixels).
+    let mut data = doc.decoded_image_within(s, allowance).ok()?;
     if data.len() < bytes {
         return None;
     }

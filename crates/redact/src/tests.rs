@@ -550,29 +550,31 @@ fn redaction_clears_pixels_intersected_without_covering_their_centres() {
 }
 
 /// An image whose PNG predictor is given by reference has its covered pixel cleared, and only
-/// that one: `Stream::decoded` reads only a direct `/DecodeParms`, so the row tags stayed in the
-/// data, the cleared byte drifted off the covered pixel and the covered sample survived.
+/// that one, whichever part is the reference: the dictionary, an array's entry, or the number
+/// itself. `Stream::decoded` reads only a direct `/DecodeParms` with direct numbers, so the row
+/// tags stayed in the data, the cleared byte drifted off the covered pixel and the covered sample
+/// survived.
 #[test]
 fn an_image_whose_predictor_is_given_by_reference_has_the_covered_pixel_cleared() {
     // Two rows of four grey samples, each behind a PNG "None" row tag.
     let predicted = pdfcraft_filters::encode_flate(&[0, 10, 20, 30, 40, 0, 50, 60, 70, 80]);
-    let mut doc = one_page(
-        b"q 40 0 0 20 0 0 cm /Im Do Q",
-        "/XObject << /Im 7 0 R >>",
-        vec![
-            stream(
-                "/Type /XObject /Subtype /Image /Width 4 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /DecodeParms 8 0 R",
-                predicted,
-            ),
-            b"<< /Predictor 15 /Colors 1 /BitsPerComponent 8 /Columns 4 >>".to_vec(),
-        ],
-    );
-    // The top row's second sample.
-    mark(&mut doc, 0, &[[12.0, 12.0, 18.0, 18.0]], "");
-    let report = apply(&mut doc, None).unwrap();
-    assert_eq!(report.images_cleared, 1);
-    let saved = Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap();
-    assert_eq!(named_image(&saved, 0, b"PCRedacted1"), Some(vec![10, 0, 30, 40, 50, 60, 70, 80]));
+    let parms = "/Predictor 15 /Colors 1 /BitsPerComponent 8 /Columns 4";
+    for (decode_parms, object8) in [
+        ("8 0 R".to_owned(), format!("<< {parms} >>")),
+        ("[8 0 R]".to_owned(), format!("<< {parms} >>")),
+        ("<< /Predictor 8 0 R /Colors 1 /BitsPerComponent 8 /Columns 4 >>".to_owned(), "15".to_owned()),
+    ] {
+        let image = format!(
+            "/Type /XObject /Subtype /Image /Width 4 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /DecodeParms {decode_parms}"
+        );
+        let mut doc = one_page(b"q 40 0 0 20 0 0 cm /Im Do Q", "/XObject << /Im 7 0 R >>", vec![stream(&image, &predicted), object8.into_bytes()]);
+        // The top row's second sample.
+        mark(&mut doc, 0, &[[12.0, 12.0, 18.0, 18.0]], "");
+        let report = apply(&mut doc, None).unwrap();
+        assert_eq!(report.images_cleared, 1, "{decode_parms}");
+        let saved = Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap();
+        assert_eq!(named_image(&saved, 0, b"PCRedacted1"), Some(vec![10, 0, 30, 40, 50, 60, 70, 80]), "{decode_parms}");
+    }
 }
 
 /// A CCITT fax image (a scan the optimizer or Create PDF stored as Group 4) has its covered
@@ -607,6 +609,48 @@ fn a_fax_image_has_its_covered_pixels_cleared_instead_of_being_removed() {
         let saved = Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap();
         assert_eq!(named_image(&saved, 0, b"PCRedacted1").as_deref(), Some(&cleared[..]), "{dict}");
     }
+}
+
+/// A fax image that can't be decoded in full is removed whole, as any other image is: one whose
+/// code is cut short, and one behind a filter that inflates past what a code for its pixels can
+/// take (a decompression bomb, which `decoded_image` alone would undo up to a gigabyte).
+#[test]
+fn a_fax_image_that_cannot_be_decoded_in_full_is_removed_whole() {
+    let g4 = pdfcraft_filters::encode_g4(&[0xFF; 4], 16, 2).unwrap();
+    // A busy picture's code, cut off in its first row.
+    let busy = pdfcraft_filters::encode_g4(&[0xAA, 0xAA, 0x55, 0x55], 16, 2).unwrap();
+    let short = busy.get(..1).unwrap().to_vec();
+    // The real code, then four megabytes of padding the fax decoder would never read.
+    let mut padded = g4.clone();
+    padded.resize(4 << 20, 0);
+    let bomb = pdfcraft_filters::encode_flate(&padded);
+    let image = "/Type /XObject /Subtype /Image /Width 16 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 1";
+    let parms = "<< /K -1 /Columns 16 /Rows 2 >>";
+    for (filters, data) in [("/CCITTFaxDecode /DecodeParms", short), ("[/FlateDecode /CCITTFaxDecode] /DecodeParms [null", bomb)] {
+        let close = if filters.ends_with("[null") { "]" } else { "" };
+        let dict = format!("{image} /Filter {filters} {parms}{close}");
+        let mut doc = one_page(b"q 160 0 0 20 0 0 cm /Im Do Q", "/XObject << /Im 7 0 R >>", vec![stream(&dict, data)]);
+        mark(&mut doc, 0, &[[0.0, 12.0, 75.0, 18.0]], "");
+        let report = apply(&mut doc, None).unwrap();
+        assert_eq!((report.images_cleared, report.images_removed), (0, 1), "{dict}");
+    }
+}
+
+/// A busy fax image is cleared, though its code is bigger than twice its raster (the bound for
+/// other images): a code takes up to about a byte per pixel, and the fax image gets that much.
+#[test]
+fn a_busy_fax_image_behind_another_filter_is_cleared() {
+    // A 256 × 256 checkerboard, the worst case for a fax code.
+    let rows: Vec<u8> = (0..256).flat_map(|y| [if y % 2 == 0 { 0xAA } else { 0x55 }; 32]).collect();
+    let g4 = pdfcraft_filters::encode_g4(&rows, 256, 256).unwrap();
+    let raster = 32 * 256;
+    assert!(g4.len() > (raster + 256) * 2 + 4096, "{} bytes: within the bound for other images", g4.len());
+    let dict = "/Type /XObject /Subtype /Image /Width 256 /Height 256 /ColorSpace /DeviceGray /BitsPerComponent 1 \
+                /Filter [/FlateDecode /CCITTFaxDecode] /DecodeParms [null << /K -1 /Columns 256 /Rows 256 >>]";
+    let mut doc = one_page(b"q 256 0 0 256 0 0 cm /Im Do Q", "/XObject << /Im 7 0 R >>", vec![stream(dict, pdfcraft_filters::encode_flate(&g4))]);
+    mark(&mut doc, 0, &[[0.0, 0.0, 10.0, 10.0]], "");
+    let report = apply(&mut doc, None).unwrap();
+    assert_eq!((report.images_cleared, report.images_removed), (1, 0));
 }
 
 /// Apply Redactions gives the page its own pruned /Resources, but the dictionary it drew through

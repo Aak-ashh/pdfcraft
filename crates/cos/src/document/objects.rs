@@ -233,9 +233,17 @@ impl Document {
     /// whatever `/Rows` says, within [`MAX_DECODED`] bytes; damaged data gives fewer, so a caller
     /// checks it has the rows it needs.
     pub fn decoded_image(&self, s: &Stream) -> Result<Vec<u8>, CosError> {
+        self.decoded_image_within(s, MAX_DECODED)
+    }
+
+    /// [`Document::decoded_image`] for an image whose decoding has a tighter bound than
+    /// [`MAX_DECODED`]: no stage, the filters before a fax decoder included, may produce more than
+    /// `max` bytes.
+    pub fn decoded_image_within(&self, s: &Stream, max: usize) -> Result<Vec<u8>, CosError> {
+        let max = max.min(MAX_DECODED);
         let s = &*self.with_direct_parms(s);
         let chain = s.readable_filters().map_err(|e| CosError::Filter(e.to_string()))?;
-        let Some(((pdfcraft_filters::Filter::CcittFax, _), before)) = chain.split_last() else { return s.decoded() };
+        let Some(((pdfcraft_filters::Filter::CcittFax, _), before)) = chain.split_last() else { return s.decoded_within(max) };
         // Its place in /Filter, /Crypt included, pairs it with its /DecodeParms entry (§7.4.1): the
         // last filter but a /Crypt, which `filters` leaves out wherever it stands.
         let index = match s.dict.get(b"Filter") {
@@ -270,11 +278,11 @@ impl Document {
         }
         let height = s.dict.int(b"Height").and_then(|h| u32::try_from(h).ok()).unwrap_or(0);
         let stride = usize::try_from(p.columns).unwrap_or(usize::MAX).div_ceil(8).max(1);
-        let rows = u32::try_from(MAX_DECODED / stride).unwrap_or(u32::MAX).min(height);
+        let rows = u32::try_from(max / stride).unwrap_or(u32::MAX).min(height);
         // The filters before it, such as ASCII85Decode, are undone first.
         let data = match before {
             [] => Cow::Borrowed(&s.raw[..]),
-            _ => Cow::Owned(pdfcraft_filters::decode_tolerant(before, &s.raw, MAX_DECODED).map_err(|e| CosError::Filter(e.to_string()))?.0),
+            _ => Cow::Owned(pdfcraft_filters::decode_tolerant(before, &s.raw, max).map_err(|e| CosError::Filter(e.to_string()))?.0),
         };
         pdfcraft_filters::decode_ccitt(&data, &p, rows).map_err(|e| CosError::Filter(e.to_string()))
     }
