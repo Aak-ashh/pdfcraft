@@ -75,6 +75,12 @@ pub struct TextDraft {
 }
 
 impl TextDraft {
+    /// Take the shared text box for this box ([`crate::edit_text_ui::forget_typing_before`]): its
+    /// own history, or none once the page has its text.
+    pub(crate) fn claim_typing(&mut self, ctx: &egui::Context, doc: pdfcraft_engine::DocId) {
+        crate::edit_text_ui::forget_typing_before(ctx, input_id(), doc, &mut self.typing_from, &self.style.text);
+    }
+
     /// Typing the page doesn't have yet: Undo takes it back in the box before touching the document.
     pub(crate) fn has_unapplied_typing(&self) -> bool {
         self.text != self.style.text
@@ -604,7 +610,7 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
                 ui.fonts_mut(|f| f.layout_job(job))
             };
             let input = input_id();
-            crate::edit_text_ui::forget_typing_before(ui.ctx(), input, doc_id, &mut t.typing_from, &t.style.text);
+            t.claim_typing(ui.ctx(), doc_id);
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let mut edit = egui::TextEdit::multiline(&mut t.text)

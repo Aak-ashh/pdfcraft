@@ -277,7 +277,9 @@ pub(crate) fn input_id() -> egui::Id {
 /// own record of that; which document `doc` last used the history is kept beside it, since a box
 /// in another tab on the same text would otherwise take that document's typing with its Redo.
 /// When another document's box takes the text box, the box it leaves keeps its history (and
-/// caret) aside, and gets it back on its return, so its typing can still be undone there.
+/// caret) aside, and gets it back on its return, so its typing can still be undone there. Each
+/// box claims the text box when it is drawn, and Undo and Redo from the menu claim it first too,
+/// since they can run before the box is drawn again after a tab switch.
 pub(crate) fn forget_typing_before(ctx: &egui::Context, id: egui::Id, doc: pdfcraft_engine::DocId, from: &mut Option<String>, text: &str) {
     let owner = id.with("typing-doc");
     let last = ctx.data(|d| d.get_temp::<pdfcraft_engine::DocId>(owner));
@@ -297,11 +299,9 @@ pub(crate) fn forget_typing_before(ctx: &egui::Context, id: egui::Id, doc: pdfcr
     }
     // Only the same box, still on the text it opened on, takes its history back.
     let back = ctx.data_mut(|d| d.remove_temp::<egui::text_edit::TextEditState>(aside(doc))).filter(|_| from.as_deref() == Some(text));
-    let state = back.unwrap_or_else(|| {
-        let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
-        state.clear_undoer();
-        state
-    });
+    // A box new to the text box starts with nothing of the last one's: no history, caret or
+    // selection.
+    let state = back.unwrap_or_default();
     egui::TextEdit::store_state(ctx, id, state);
     ctx.data_mut(|d| d.insert_temp(owner, doc));
     *from = Some(text.to_owned());
@@ -421,7 +421,16 @@ impl LineEditor {
         self.look0 = self.look.clone();
         self.extras0 = self.extras;
         self.original = self.text.clone();
+        // The page now has this text: the box's history restarts, even when the format left the
+        // text as it was, so a Redo from before can't put undone typing back on top of it.
+        self.typing_from = None;
         self.focus = true;
+    }
+
+    /// Take the shared text box for this paragraph ([`forget_typing_before`]): its own history,
+    /// or none once the page has its text.
+    pub(crate) fn claim_typing(&mut self, ctx: &egui::Context, doc: pdfcraft_engine::DocId) {
+        forget_typing_before(ctx, input_id(), doc, &mut self.typing_from, &self.original);
     }
 
     /// Adopt the rewritten paragraph's current geometry before the next overlay frame.
@@ -1724,7 +1733,7 @@ pub(crate) fn overlay(ctx: &egui::Context, view: &mut DocView, info: &DocInfo) -
                     if snapshot.changes_with(text.as_str()) { galley } else { unseen(galley) }
                 };
                 let input = input_id();
-                forget_typing_before(ui.ctx(), input, view_id, &mut ed.typing_from, &ed.original);
+                ed.claim_typing(ui.ctx(), view_id);
                 let output = egui::TextEdit::multiline(&mut ed.text)
                     .id(input)
                     .font(font.clone())

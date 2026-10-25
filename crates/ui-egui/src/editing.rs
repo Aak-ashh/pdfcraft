@@ -231,12 +231,15 @@ impl PdfCraftApp {
     fn undo_in_page_box(&mut self) -> bool {
         let Some(ctx) = self.ctx.clone() else { return false };
         let Some(view) = self.active.and_then(|i| self.views.get_mut(i)) else { return false };
+        let doc = view.id;
         if let Some(ed) = view.line_editor.as_mut().filter(|ed| ed.has_unsaved_text()) {
+            ed.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, true) else { return false };
             ed.text = text;
             return true;
         }
         if let Some(d) = view.content.draft.as_mut().filter(|d| d.has_unapplied_typing()) {
+            d.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, true) else { return false };
             d.text = text;
             return true;
@@ -259,12 +262,15 @@ impl PdfCraftApp {
     fn redo_in_page_box(&mut self) -> bool {
         let Some(ctx) = self.ctx.clone() else { return false };
         let Some(view) = self.active.and_then(|i| self.views.get_mut(i)) else { return false };
+        let doc = view.id;
         if let Some(ed) = view.line_editor.as_mut() {
+            ed.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, false) else { return ed.has_unsaved_text() };
             ed.text = text;
             return true;
         }
         if let Some(d) = view.content.draft.as_mut() {
+            d.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, false) else { return d.has_unapplied_typing() };
             d.text = text;
             return true;
