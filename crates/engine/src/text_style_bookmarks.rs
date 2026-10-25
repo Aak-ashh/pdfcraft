@@ -60,10 +60,11 @@ struct Line {
     page: usize,
     text: String,
     style: TextStyle,
-    /// Top, bottom and left of its box in user space.
+    /// Top, bottom, left and right of its box in user space.
     top: f64,
     bottom: f64,
     left: f64,
+    right: f64,
 }
 
 /// `name` without a subset tag: six capital letters and a `+` (ISO 32000-2 §9.9.2).
@@ -102,6 +103,7 @@ fn lines(doc: &Document) -> Vec<Line> {
                     top: y0.max(y1),
                     bottom: y0.min(y1),
                     left: x0.min(x1),
+                    right: x0.max(x1),
                 })
             })
             .collect();
@@ -117,8 +119,21 @@ fn lines(doc: &Document) -> Vec<Line> {
 /// are usually larger than the text around them.
 pub fn styles(doc: &Document) -> Vec<TextStyleUse> {
     let mut uses: Vec<(TextStyleUse, Option<usize>)> = Vec::new();
+    // The styles by font, weight, slant and size in quarter points, so a line is matched against
+    // the few styles near its size rather than every style found (a page can hold thousands).
+    // A size matches within a quarter point: the bucket's neighbours are looked at too.
+    let mut index: std::collections::HashMap<(String, bool, bool, i64), Vec<usize>> = std::collections::HashMap::new();
+    let bucket = |size: f64| (size / SIZE_TOLERANCE).floor() as i64;
     for line in lines(doc) {
-        match uses.iter_mut().find(|(u, _)| u.style.matches(&line.style)) {
+        let key = |b: i64| (line.style.font.clone(), line.style.bold, line.style.italic, b);
+        let b = bucket(line.style.size);
+        let found = [b.saturating_sub(1), b, b.saturating_add(1)]
+            .into_iter()
+            .filter_map(|b| index.get(&key(b)))
+            .flatten()
+            .copied()
+            .find(|&i| uses.get(i).is_some_and(|(u, _)| u.style.matches(&line.style)));
+        match found.and_then(|i| uses.get_mut(i)) {
             Some((u, last_page)) => {
                 u.lines = u.lines.saturating_add(1);
                 if *last_page != Some(line.page) {
@@ -128,6 +143,7 @@ pub fn styles(doc: &Document) -> Vec<TextStyleUse> {
             }
             None => {
                 let sample = line.text.chars().take(SAMPLE_CHARS).collect();
+                index.entry(key(b)).or_default().push(uses.len());
                 uses.push((TextStyleUse { style: line.style, lines: 1, pages: 1, sample }, Some(line.page)));
             }
         }
@@ -144,19 +160,21 @@ pub fn styles(doc: &Document) -> Vec<TextStyleUse> {
 /// is one bookmark. Each goes to the top of its heading.
 pub fn headings(doc: &Document, levels: &[TextStyle]) -> Vec<OutlineEntry> {
     let mut entries: Vec<OutlineEntry> = Vec::new();
-    // The heading the previous line belonged to: its level, and the top and bottom of its last
-    // line.
-    let mut open: Option<(usize, f64, f64)> = None;
+    // The heading the previous line belonged to: its level, and the top, bottom, left and right
+    // of its last line.
+    let mut open: Option<(usize, f64, f64, f64, f64)> = None;
     for line in lines(doc) {
         let Some(level) = levels.iter().position(|s| s.matches(&line.style)) else {
             open = None;
             continue;
         };
-        // A heading goes on to the next row down, close below its last line. A line on the same
-        // row (two headings side by side) is a heading of its own.
-        let continues = open.is_some_and(|(l, top, bottom)| {
+        // A heading goes on to the next row down, close below its last line and under it. A line
+        // on the same row (two headings side by side), or in another column, is a heading of
+        // its own.
+        let continues = open.is_some_and(|(l, top, bottom, left, right)| {
             let size = line.style.size;
-            l == level && line.top < top - size * 0.5 && bottom - line.top < size * 0.6
+            let under = line.left < right && left < line.right;
+            l == level && line.top < top - size * 0.5 && bottom - line.top < size * 0.6 && under
         }) && entries.last().is_some_and(|e| e.page == line.page);
         if continues {
             if let Some(e) = entries.last_mut()
@@ -181,7 +199,7 @@ pub fn headings(doc: &Document, levels: &[TextStyle]) -> Vec<OutlineEntry> {
                 top: Some(line.top),
             });
         }
-        open = Some((level, line.top, line.bottom));
+        open = Some((level, line.top, line.bottom, line.left, line.right));
     }
     entries
 }

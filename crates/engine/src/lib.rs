@@ -622,7 +622,11 @@ impl Document {
 
     /// The styles the document's text is set in, the largest first, for bookmarks from text
     /// styles (#1693).
+    /// Empty when the document doesn't allow copying: the samples are its text.
     pub fn text_styles(&self) -> Vec<text_style_bookmarks::TextStyleUse> {
+        if !self.allows_copying() {
+            return Vec::new();
+        }
         self.editor.as_ref().map(|e| text_style_bookmarks::styles(&e.cos)).unwrap_or_default()
     }
 
@@ -2348,12 +2352,22 @@ fn check_permission(edit: &Edit, p: &pdfcraft_cos::Permissions) -> Result<(), Ed
         | Edit::SetBookmarkColor { .. }
         | Edit::SetBookmarkStyle { .. }
         | Edit::BookmarksFromStructure
-        | Edit::BookmarksFromTextStyles { .. }
         | Edit::NumberPages { .. } => {
             if p.assemble() {
                 Ok(())
             } else {
                 Err(EditError::NotPermitted("page changes"))
+            }
+        }
+        // Creates bookmarks (assembly), and their titles are the document's text, copied out of it
+        // (Table 22, bit 5), as an export of it would be.
+        Edit::BookmarksFromTextStyles { .. } => {
+            if !p.assemble() {
+                Err(EditError::NotPermitted("page changes"))
+            } else if !p.copy() {
+                Err(EditError::NotPermitted("copying text and images"))
+            } else {
+                Ok(())
             }
         }
         Edit::AddMeasurement(_)
