@@ -6813,6 +6813,116 @@ fn undo_after_a_round_trip_through_another_tab_takes_back_the_typing() {
     assert_eq!(s.session.get(s.views[0].id).unwrap().can_redo(), Some("Edit text"), "the document's Redo still waits");
 }
 
+/// Typing taken back with Ctrl+Z, then Bold applied with the paragraph still open: Ctrl+Shift+Z
+/// must not bring the typing back on top of the bold, as the box's history is cleared once the
+/// page has its text. The format left the text as it was, so the box kept its history and its
+/// Redo put "Page 1 more" back (FredApps's review of abc378c0).
+#[test]
+fn redo_after_formatting_never_brings_back_typing_undone_before_it() {
+    let mut h = harness(1, |_| {});
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    open_paragraph(&mut h);
+    let original = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.event(egui::Event::Text(" more".into()));
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(3);
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().text, original, "the typing is taken back");
+    h.get_by_label("Bold").click();
+    h.run_steps(4);
+    assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().can_undo(), Some("Edit text"), "the bold is applied");
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    h.run_steps(3);
+    let text = h.state().views[0].line_editor.as_ref().map(|ed| ed.text.clone());
+    assert_eq!(text.as_deref(), Some(original.as_str()), "the typing undone before the bold stays undone");
+    // Nor through what the menu's Redo runs.
+    h.state_mut().redo();
+    h.run_steps(3);
+    let s = h.state();
+    let text = s.views[0].line_editor.as_ref().map(|ed| ed.text.clone());
+    assert!(!text.as_deref().unwrap_or_default().contains("more"), "the menu's Redo brings it back: {text:?}");
+    assert_eq!(s.session.get(s.views[0].id).unwrap().text_blocks(0)[0].base_font, "Helvetica-Bold", "the bold stays");
+}
+
+/// Edit ▸ Undo chosen in the same frame as the switch back to tab A, before A's box is drawn
+/// again: the shared text box still holds tab B's history then. Stepping through it put B's
+/// typing into A's box; the box now claims its own history back first (CodeRabbit on abc378c0).
+#[test]
+fn undo_in_the_frame_of_the_switch_back_takes_back_the_typing() {
+    let mut h = harness(1, |app| {
+        app.open_bytes("copy.pdf", None, fixture(1)).expect("the copy opens");
+    });
+    let open_in = |h: &mut Harness<'static, PdfCraftApp>, tab: usize| {
+        h.state_mut().active = Some(tab);
+        h.run_steps(2);
+        if h.state().views[tab].line_editor.is_none() {
+            assert!(h.state_mut().execute("edit.edit_text"));
+            h.run_steps(2);
+        }
+        let r = h.state().views[tab].page_screen_rect(0).expect("on screen");
+        click_at(h, egui::pos2(r.left() + 40.0 / 200.0 * r.width(), r.top() + (300.0 - 158.0) / 300.0 * r.height()));
+        assert!(h.state().views[tab].line_editor.is_some(), "the paragraph opens for typing");
+    };
+    open_in(&mut h, 0);
+    let original = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.event(egui::Event::Text(" more".into()));
+    h.run_steps(2);
+    // In B, a paragraph whose text differs from A's ("Page 1 B", applied with Bold), so B's
+    // history can't pass for A's.
+    open_in(&mut h, 1);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.event(egui::Event::Text(" B".into()));
+    h.run_steps(2);
+    h.get_by_label("Bold").click();
+    h.run_steps(4);
+    assert_eq!(h.state().views[1].line_editor.as_ref().map(|ed| ed.text.as_str()), Some("Page 1 B"), "B's paragraph is open on its own text");
+    // Back to A and Undo at once: no frame draws A's box in between.
+    h.state_mut().active = Some(0);
+    assert!(h.state_mut().execute("edit.undo"), "Undo is enabled");
+    h.run_steps(3);
+    let ed = h.state().views[0].line_editor.clone().expect("the box stays open: Undo takes back the typing");
+    assert_eq!(ed.text, original, "the typing is taken back in A's box");
+}
+
+/// Redo from the menu chosen in the same frame as a switch to tab B, whose paragraph is open on
+/// the same text as A's: the shared text box still holds A's history then, with A's undone
+/// typing to redo, so B's box claims its own history back before stepping.
+#[test]
+fn redo_in_the_frame_of_a_tab_switch_never_brings_another_tabs_typing() {
+    let mut h = harness(1, |app| {
+        app.open_bytes("copy.pdf", None, fixture(1)).expect("the copy opens");
+    });
+    let open_in = |h: &mut Harness<'static, PdfCraftApp>, tab: usize| {
+        h.state_mut().active = Some(tab);
+        h.run_steps(2);
+        assert!(h.state_mut().execute("edit.edit_text"));
+        h.run_steps(2);
+        let r = h.state().views[tab].page_screen_rect(0).expect("on screen");
+        click_at(h, egui::pos2(r.left() + 40.0 / 200.0 * r.width(), r.top() + (300.0 - 158.0) / 300.0 * r.height()));
+        assert!(h.state().views[tab].line_editor.is_some(), "the paragraph opens for typing");
+    };
+    open_in(&mut h, 1);
+    open_in(&mut h, 0);
+    let original = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.event(egui::Event::Text(" secret".into()));
+    h.run_steps(2);
+    assert!(h.state_mut().execute("edit.undo"));
+    h.run_steps(3);
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().text, original, "taken back in A");
+    // To B and Redo at once: no frame draws B's box in between.
+    h.state_mut().active = Some(1);
+    h.state_mut().redo();
+    h.run_steps(3);
+    let s = h.state();
+    let b = s.views[1].line_editor.as_ref().map(|ed| ed.text.clone());
+    assert!(!b.as_deref().unwrap_or_default().contains("secret"), "A's typing came back in B: {b:?}");
+    assert!(!s.session.get(s.views[1].id).unwrap().text_blocks(0)[0].text.contains("secret"), "A's typing reached B's page");
+}
+
 /// Two copies of a document, the same paragraph open in each. The paragraph boxes share one text
 /// box, and so one Undo history: a box opened on the same text as another tab's didn't clear it.
 /// Typing in one tab, taken back with Undo, then came back with Redo (the key or the menu) in the

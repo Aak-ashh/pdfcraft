@@ -1166,6 +1166,42 @@ fn undo_after_a_round_trip_through_another_tab_takes_back_added_text_typing() {
     assert_eq!(draft(&h).as_deref(), Some("Reviewed"), "Undo takes the typing back in A's box");
 }
 
+/// Edit ▸ Undo chosen in the same frame as the switch back to tab A's added text box, before it
+/// is drawn again: the shared text box still holds tab B's history, from a box on other text, so
+/// A's box claims its own back before stepping.
+#[test]
+fn undo_in_the_frame_of_the_switch_back_takes_back_added_text_typing() {
+    let mut h = harness();
+    h.state_mut().open_bytes("copy.pdf", None, include_bytes!("../data/form.pdf").to_vec()).unwrap();
+    h.run_steps(4);
+    let rect = [40.0, 195.0, 240.0, 210.0];
+    for (tab, text) in [(0, "Reviewed"), (1, "Approved")] {
+        h.state_mut().active = Some(tab);
+        let text = pdfcraft_engine::AddedText { rect, text: text.into(), ..Default::default() };
+        assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::AddText { page: 0, text }));
+    }
+    let open_in = |h: &mut Harness<'static, PdfCraftApp>, tab: usize| {
+        h.state_mut().active = Some(tab);
+        h.run_steps(2);
+        assert!(h.state_mut().execute("edit.text"));
+        h.run_steps(3);
+        let r = h.state().views[tab].page_screen_rect(0).expect("on screen");
+        let k = r.width() / 300.0;
+        click(h, r.min + egui::vec2(45.0 * k, 195.0 * k));
+        assert_eq!(h.state().views[tab].content.draft.as_ref().and_then(|d| d.index), Some(0), "the editor opened on the text");
+    };
+    open_in(&mut h, 0);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::End);
+    h.event(egui::Event::Text(" twice".into()));
+    h.run_steps(2);
+    open_in(&mut h, 1);
+    // Back to A and Undo at once: no frame draws A's box in between.
+    h.state_mut().active = Some(0);
+    assert!(h.state_mut().execute("edit.undo"));
+    h.run_steps(3);
+    assert_eq!(h.state().views[0].content.draft.as_ref().map(|d| d.text.as_str()), Some("Reviewed"), "Undo takes the typing back in A's box");
+}
+
 /// Redo with an added text box open and unchanged reaches the document's waiting Redo, even when
 /// the box's text ends in a space: closing the unchanged box writes nothing, so it can't clear
 /// that Redo first.
