@@ -11,7 +11,9 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
 ```
 
 - **Presets:** Standard (Reduce File Size's choices: images above 225 ppi to 150 ppi, JPEG
-  medium) and Mobile (above 144 ppi to 96 ppi, JPEG high), as in Acrobat's Settings menu.
+  medium) and Mobile (above 144 ppi to 96 ppi, JPEG high), as in Acrobat's Settings menu. In
+  both, black-and-white images are averaged down to 300 ppi above 450 ppi, and stored as CCITT
+  Group 4 whenever that is smaller.
 - **Merge image fragments** (`fragments`, on by default): some PDF printers draw a page picture
   as thousands of images one pixel row high. Runs of upright 8-bit grey or RGB images in one
   colour space, sharing their left and right edges and stacked edge to edge (at least four,
