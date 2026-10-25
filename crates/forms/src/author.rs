@@ -1616,6 +1616,15 @@ pub fn delete_widget(doc: &mut Document, name: &str, widget: usize) -> Result<()
         d.set(b"V".to_vec(), Object::name("Off"));
         changed = true;
     }
+    // The default (`/DV`, what Reset puts back) can't name a state no button has any more.
+    let dv_only_here = w.on_state.as_deref().is_some_and(|on| {
+        d.get(b"DV").map(|v| doc.resolve(v)).and_then(|v| v.as_name().map(<[u8]>::to_vec)).is_some_and(|dv| dv == on.as_bytes())
+            && !f.widgets.iter().enumerate().any(|(i, o)| i != widget && o.on_state.as_deref() == Some(on))
+    });
+    if dv_only_here {
+        d.set(b"DV".to_vec(), Object::name("Off"));
+        changed = true;
+    }
     if changed {
         doc.set(f.obj, Object::Dict(d));
     }

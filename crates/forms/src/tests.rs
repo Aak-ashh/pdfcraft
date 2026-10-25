@@ -4655,6 +4655,28 @@ fn deleting_the_chosen_radio_button_turns_the_group_off_when_a_twin_is_not_shown
 }
 
 #[test]
+fn deleting_the_default_radio_button_clears_the_default_too() {
+    // The group is off, but Reset would put back Small, which no button has once it is gone.
+    let mut doc = radio_group_form();
+    let size = ObjRef::new(5, 0);
+    let mut d = doc.get(size).as_dict().cloned().unwrap();
+    d.set(b"V".to_vec(), Object::name("Off"));
+    d.set(b"DV".to_vec(), Object::name("S"));
+    doc.set(size, Object::Dict(d));
+    delete_widget(&mut doc, "size", 0).unwrap();
+    let doc = reopen(&doc);
+    let dv = doc.get(size).as_dict().and_then(|d| d.get(b"DV").cloned());
+    assert_eq!(dv, Some(Object::name("Off")));
+    // A default another button still has stays.
+    let mut doc = radio_group_form();
+    let mut d = doc.get(size).as_dict().cloned().unwrap();
+    d.set(b"DV".to_vec(), Object::name("S"));
+    doc.set(size, Object::Dict(d));
+    delete_widget(&mut doc, "size", 1).unwrap();
+    assert_eq!(doc.get(size).as_dict().and_then(|d| d.get(b"DV").cloned()), Some(Object::name("S")));
+}
+
+#[test]
 fn deleting_one_copy_of_a_field_keeps_the_field_and_its_value() {
     let mut doc = radio_group_form();
     delete_widget(&mut doc, "name", 0).unwrap();
