@@ -1593,8 +1593,10 @@ pub fn delete_widget(doc: &mut Document, name: &str, widget: usize) -> Result<()
         return delete_found_field(doc, f);
     }
     let per_widget_opt = matches!(f.kind, FieldKind::CheckBox | FieldKind::Radio) && f.options.len() == f.widgets.len();
+    // Turn the group off when no button left *shows* the deleted one's state: a twin with the same
+    // on-state name that is currently off does not keep the choice visible.
     let on_only_here = w.on_state.as_deref().is_some_and(|on| {
-        f.value.iter().any(|v| v == on) && !f.widgets.iter().enumerate().any(|(i, o)| i != widget && o.on_state.as_deref() == Some(on))
+        f.value.iter().any(|v| v == on) && !f.widgets.iter().enumerate().any(|(i, o)| i != widget && o.state.as_deref() == Some(on))
     });
     drop_from_pages(doc, &std::iter::once(w.obj).collect())?;
     detach(doc, w.obj)?;

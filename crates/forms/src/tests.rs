@@ -4415,6 +4415,28 @@ fn deleting_the_chosen_radio_button_turns_the_group_off() {
 }
 
 #[test]
+fn deleting_the_chosen_radio_button_turns_the_group_off_when_a_twin_is_not_shown_on() {
+    // Medium shares Small's on-state name but shows Off: once Small is gone, no button shows
+    // the group's /V, so the group must not keep reporting it.
+    let mut doc = radio_group_form();
+    let twin = ObjRef::new(7, 0);
+    let blank = Object::Ref(ObjRef::new(12, 0));
+    let mut n = Dict::new();
+    n.set(b"S".to_vec(), blank.clone());
+    n.set(b"Off".to_vec(), blank);
+    let mut ap = Dict::new();
+    ap.set(b"N".to_vec(), Object::Dict(n));
+    let mut w = doc.get(twin).as_dict().cloned().unwrap();
+    w.set(b"AP".to_vec(), Object::Dict(ap));
+    doc.set(twin, Object::Dict(w));
+    delete_widget(&mut doc, "size", 0).unwrap();
+    let all = fields(&reopen(&doc));
+    let size = field(&all, "size");
+    assert_eq!(size.widgets.iter().map(|w| w.obj.num).collect::<Vec<_>>(), [7, 8]);
+    assert!(size.value.is_empty(), "no button shows S any more: {:?}", size.value);
+}
+
+#[test]
 fn deleting_one_copy_of_a_field_keeps_the_field_and_its_value() {
     let mut doc = radio_group_form();
     delete_widget(&mut doc, "name", 0).unwrap();
