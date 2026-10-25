@@ -94,13 +94,20 @@ fn look_arg(v: &Value) -> Result<pdfcraft_engine::FieldLookPatch> {
     })
 }
 
-/// `{"min": 0, "max": 100}` or `"none"`.
+/// `{"min": 0, "max": 100}` or `"none"`. A null bound is no bound, as `form_fields` shows it.
 fn validate_arg(v: &Value) -> Result<Validate> {
     if v.as_str() == Some("none") {
         return Ok(Validate::None);
     }
     let o = v.as_object().ok_or_else(|| bad("validate must be {\"min\": …, \"max\": …} or \"none\""))?;
-    let (min, max) = (o.get("min").and_then(Value::as_f64), o.get("max").and_then(Value::as_f64));
+    if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "min" | "max")) {
+        return Err(bad(format!("unknown key {k:?} in validate (min, max)")));
+    }
+    let bound = |k: &str| match o.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(x) => x.as_f64().map(Some).ok_or_else(|| bad(format!("validate {k} must be a number"))),
+    };
+    let (min, max) = (bound("min")?, bound("max")?);
     if min.is_none() && max.is_none() {
         return Err(bad("validate needs min, max or both"));
     }
@@ -117,18 +124,31 @@ fn calculate_arg(v: &Value) -> Result<Calculate> {
     if o.contains_key("script") {
         return Err(bad("a custom calculate script is set with form_set_script (event: calculate)"));
     }
-    if let Some(n) = o.get("notation").and_then(Value::as_str) {
+    if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "op" | "fields" | "notation")) {
+        return Err(bad(format!("unknown key {k:?} in calculate (op and fields, or notation)")));
+    }
+    // A null is no value, as for the tool's own arguments.
+    let get = |k: &str| o.get(k).filter(|v| !v.is_null());
+    if let Some(n) = get("notation") {
+        if get("op").is_some() || get("fields").is_some() {
+            return Err(bad("calculate takes a notation, or op and fields, not both"));
+        }
+        let n = n.as_str().ok_or_else(|| bad("notation must be a string such as \"Price * Qty\""))?;
         return Ok(Calculate::Notation(n.to_string()));
     }
-    let op = match o.get("op").and_then(Value::as_str).unwrap_or("") {
+    let op = get("op").ok_or_else(|| bad("calculate needs op and fields, or a notation"))?;
+    let op = match op.as_str().ok_or_else(|| bad("op must be one of sum, product, average, min, max"))? {
         "minimum" => CalcOp::Minimum,
         "maximum" => CalcOp::Maximum,
         x => {
             CalcOp::ALL.into_iter().find(|&op| op_name(op) == x).ok_or_else(|| bad(format!("unknown op {x:?} (sum, product, average, min, max)")))?
         }
     };
-    let fields: Vec<String> =
-        o.get("fields").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+    let fields = get("fields").and_then(Value::as_array).ok_or_else(|| bad("calculate fields must be a list of field names"))?;
+    let fields: Vec<String> = fields
+        .iter()
+        .map(|x| x.as_str().map(str::to_owned).ok_or_else(|| bad("calculate fields must be field names (strings)")))
+        .collect::<Result<_>>()?;
     if fields.is_empty() {
         return Err(bad("calculate needs fields"));
     }

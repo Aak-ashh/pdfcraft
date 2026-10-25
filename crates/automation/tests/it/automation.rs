@@ -5153,6 +5153,47 @@ fn every_calculation_op_can_be_read_and_given_back() {
     }
 }
 
+/// form_set_props refuses a calculate or validate it would only partly apply (a key it doesn't
+/// know, a value of the wrong type, a notation beside op and fields) and changes nothing. A
+/// validate read back from form_fields, with null for the bound it doesn't have, is taken back.
+#[test]
+fn calculate_and_validate_refuse_what_they_would_drop() {
+    let dir = workdir("calcstrict");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    for (name, y) in [("a", 20), ("b", 60), ("total", 100)] {
+        ok(&mut a, "form_add_field", json!({ "doc": doc, "page": 1, "type": "text", "rect": [20, y, 180, y + 22], "name": name }));
+    }
+    let set = json!({ "op": "sum", "fields": ["a", "b"] });
+    ok(&mut a, "form_set_props", json!({ "doc": doc, "field": "total", "calculate": set, "validate": { "min": 0, "max": 10 } }));
+    let total = |a: &mut Automation| {
+        let fields = ok(a, "form_fields", json!({ "doc": doc }));
+        fields["fields"].as_array().unwrap().iter().find(|f| f["name"] == "total").unwrap().clone()
+    };
+    for (calculate, says) in [
+        (json!({ "notation": "a", "op": "sum", "fields": ["b"] }), "not both"),
+        (json!({ "op": "sum", "fields": ["a", 5] }), "field names"),
+        (json!({ "op": "sum", "fields": "a" }), "list of field names"),
+        (json!({ "notation": 5 }), "notation must be a string"),
+        (json!({ "op": 5, "fields": ["a"] }), "op must be"),
+        (json!({ "fields": ["a"] }), "needs op"),
+        (json!({ "op": "sum", "feilds": ["a"] }), "unknown key \"feilds\""),
+    ] {
+        let e = err(&mut a, "form_set_props", json!({ "doc": doc, "field": "total", "calculate": calculate }));
+        assert!(e.to_string().contains(says), "{calculate}: {e}");
+    }
+    for (validate, says) in [(json!({ "min": 0, "max": "100" }), "max must be a number"), (json!({ "min": 0, "mxa": 5 }), "unknown key \"mxa\"")] {
+        let e = err(&mut a, "form_set_props", json!({ "doc": doc, "field": "total", "validate": validate }));
+        assert!(e.to_string().contains(says), "{validate}: {e}");
+    }
+    let t = total(&mut a);
+    assert_eq!((&t["calculate"], &t["validate"]), (&set, &json!({ "min": 0.0, "max": 10.0 })), "nothing changed");
+    ok(&mut a, "form_set_props", json!({ "doc": doc, "field": "total", "validate": { "min": null, "max": 5 } }));
+    let shown = total(&mut a)["validate"].clone();
+    assert_eq!(shown, json!({ "min": null, "max": 5.0 }));
+    ok(&mut a, "form_set_props", json!({ "doc": doc, "field": "total", "validate": shown }));
+}
+
 #[test]
 fn page_tab_orders_are_read_and_set_per_page_through_tools() {
     let dir = workdir("pagetabs");
