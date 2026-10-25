@@ -276,15 +276,33 @@ pub(crate) fn input_id() -> egui::Id {
 /// as it was before a format change, into a box showing the page as it is now. `from` is the box's
 /// own record of that; which document `doc` last used the history is kept beside it, since a box
 /// in another tab on the same text would otherwise take that document's typing with its Redo.
+/// When another document's box takes the text box, the box it leaves keeps its history (and
+/// caret) aside, and gets it back on its return, so its typing can still be undone there.
 pub(crate) fn forget_typing_before(ctx: &egui::Context, id: egui::Id, doc: pdfcraft_engine::DocId, from: &mut Option<String>, text: &str) {
     let owner = id.with("typing-doc");
-    if from.as_deref() == Some(text) && ctx.data(|d| d.get_temp::<pdfcraft_engine::DocId>(owner)) == Some(doc) {
+    let last = ctx.data(|d| d.get_temp::<pdfcraft_engine::DocId>(owner));
+    if from.as_deref() == Some(text) && last == Some(doc) {
         return;
     }
-    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
-        state.clear_undoer();
-        egui::TextEdit::store_state(ctx, id, state);
+    let aside = |doc: pdfcraft_engine::DocId| id.with(("typing-aside", doc));
+    if let Some(left) = last.filter(|l| *l != doc)
+        && let Some(state) = egui::TextEdit::load_state(ctx, id)
+    {
+        // A copy of its own: a state's history is shared between its clones, and the next box
+        // clears it in place.
+        let mut kept = egui::text_edit::TextEditState::default();
+        kept.cursor = state.cursor;
+        kept.set_undoer(state.undoer());
+        ctx.data_mut(|d| d.insert_temp(aside(left), kept));
     }
+    // Only the same box, still on the text it opened on, takes its history back.
+    let back = ctx.data_mut(|d| d.remove_temp::<egui::text_edit::TextEditState>(aside(doc))).filter(|_| from.as_deref() == Some(text));
+    let state = back.unwrap_or_else(|| {
+        let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+        state.clear_undoer();
+        state
+    });
+    egui::TextEdit::store_state(ctx, id, state);
     ctx.data_mut(|d| d.insert_temp(owner, doc));
     *from = Some(text.to_owned());
 }

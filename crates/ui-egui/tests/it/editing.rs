@@ -6645,6 +6645,49 @@ fn redo_from_the_menu_is_enabled_for_the_boxs_own_typing() {
     assert_eq!(h.state().views[0].line_editor.as_ref().expect("still open").text, typed, "Redo puts the typing back");
 }
 
+/// Typing in tab A's paragraph, a paragraph opened in tab B, then back to A: Edit ▸ Undo takes
+/// the typing back in A's box. The tabs share one text box, and its history was cleared each time
+/// another tab's box took it, so Undo found no step and closed A's paragraph instead
+/// (skylartaylor's and FredApps's review of 08ec1db7).
+#[test]
+fn undo_after_a_round_trip_through_another_tab_takes_back_the_typing() {
+    let mut h = harness(1, |app| {
+        app.open_bytes("copy.pdf", None, fixture(1)).expect("the copy opens");
+    });
+    let open_in = |h: &mut Harness<'static, PdfCraftApp>, tab: usize| {
+        h.state_mut().active = Some(tab);
+        h.run_steps(2);
+        if h.state().views[tab].line_editor.is_none() {
+            assert!(h.state_mut().execute("edit.edit_text"));
+            h.run_steps(2);
+        }
+        let r = h.state().views[tab].page_screen_rect(0).expect("on screen");
+        click_at(h, egui::pos2(r.left() + 40.0 / 200.0 * r.width(), r.top() + (300.0 - 158.0) / 300.0 * r.height()));
+        assert!(h.state().views[tab].line_editor.is_some(), "the paragraph opens for typing");
+    };
+    open_in(&mut h, 0);
+    h.get_by_label("Bold").click();
+    h.run_steps(4);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(4);
+    open_in(&mut h, 0);
+    let original = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.event(egui::Event::Text(" more".into()));
+    h.run_steps(2);
+    assert!(h.state().views[0].line_editor.as_ref().unwrap().text.ends_with(" more"));
+    open_in(&mut h, 1);
+    h.state_mut().active = Some(0);
+    h.run_steps(3);
+    assert!(h.state().views[0].line_editor.is_some(), "A's paragraph is still open after the round trip");
+    assert!(h.state_mut().execute("edit.undo"), "Undo is enabled");
+    h.run_steps(3);
+    let s = h.state();
+    let ed = s.views[0].line_editor.as_ref().expect("the box stays open: Undo takes back the typing");
+    assert_eq!(ed.text, original, "the typing is taken back in the box");
+    assert_eq!(s.session.get(s.views[0].id).unwrap().can_redo(), Some("Edit text"), "the document's Redo still waits");
+}
+
 /// Two copies of a document, the same paragraph open in each. The paragraph boxes share one text
 /// box, and so one Undo history: a box opened on the same text as another tab's didn't clear it.
 /// Typing in one tab, taken back with Undo, then came back with Redo in the other tab.
