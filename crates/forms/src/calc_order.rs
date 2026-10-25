@@ -25,7 +25,7 @@ pub struct CalculatedField {
     pub reads: Vec<String>,
     /// `/CO` lists it. A field it leaves out calculates after the listed ones.
     pub listed: bool,
-    /// What is wrong with its place in the order.
+    /// What is wrong with its formula or its place in the order.
     pub issues: Vec<CalculationIssue>,
 }
 
