@@ -955,6 +955,8 @@ pub struct PdfCraftApp {
     pub boxes_draft: pageboxes::BoxesDraft,
     /// Header & footer / watermark / background dialog state.
     pub marks_draft: marks_ui::MarksDraft,
+    /// The Update dialogs' preview page without the marks they replace.
+    pub(crate) unmarked_page: marks_ui::UnmarkedPage,
     /// Export dialog settings.
     pub export_draft: export_ui::ExportDraft,
     /// A running export's progress.
@@ -1279,6 +1281,7 @@ impl PdfCraftApp {
             protect_draft: Default::default(),
             boxes_draft: Default::default(),
             marks_draft: Default::default(),
+            unmarked_page: Default::default(),
             export_draft: Default::default(),
             export_status: None,
             signature: None,
@@ -2878,7 +2881,7 @@ impl PdfCraftApp {
 
     /// `true` while any open document still waits for page renders (used by headless capture).
     pub fn render_pending(&self) -> bool {
-        self.views.iter().any(|v| v.render_pending())
+        self.views.iter().any(|v| v.render_pending()) || self.unmarked_page.pending()
     }
 
     /// Apply a named view option (`--page 3`, `--panel bookmarks`, `--theme dark`, …).

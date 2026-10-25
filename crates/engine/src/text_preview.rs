@@ -1,4 +1,5 @@
-//! The page beneath an inline text editor, with the source glyphs removed on a COS clone.
+//! The page beneath an inline text editor, with the source glyphs removed on a COS clone; and,
+//! the same way, the page beneath a dragged added item or the marks an Update replaces.
 
 use std::sync::Arc;
 
@@ -87,6 +88,24 @@ impl Document {
             pdfcraft_edit::delete_content(&mut cos, page, index).map_err(|e| e.to_string())?;
             let bytes = Arc::new(pdfcraft_cos::write_incremental(&cos, &pdfcraft_cos::SaveOptions::default()).map_err(|e| e.to_string())?);
             Ok(TextEditPreview { page, bytes, config: self.config.clone() })
+        })?
+    }
+
+    /// The page without its marks of `kind`: what Update replaces them on, so its preview doesn't
+    /// draw the new marks over the old ones (or tint the old background). `None` when the page has
+    /// none, and its thumbnail already is that page. Read-only, like [`Self::text_edit_preview`].
+    pub fn page_without_marks(&self, page: usize, kind: crate::MarkKind) -> Result<Option<TextEditPreview>, String> {
+        if !self.marks().contains(&kind) {
+            return Ok(None);
+        }
+        guard(|| {
+            let editor = self.editor.as_ref().ok_or("the document can't be read")?;
+            let mut cos = editor.cos.clone();
+            if pdfcraft_edit::remove_marks(&mut cos, &[page], kind).map_err(|e| e.to_string())? == 0 {
+                return Ok(None);
+            }
+            let bytes = Arc::new(pdfcraft_cos::write_incremental(&cos, &pdfcraft_cos::SaveOptions::default()).map_err(|e| e.to_string())?);
+            Ok(Some(TextEditPreview { page, bytes, config: self.config.clone() }))
         })?
     }
 

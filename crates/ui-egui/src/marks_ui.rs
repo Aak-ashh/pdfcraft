@@ -12,6 +12,9 @@ use crate::{PdfCraftApp, icons, widgets};
 /// How far a watermark may be moved from the page centre, in points.
 const MAX_OFFSET: f64 = 20_000.0;
 
+/// The preview page's longer side, in points.
+const PREVIEW_SIDE: f32 = 190.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Subset {
     All,
@@ -152,7 +155,7 @@ fn preview(
     draw: impl FnOnce(&egui::Painter, Rect, f32),
 ) {
     let (w, h) = (size.0.max(1.0), size.1.max(1.0));
-    let s = (190.0 / w.max(h)) as f32;
+    let s = (f64::from(PREVIEW_SIDE) / w.max(h)) as f32;
     let (r, _) = ui.allocate_exact_size(vec2(210.0, 210.0), egui::Sense::hover());
     let page = Rect::from_center_size(r.center(), vec2(w as f32 * s, h as f32 * s));
     let painter = ui.painter_at(r);
@@ -178,6 +181,69 @@ fn rgb32(c: [f64; 3]) -> Color32 {
 fn behind(color: [f64; 3], opacity: f64) -> Color32 {
     let a = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
     rgb32(color.map(|c| 1.0 - a * (1.0 - c)))
+}
+
+/// In Update, the page previewed without the marks the dialog replaces. Its thumbnail still has
+/// them, so the new marks would be drawn over the old ones, and a new background colour would tint
+/// the old one. Rendered off the UI thread like the thumbnail, once per page shown.
+#[derive(Default)]
+pub(crate) struct UnmarkedPage {
+    /// The document, its edit generation, the page and the kind of mark taken away.
+    key: Option<(pdfcraft_engine::DocId, u64, usize, MarkKind)>,
+    renderer: Option<pdfcraft_render::RenderPool>,
+    texture: Option<egui::TextureHandle>,
+    tag: Option<u64>,
+}
+
+impl UnmarkedPage {
+    pub(crate) fn pending(&self) -> bool {
+        self.renderer.is_some() && self.texture.is_none()
+    }
+
+    /// The picture to preview `page` on in place of its thumbnail: `None` when the thumbnail is
+    /// that page (not Update, or no marks of `kind` on it, or the page can't be prepared), and
+    /// `Some(None)` while it renders, when the page is a blank sheet.
+    fn picture(
+        &mut self,
+        ctx: &egui::Context,
+        (doc, id): (&pdfcraft_engine::Document, pdfcraft_engine::DocId),
+        page: usize,
+        kind: MarkKind,
+        replace: bool,
+    ) -> Option<Option<egui::TextureId>> {
+        let key = replace.then(|| (id, doc.edit_generation(), page, kind));
+        if self.key != key {
+            *self = Self { key, ..Default::default() };
+            if replace {
+                self.renderer = doc.page_without_marks(page, kind).ok().flatten().map(|p| p.renderer());
+            }
+        }
+        let renderer = self.renderer.as_ref()?;
+        // At the preview's size in pixels.
+        let p = doc.info.pages.get(page)?;
+        let scale = PREVIEW_SIDE * ctx.pixels_per_point() / p.width.max(p.height).max(1.0);
+        let tag = (scale * 1000.0) as u64;
+        if self.tag != Some(tag) {
+            renderer.set_queue(vec![pdfcraft_render::RenderRequest { page, scale, tag, ..Default::default() }]);
+            self.tag = Some(tag);
+        }
+        if let Some(out) = renderer.try_recv() {
+            if out.error.is_some() {
+                // The thumbnail, as before, rather than no page at all.
+                self.renderer = None;
+                self.texture = None;
+                return None;
+            }
+            if out.request.tag == tag {
+                let image = crate::canvas::texture_image([out.width as usize, out.height as usize], out.rgba);
+                self.texture = Some(ctx.load_texture("marks-preview-unmarked", image, egui::TextureOptions::LINEAR));
+            }
+        }
+        if self.pending() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        Some(self.texture.as_ref().map(|t| t.id()))
+    }
 }
 
 /// The page (0-based) the preview shows: the current one when the range selects it, otherwise the
@@ -378,12 +444,15 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens, kind: M
     ui.add_space(8.0);
     // The preview: the current page (or the page stepped to), or the first one the range selects
     // if it leaves that out, drawn from its thumbnail at its displayed size (after /Rotate), the
-    // frame the engine lays the marks out in.
+    // frame the engine lays the marks out in. Update draws it without the marks it replaces.
     let target = shown_preview(&d.range, &mut d.preview, current, count);
     let page = doc.info.pages.get(target).map(|p| (p.width as f64, p.height as f64)).unwrap_or((612.0, 792.0));
-    let picture = app.views.get_mut(i).and_then(|view| {
-        view.need_thumbnail(target, true);
-        view.thumb_id(target)
+    let unmarked = app.unmarked_page.picture(ui.ctx(), (doc, id), target, kind, d.replace);
+    let picture = unmarked.unwrap_or_else(|| {
+        app.views.get_mut(i).and_then(|view| {
+            view.need_thumbnail(target, true);
+            view.thumb_id(target)
+        })
     });
     let tint = if kind == MarkKind::Background && !d.use_file { behind(d.bg.color, d.bg.opacity) } else { Color32::WHITE };
     let hf = d.hf.clone();

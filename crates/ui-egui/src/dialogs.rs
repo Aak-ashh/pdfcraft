@@ -1586,6 +1586,7 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
         app.view_draft = None;
         app.custom_draft = None;
         app.bulk_field_props = None;
+        app.unmarked_page = Default::default();
     } else {
         app.dialog = Some(next);
     }
