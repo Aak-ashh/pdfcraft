@@ -5172,6 +5172,12 @@ fn calculate_and_validate_refuse_what_they_would_drop() {
     };
     for (calculate, says) in [
         (json!({ "notation": "a", "op": "sum", "fields": ["b"] }), "not both"),
+        (json!({ "notation": "a", "op": "sum" }), "not both"),
+        (json!({ "notation": "a", "fields": ["b"] }), "not both"),
+        // A notation that wouldn't read back as itself from the script's comment.
+        (json!({ "notation": "a EVCALC b" }), "can't be stored"),
+        (json!({ "notation": "a */ x /*" }), "can't be stored"),
+        (json!({ "notation": " " }), "can't be stored"),
         (json!({ "op": "sum", "fields": ["a", 5] }), "field names"),
         (json!({ "op": "sum", "fields": "a" }), "list of field names"),
         (json!({ "notation": 5 }), "notation must be a string"),

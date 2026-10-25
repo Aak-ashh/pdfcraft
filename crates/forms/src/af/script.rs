@@ -325,6 +325,15 @@ pub fn validate_js(v: &Validate) -> Option<String> {
     }
 }
 
+/// Whether simplified field notation `expr` can be stored: the script keeps it in a comment,
+/// between `BVCALC` and `EVCALC`, and it has to read back from there as itself. An empty one, or
+/// one holding `EVCALC` or `*/` (either ends it early), can't.
+pub fn notation_storable(expr: &str) -> bool {
+    !expr.trim().is_empty()
+        && calculate_js(&Calculate::Notation(expr.to_owned())).and_then(|js| parse_calculate(&js))
+            == Some(Calculate::Notation(expr.trim().to_owned()))
+}
+
 pub fn calculate_js(c: &Calculate) -> Option<String> {
     match c {
         Calculate::None => None,

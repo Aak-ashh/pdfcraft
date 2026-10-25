@@ -217,6 +217,16 @@ fn hostile_scripts_are_read_in_one_pass() {
     assert_eq!(rename_in_calculation(&nested, "a", "b"), Some(format!("{}\"b\"", "AFSimple_Calculate(\"SUM\", new Array(".repeat(100_000))));
 }
 
+/// A notation is stored only when it reads back from the script's comment as itself.
+#[test]
+fn a_notation_is_stored_only_when_it_reads_back() {
+    assert!(notation_storable("Price * Qty"));
+    assert!(notation_storable("  a + b  "), "the spaces around it are left out when it is read");
+    for expr in ["", "  ", "a EVCALC b", "a */ x /*", "a */ b"] {
+        assert!(!notation_storable(expr), "{expr:?}");
+    }
+}
+
 /// Notation is read through one lexer: field names with escapes, numbers and operators.
 #[test]
 fn notation_is_read_by_one_lexer() {
