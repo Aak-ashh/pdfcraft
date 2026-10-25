@@ -1733,9 +1733,13 @@ fn finish_redactions_and_fields(app: &mut PdfCraftApp, req: &mut Pending) {
         // The widget being edited, by object: a radio button that joins a group by its new name
         // is appended after the group's own buttons, so its index changes.
         let widget = before.as_ref().and_then(|all| all.iter().find(|f| f.name == d.field)?.widgets.get(d.widget).map(|w| w.obj));
-        if app.apply_edit(Edit::SetFieldProps { name: d.field.clone(), props: Box::new(props) })
-            && let Some(i) = app.active
-        {
+        let applied = app.apply_edit(Edit::SetFieldProps { name: d.field.clone(), props: Box::new(props) });
+        if !applied && app.active_ids().is_some() {
+            // A refused edit (its reason is in the notice) leaves the dialog open with what was
+            // typed into it, as the several-fields dialog does, so nothing is lost meanwhile.
+            app.field_props = Some(d);
+            req.close = false;
+        } else if applied && let Some(i) = app.active {
             // Keep the (possibly renamed) field selected.
             // A dotted name is the full name; a plain one renames the field within its parent.
             let typed = d.name.trim();

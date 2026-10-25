@@ -1404,6 +1404,42 @@ fn fields_sharing_a_name_each_show_their_own_formula() {
     }
 }
 
+/// Field Properties refuses a notation it couldn't store as written, and stays open with what was
+/// typed into it: the field keeps its formula and nothing in the dialog is lost. Once the notation
+/// is fixed, OK applies it and closes.
+#[test]
+fn a_notation_that_cannot_be_stored_keeps_field_properties_open() {
+    use pdfcraft_engine::form_scripts::Calculate;
+    use pdfcraft_engine::{Edit, FieldProps, NewField};
+    let mut h = harness();
+    for (i, name) in ["qty", "sub"].into_iter().enumerate() {
+        let y = 200.0 + 30.0 * i as f64;
+        let kind = NewField::Text { multiline: false };
+        h.state_mut().apply_edit(Edit::AddField { page: 0, rect: [20.0, y, 120.0, y + 20.0], kind, name: Some(name.into()) });
+    }
+    let props = Box::new(FieldProps { calculate: Some(Calculate::Notation("qty * 2".into())), ..Default::default() });
+    h.state_mut().apply_edit(Edit::SetFieldProps { name: "sub".into(), props });
+    let formula = |h: &Harness<'static, PdfCraftApp>| {
+        let s = h.state();
+        s.session.get(s.views[0].id).unwrap().form.iter().find(|f| f.name == "sub").unwrap().actions.calculate.clone()
+    };
+    h.state_mut().open_field_props("sub", 0);
+    h.run_steps(3);
+    let d = h.state_mut().field_props.as_mut().expect("Field Properties is open");
+    d.calculate = Calculate::Notation("qty EVCALC 2".into());
+    d.tooltip = "Subtotal".into();
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    let kept = h.state().field_props.as_ref().map(|d| (d.calculate.clone(), d.tooltip.clone()));
+    assert_eq!(kept, Some((Calculate::Notation("qty EVCALC 2".into()), "Subtotal".to_owned())), "the dialog stays open as typed");
+    assert_eq!(formula(&h), Calculate::Notation("qty * 2".into()), "the field keeps its formula");
+    h.state_mut().field_props.as_mut().expect("still open").calculate = Calculate::Notation("qty * 3".into());
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    assert!(h.state().field_props.is_none(), "applied and closed");
+    assert_eq!(formula(&h), Calculate::Notation("qty * 3".into()));
+}
+
 /// A formula that reads a field the form doesn't have gets a card of its own, in place of "every
 /// field calculates after the fields it reads", and its link opens that formula. A script that
 /// builds the names it reads gets a note.
