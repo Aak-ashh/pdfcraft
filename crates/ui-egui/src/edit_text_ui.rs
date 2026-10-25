@@ -276,18 +276,41 @@ pub(crate) fn input_id() -> egui::Id {
 /// as it was before a format change, into a box showing the page as it is now. `from` is the box's
 /// own record of that; which document `doc` last used the history is kept beside it, since a box
 /// in another tab on the same text would otherwise take that document's typing with its Redo.
+/// When another document's box takes the text box, the box it leaves keeps its history (and
+/// caret) aside, and gets it back on its return, so its typing can still be undone there.
 pub(crate) fn forget_typing_before(ctx: &egui::Context, id: egui::Id, doc: pdfcraft_engine::DocId, from: &mut Option<String>, text: &str) {
     let owner = id.with("typing-doc");
-    if from.as_deref() == Some(text) && ctx.data(|d| d.get_temp::<pdfcraft_engine::DocId>(owner)) == Some(doc) {
+    let last = ctx.data(|d| d.get_temp::<pdfcraft_engine::DocId>(owner));
+    if from.as_deref() == Some(text) && last == Some(doc) {
         return;
     }
-    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
-        state.clear_undoer();
-        egui::TextEdit::store_state(ctx, id, state);
+    let aside = |doc: pdfcraft_engine::DocId| id.with(("typing-aside", doc));
+    let aligns = id.with(ALIGN_HISTORY);
+    if let Some(left) = last.filter(|l| *l != doc)
+        && let Some(state) = egui::TextEdit::load_state(ctx, id)
+    {
+        // A copy of its own: a state's history is shared between its clones, and the next box
+        // clears it in place. The rows' alignments by text go with it.
+        let mut kept = egui::text_edit::TextEditState::default();
+        kept.cursor = state.cursor;
+        kept.set_undoer(state.undoer());
+        ctx.data_mut(|d| {
+            let rows = d.get_temp::<AlignHistory>(aligns).unwrap_or_default();
+            d.insert_temp(aside(left), (kept, rows));
+        });
     }
+    // Only the same box, still on the text it opened on, takes its history back.
+    let back =
+        ctx.data_mut(|d| d.remove_temp::<(egui::text_edit::TextEditState, AlignHistory)>(aside(doc))).filter(|_| from.as_deref() == Some(text));
+    let (state, rows) = back.unwrap_or_else(|| {
+        let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+        state.clear_undoer();
+        (state, AlignHistory::default())
+    });
+    egui::TextEdit::store_state(ctx, id, state);
     ctx.data_mut(|d| {
         d.insert_temp(owner, doc);
-        d.remove::<AlignHistory>(id.with(ALIGN_HISTORY));
+        d.insert_temp(aligns, rows);
     });
     *from = Some(text.to_owned());
 }
@@ -1905,6 +1928,27 @@ pub(crate) fn caret_color_on(fill: Color32) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rows' alignments by text go aside with the box's history when another tab's box takes
+    /// the text box, and come back with it: Undo after the trip still restores a deleted row's
+    /// alignment, while the other tab's box starts with none.
+    #[test]
+    fn alignments_by_text_survive_a_trip_to_another_tab() {
+        use pdfcraft_engine::{DocId, TextAlign::Right};
+        let (ctx, id) = (egui::Context::default(), egui::Id::new("box"));
+        let (mut a_from, mut b_from) = (None, None);
+        forget_typing_before(&ctx, id, DocId(1), &mut a_from, "A\nB");
+        let mut aligns = vec![None, Some(Right)];
+        follow_typing(&ctx, id, "A\nB", "A", &mut [&mut aligns]);
+        forget_typing_before(&ctx, id, DocId(2), &mut b_from, "A\nB");
+        let mut other = vec![None, None];
+        follow_typing(&ctx, id, "A\nB", "A", &mut [&mut other]);
+        follow_typing(&ctx, id, "A", "A\nB", &mut [&mut other]);
+        assert_eq!(other, [None, None], "tab B's box gets back its own alignments, not tab A's");
+        forget_typing_before(&ctx, id, DocId(1), &mut a_from, "A\nB");
+        follow_typing(&ctx, id, "A", "A\nB", &mut [&mut aligns]);
+        assert_eq!(aligns, [None, Some(Right)], "back in tab A, Undo brings the row back right-aligned");
+    }
 
     /// Undo back to a text the box showed brings its rows' alignments back, unless an alignment
     /// was picked since: then the older alignments are stale, and the edit is followed instead, so
