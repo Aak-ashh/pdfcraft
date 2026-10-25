@@ -1711,6 +1711,28 @@ fn the_calculation_order_is_checked_fixed_and_kept() {
     assert_eq!(order.fixed(), ["sub", "total", "tax", "grand"], "only tax moves, to just after total");
 }
 
+/// `set_props` refuses a notation it couldn't store as written before it writes anything: the
+/// tooltip given with it, which is written before the calculation, isn't set either.
+#[test]
+fn a_notation_that_cannot_be_stored_changes_nothing() {
+    use crate::af::Calculate;
+    let objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [5 0 R] >>".into(),
+        "<< /Fields [5 0 R] /DA (/Helv 0 Tf 0 g) >>".into(),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (total) /Rect [50 700 140 711] /P 3 0 R >>".into(),
+    ];
+    let mut doc = document(&objs);
+    for n in ["", "a EVCALC b", "a */ b", "a\\"] {
+        let props = FieldProps { tooltip: Some("Total".into()), calculate: Some(Calculate::Notation(n.into())), ..Default::default() };
+        assert!(set_props(&mut doc, "total", &props).is_err(), "{n:?}");
+        let all = fields(&doc);
+        let f = field(&all, "total");
+        assert_eq!((f.tooltip.as_deref(), &f.actions.calculate), (None, &Calculate::None), "{n:?} changed nothing");
+    }
+}
+
 /// A formula that reads a field the form doesn't have is flagged, whichever kind of formula it
 /// is: a field deleted from under a sum, a typo in notation, a script's `getField`. So is a
 /// script that builds the names it reads. Neither is an order Fix order can fix.
