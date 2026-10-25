@@ -1727,7 +1727,8 @@ fn missing_fields_and_built_names_are_flagged() {
     let calculate = |c: Calculate| FieldProps { calculate: Some(c), ..FieldProps::default() };
     set_props(&mut doc, "sum", &calculate(Calculate::Simple { op: CalcOp::Sum, fields: vec!["qty".into(), "gone".into()] })).unwrap();
     set_props(&mut doc, "notation", &calculate(Calculate::Notation("qty * nope".into()))).unwrap();
-    // qty has one widget: qty.0 is it, and there is no qty.1.
+    // qty has one widget, but a widget name is no field: recalculation and getField give qty.0
+    // nothing, so it is as missing as qty.1.
     let script = "event.value = getField(\"qty\").value + getField(\"ghost\").value + getField(\"qty.0\").value + getField(\"qty.1\").value;";
     set_field_script(&mut doc, "script", "calculate", Some(script)).unwrap();
     set_field_script(&mut doc, "built", "calculate", Some("event.value = getField(\"qty\").value + getField(\"row\" + 1).value;")).unwrap();
@@ -1740,7 +1741,10 @@ fn missing_fields_and_built_names_are_flagged() {
         vec![
             ("sum".to_owned(), sum),
             ("notation".to_owned(), vec![MissingField { field: "nope".into() }]),
-            ("script".to_owned(), vec![MissingField { field: "ghost".into() }, MissingField { field: "qty.1".into() }]),
+            (
+                "script".to_owned(),
+                vec![MissingField { field: "ghost".into() }, MissingField { field: "qty.0".into() }, MissingField { field: "qty.1".into() }],
+            ),
             ("built".to_owned(), vec![BuiltNames]),
         ]
     };
