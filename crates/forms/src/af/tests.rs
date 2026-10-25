@@ -199,6 +199,12 @@ fn names_built_at_run_time_are_noticed() {
     let js = "event.value = getField(\"a\").value + getField(\"row\" + i).value + AFSimple_Calculate(\"SUM\", new Array(\"a\", b));";
     assert_eq!(calculation_reads(js), ["a"]);
     assert_eq!(rename_in_calculation(js, "a", "qty"), Some(js.replace("\"a\"", "\"qty\"")));
+    // So are a list's, string or array, with another argument after it.
+    for js in ["AFSimple_Calculate(\"SUM\", \"a, b\", x);", "AFSimple_Calculate(\"SUM\", [\"a\", \"b\"], x);"] {
+        assert!(reads_built_names(js), "{js}");
+        assert_eq!(calculation_reads(js), ["a", "b"], "{js}");
+        assert_eq!(rename_in_calculation(js, "a", "qty"), Some(js.replace("\"a", "\"qty")), "{js}");
+    }
 }
 
 /// Scripts are read in one pass: a line of unfinished regular expressions, or calls nested in

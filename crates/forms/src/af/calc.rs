@@ -278,10 +278,13 @@ fn calculation_sites(js: &str) -> Vec<(Range<usize>, Site)> {
             continue;
         }
         // One string of comma-separated names, when it is the whole list (not `"row" + suffix`).
+        // An argument after it leaves the list as written, as after an array: its names are read,
+        // and what follows is a name built at run time.
         if let Some((range, list)) = string(k + 4) {
-            if punct(k + 5, ')') {
+            if punct(k + 5, ')') || punct(k + 5, ',') {
                 sites.push((range, Site::Commas(list)));
-            } else {
+            }
+            if !punct(k + 5, ')') {
                 sites.extend(built(k));
             }
             continue;
