@@ -549,6 +549,32 @@ fn redaction_clears_pixels_intersected_without_covering_their_centres() {
     }
 }
 
+/// An image whose PNG predictor is given by reference has its covered pixel cleared, and only
+/// that one: `Stream::decoded` reads only a direct `/DecodeParms`, so the row tags stayed in the
+/// data, the cleared byte drifted off the covered pixel and the covered sample survived.
+#[test]
+fn an_image_whose_predictor_is_given_by_reference_has_the_covered_pixel_cleared() {
+    // Two rows of four grey samples, each behind a PNG "None" row tag.
+    let predicted = pdfcraft_filters::encode_flate(&[0, 10, 20, 30, 40, 0, 50, 60, 70, 80]);
+    let mut doc = one_page(
+        b"q 40 0 0 20 0 0 cm /Im Do Q",
+        "/XObject << /Im 7 0 R >>",
+        vec![
+            stream(
+                "/Type /XObject /Subtype /Image /Width 4 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /DecodeParms 8 0 R",
+                predicted,
+            ),
+            b"<< /Predictor 15 /Colors 1 /BitsPerComponent 8 /Columns 4 >>".to_vec(),
+        ],
+    );
+    // The top row's second sample.
+    mark(&mut doc, 0, &[[12.0, 12.0, 18.0, 18.0]], "");
+    let report = apply(&mut doc, None).unwrap();
+    assert_eq!(report.images_cleared, 1);
+    let saved = Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap();
+    assert_eq!(named_image(&saved, 0, b"PCRedacted1"), Some(vec![10, 0, 30, 40, 50, 60, 70, 80]));
+}
+
 /// Apply Redactions gives the page its own pruned /Resources, but the dictionary it drew through
 /// before (inherited from the /Pages node, or shared with another page) still named the removed
 /// image and form, so a full-rewrite save kept them.

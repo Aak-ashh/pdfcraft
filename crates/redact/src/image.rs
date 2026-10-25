@@ -45,6 +45,9 @@ fn decode_and_clear(doc: &Document, s: &Stream, ctm: &Matrix, rects: &[[f64; 4]]
     if s.dict.contains(b"SMask") || s.dict.contains(b"Mask") {
         return None;
     }
+    // `Stream::decoded*` reads `/DecodeParms` only when it is direct: a predictor given by
+    // reference would be skipped, and the cleared bytes would then miss the covered pixels.
+    let s = &*doc.with_direct_parms(s);
     let supported = |n: &[u8]| {
         matches!(
             n,
