@@ -222,7 +222,12 @@ fn hostile_scripts_are_read_in_one_pass() {
 fn a_notation_is_stored_only_when_it_reads_back() {
     assert!(notation_storable("Price * Qty"));
     assert!(notation_storable("  a + b  "), "the spaces around it are left out when it is read");
-    for expr in ["", "  ", "a EVCALC b", "a */ x /*", "a */ b"] {
+    // A last name that ends in a space keeps it, escaped, when the notation is read back.
+    let total = "Qty * Total\\ ";
+    assert!(notation_storable(total));
+    let read = parse_calculate(&calculate_js(&Calculate::Notation(total.into())).unwrap());
+    assert_eq!(read.as_ref().map(Calculate::reads), Some(vec!["Qty".to_owned(), "Total ".to_owned()]));
+    for expr in ["", "  ", "a EVCALC b", "a */ x /*", "a */ b", "a\\"] {
         assert!(!notation_storable(expr), "{expr:?}");
     }
 }
@@ -272,6 +277,16 @@ proptest::proptest! {
         proptest::prop_assert!(renamed.is_some(), "{js}");
         let back = renamed.as_deref().and_then(|r| rename_in_calculation(r, &new, &old));
         proptest::prop_assert_eq!(back, Some(js));
+    }
+
+    /// A notation of any names, written into a script, reads back from it as written.
+    #[test]
+    fn a_notation_reads_back_as_written(names in proptest::collection::vec("\\PC{1,8}", 1..5)) {
+        proptest::prop_assume!(!names.iter().any(|n| n.contains("VCALC")));
+        let expr = names.iter().map(|n| notation_name(n)).collect::<Vec<_>>().join(" + ");
+        let js = calculate_js(&Calculate::Notation(expr.clone())).unwrap();
+        proptest::prop_assert_eq!(parse_calculate(&js), Some(Calculate::Notation(expr.clone())));
+        proptest::prop_assert!(notation_storable(&expr), "{expr:?}");
     }
 
     /// What a formula reads is the same whether it is read from the tab's settings or from

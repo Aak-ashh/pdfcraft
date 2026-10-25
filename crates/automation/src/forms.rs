@@ -1,7 +1,7 @@
 //! Form tools: list fields, fill them (several at once, one undo step), clear the form, and
 //! prepare a form (add fields one at a time or as a table, change and delete them).
 
-use pdfcraft_engine::form_scripts::{CalcOp, Calculate, Format, Validate, notation_storable};
+use pdfcraft_engine::form_scripts::{CalcOp, Calculate, Format, NOTATION_NOT_STORABLE, Validate, notation_storable};
 use pdfcraft_engine::{CalculationIssue, Edit, FieldProps, FieldValue, FormField, FormFieldKind, NewField, field_flags};
 use serde_json::{Value, json};
 
@@ -136,7 +136,7 @@ fn calculate_arg(v: &Value) -> Result<Calculate> {
         let n = n.as_str().ok_or_else(|| bad("notation must be a string such as \"Price * Qty\""))?;
         // Refused rather than stored as a different formula.
         if !notation_storable(n) {
-            return Err(bad("the notation can't be stored as written: it is empty, or holds EVCALC or */, which would end it early"));
+            return Err(bad(NOTATION_NOT_STORABLE));
         }
         return Ok(Calculate::Notation(n.to_string()));
     }
