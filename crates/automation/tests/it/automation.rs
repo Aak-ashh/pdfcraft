@@ -6525,17 +6525,7 @@ fn doc_optimize_averages_black_and_white_scans_down() {
     std::fs::write(dir.join("scan.pdf"), scan_drawn(b"q 120 0 0 48 50 500 cm /Scan Do Q")).unwrap();
     let mut a = auto(&dir);
     let doc = ok(&mut a, "doc_open", json!({ "path": "scan.pdf" }))["doc"].as_u64().unwrap();
-    let sizes = |name: &str| -> Vec<(Option<i64>, Option<i64>)> {
-        let written = pdfcraft_cos::Document::open(std::sync::Arc::new(std::fs::read(dir.join(name)).unwrap())).unwrap();
-        written
-            .object_numbers()
-            .into_iter()
-            .filter_map(|num| match &*written.get(pdfcraft_cos::ObjRef { num, generation: written.generation(num) }) {
-                pdfcraft_cos::Object::Stream(s) if s.dict.name(b"Subtype") == Some(b"Image") => Some((s.dict.int(b"Width"), s.dict.int(b"Height"))),
-                _ => None,
-            })
-            .collect()
-    };
+    let sizes = |name: &str| image_sizes(&dir.join(name));
     let r = ok(&mut a, "doc_optimize", json!({ "doc": doc, "path": "small.pdf" }));
     assert_eq!(r["images_resampled"].as_u64(), Some(1), "{r}");
     assert_eq!(sizes("small.pdf"), [(Some(500), Some(200))]);
@@ -6546,6 +6536,40 @@ fn doc_optimize_averages_black_and_white_scans_down() {
     assert_eq!(sizes("200.pdf"), [(Some(333), Some(133))]);
     for mono in [json!({ "downsample": "yes" }), json!({ "ppi": "300" }), json!({ "above": 450 })] {
         assert!(matches!(a.call("doc_optimize", &json!({ "doc": doc, "path": "x.pdf", "mono": mono })), Err(ToolError::InvalidArgs(_))), "{mono}");
+    }
+}
+
+/// The width and height of every image in the PDF at `path`.
+fn image_sizes(path: &std::path::Path) -> Vec<(Option<i64>, Option<i64>)> {
+    let written = pdfcraft_cos::Document::open(std::sync::Arc::new(std::fs::read(path).unwrap())).unwrap();
+    written
+        .object_numbers()
+        .into_iter()
+        .filter_map(|num| match &*written.get(pdfcraft_cos::ObjRef { num, generation: written.generation(num) }) {
+            pdfcraft_cos::Object::Stream(s) if s.dict.name(b"Subtype") == Some(b"Image") => Some((s.dict.int(b"Width"), s.dict.int(b"Height"))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The batch optimize step's `ppi` reaches black-and-white images too: they go to the larger of
+/// it and Reduce File Size's 300 ppi. Before, a batch run took every scan to 300 ppi whatever
+/// `ppi` said, so `ppi: 600` halved 600 ppi scans.
+#[test]
+fn batch_ppi_bounds_how_far_black_and_white_scans_are_resampled() {
+    let dir = workdir("batch-mono-ppi");
+    // 1000 × 400 samples on 120 × 48 pt: 600 ppi.
+    std::fs::write(dir.join("scan.pdf"), scan_drawn(b"q 120 0 0 48 50 500 cm /Scan Do Q")).unwrap();
+    let mut a = auto(&dir);
+    for (ppi, size) in [(None, (500, 200)), (Some(600), (1000, 400)), (Some(96), (500, 200))] {
+        let out = format!("out-{ppi:?}");
+        let mut args = json!({ "paths": ["scan.pdf"], "steps": ["optimize"], "out_dir": out });
+        if let Some(ppi) = ppi {
+            args["ppi"] = json!(ppi);
+        }
+        let report = ok(&mut a, "doc_batch", args);
+        assert_eq!(report["completed"], 1, "{report}");
+        assert_eq!(image_sizes(&dir.join(&out).join("scan.pdf")), [(Some(size.0), Some(size.1))], "ppi {ppi:?}");
     }
 }
 
