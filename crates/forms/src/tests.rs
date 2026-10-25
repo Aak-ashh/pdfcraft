@@ -4359,3 +4359,83 @@ fn comb_fields_show_their_cells() {
     let plain = saved_look(&doc, "d");
     assert!(!plain.contains(" m ") && plain.contains("(A) Tj"), "{plain}");
 }
+
+/// A radio group `size` with the buttons Small (on), Medium and Large, a per-widget `/Opt`, and
+/// the group's buttons in the calculation order; and a text field `name` with two widgets.
+fn radio_group_form() -> Document {
+    let objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),                         // 1
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),         // 2
+        "<< /Type /Page /Parent 2 0 R /Annots [6 0 R 7 0 R 8 0 R 10 0 R 11 0 R] >>".into(), // 3
+        "<< /Fields [5 0 R 9 0 R] /DA (/Helv 0 Tf 0 g) /CO [7 0 R] >>".into(),              // 4
+        "<< /FT /Btn /Ff 49152 /T (size) /V /S /Opt [(small) (medium) (large)] /Kids [6 0 R 7 0 R 8 0 R] >>".into(), // 5
+        "<< /Type /Annot /Subtype /Widget /Parent 5 0 R /Rect [50 700 64 714] /P 3 0 R /AS /S /AP << /N << /S 12 0 R /Off 12 0 R >> >> >>".into(), // 6
+        "<< /Type /Annot /Subtype /Widget /Parent 5 0 R /Rect [80 700 94 714] /P 3 0 R /AS /Off /AP << /N << /M 12 0 R /Off 12 0 R >> >> >>".into(), // 7
+        "<< /Type /Annot /Subtype /Widget /Parent 5 0 R /Rect [110 700 124 714] /P 3 0 R /AS /Off /AP << /N << /L 12 0 R /Off 12 0 R >> >> >>".into(), // 8
+        "<< /FT /Tx /T (name) /V (Ann) /Kids [10 0 R 11 0 R] >>".into(), // 9
+        "<< /Type /Annot /Subtype /Widget /Parent 9 0 R /Rect [50 600 250 620] /P 3 0 R >>".into(), // 10
+        "<< /Type /Annot /Subtype /Widget /Parent 9 0 R /Rect [300 600 500 620] /P 3 0 R >>".into(), // 11
+        "<< /Length 0 >>\nstream\n\nendstream".into(),                   // 12
+    ];
+    document(&objs)
+}
+
+fn annots(doc: &Document) -> Vec<u32> {
+    let p = page_refs(doc)[0];
+    let a = doc.resolve(doc.get(p).as_dict().unwrap().get(b"Annots").unwrap());
+    a.as_array().unwrap().iter().map(|o| o.as_ref().unwrap().num).collect()
+}
+
+#[test]
+fn deleting_one_radio_button_keeps_the_group_and_its_other_buttons() {
+    let mut doc = radio_group_form();
+    delete_widget(&mut doc, "size", 1).unwrap();
+    let doc = reopen(&doc);
+    let all = fields(&doc);
+    let size = field(&all, "size");
+    assert_eq!(size.widgets.iter().map(|w| w.obj.num).collect::<Vec<_>>(), [6, 8], "only Medium is gone");
+    assert_eq!(size.value, ["S"], "the group keeps its choice");
+    // The per-widget /Opt loses Medium's entry, so the others keep their export values.
+    assert_eq!((size.export_of(0), size.export_of(1)), (Some("small"), Some("large")));
+    assert_eq!(annots(&doc), [6, 8, 10, 11], "the button left the page");
+    let co = doc.resolve(doc.get(ObjRef::new(4, 0)).as_dict().unwrap().get(b"CO").unwrap()).as_array().cloned().unwrap();
+    assert!(co.is_empty(), "and the calculation order");
+    assert!(field(&all, "name").widgets.len() == 2, "other fields are untouched");
+}
+
+#[test]
+fn deleting_the_chosen_radio_button_turns_the_group_off() {
+    let mut doc = radio_group_form();
+    delete_widget(&mut doc, "size", 0).unwrap();
+    let all = fields(&reopen(&doc));
+    let size = field(&all, "size");
+    assert_eq!(size.widgets.iter().map(|w| w.obj.num).collect::<Vec<_>>(), [7, 8]);
+    assert!(size.value.is_empty(), "no button is on any more: {:?}", size.value);
+    assert_eq!((size.export_of(0), size.export_of(1)), (Some("medium"), Some("large")));
+}
+
+#[test]
+fn deleting_one_copy_of_a_field_keeps_the_field_and_its_value() {
+    let mut doc = radio_group_form();
+    delete_widget(&mut doc, "name", 0).unwrap();
+    let doc = reopen(&doc);
+    let all = fields(&doc);
+    let name = field(&all, "name");
+    assert_eq!((name.widgets.iter().map(|w| w.obj.num).collect::<Vec<_>>(), name.value.clone()), (vec![11], vec!["Ann".to_string()]));
+    assert_eq!(annots(&doc), [6, 7, 8, 11]);
+    // The last widget takes the field with it, as deleting the field does.
+    let mut doc = doc;
+    delete_widget(&mut doc, "name", 0).unwrap();
+    let doc = reopen(&doc);
+    assert!(!fields(&doc).iter().any(|f| f.name == "name"));
+    assert_eq!(annots(&doc), [6, 7, 8]);
+}
+
+#[test]
+fn deleting_a_widget_that_is_not_there_changes_nothing() {
+    let mut doc = radio_group_form();
+    assert_eq!(delete_widget(&mut doc, "size", 3), Err(FormError::Invalid("size has no widget 4".into())));
+    assert_eq!(delete_widget(&mut doc, "nope", 0), Err(FormError::NoSuchField("nope".into())));
+    assert_eq!(delete_widget(&mut doc, "size", usize::MAX), Err(FormError::Invalid(format!("size has no widget {}", usize::MAX))));
+    assert_eq!(field(&fields(&doc), "size").widgets.len(), 3);
+}
