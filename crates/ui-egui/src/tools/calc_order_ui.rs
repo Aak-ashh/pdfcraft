@@ -920,16 +920,9 @@ pub(crate) fn paint_page(
             }
         }
     }
-    for (k, (f, row)) in listed.order.fields.iter().zip(&listed.rows).enumerate() {
-        let Some(r) = by_obj.get(&f.obj) else { continue };
-        let shown = match &focused {
-            Some((_, related)) => related(f.name.as_str(), f.obj),
-            None => row.tone != Tone::Ok || !f.listed,
-        };
-        if !shown {
-            continue;
-        }
-        let fill = match row.tone {
+    let related = focused.as_ref().map(|(_, related)| related as Related<'_>);
+    for (k, r, tone) in steps(&listed, &by_obj, related) {
+        let fill = match tone {
             Tone::Ok => STEP,
             Tone::Late => LINK_LATE,
             Tone::Loop | Tone::Missing => LINK_LOOP,
@@ -941,6 +934,27 @@ pub(crate) fn paint_page(
         painter.text(c, Align2::CENTER_CENTER, (k + 1).to_string(), theme::semibold(radius * 1.1), Color32::WHITE);
     }
     hovered
+}
+
+/// Whether a field, by name and object, is at an end of the focus's links or is the focus.
+type Related<'a> = &'a dyn Fn(&str, ObjRef) -> bool;
+
+/// The steps the page shows: each one's place in the order (from 0), the widget it goes on (its
+/// own field's, so fields that share a name each get theirs) and its tone. With a focus, the
+/// steps of the fields `related` to it; without one, those whose place is wrong.
+fn steps(listed: &Listed, by_obj: &HashMap<ObjRef, Rect>, related: Option<Related<'_>>) -> Vec<(usize, Rect, Tone)> {
+    listed
+        .order
+        .fields
+        .iter()
+        .zip(&listed.rows)
+        .enumerate()
+        .filter(|(_, (f, row))| match related {
+            Some(related) => related(&f.name, f.obj),
+            None => row.tone != Tone::Ok || !f.listed,
+        })
+        .filter_map(|(k, (f, row))| Some((k, *by_obj.get(&f.obj)?, row.tone)))
+        .collect()
 }
 
 /// Where a ray from `r`'s centre in direction `dir` (a unit vector) leaves `r`.
@@ -1164,6 +1178,25 @@ mod tests {
         let selected = Focus::named("total");
         let (_, related) = focus_links(&links, &selected);
         assert!(related("total", first) && related("total", second) && related("tax", elsewhere), "a selected name is every field of it");
+    }
+
+    /// Each step goes on its own field's widget: two fields named `total` get one each, and a
+    /// focus on one shows its step and its reader's, not the other's.
+    #[test]
+    fn a_step_goes_on_its_own_field_when_names_are_shared() {
+        let (calculated, links) = two_totals();
+        let [first, second, grand] = calculated.each_ref().map(|f| f.obj);
+        let at = |x: f32| Rect::from_min_size(pos2(x, 0.0), vec2(10.0, 10.0));
+        let by_obj = HashMap::from([(first, at(0.0)), (second, at(100.0)), (grand, at(200.0))]);
+        let rows = rows(&calculated, &[]);
+        let mut order = CalculationOrder::default();
+        order.fields = calculated.to_vec();
+        let listed = Listed { order, rows, links };
+        // Unfocused, the two broken formulas show their steps.
+        assert_eq!(steps(&listed, &by_obj, None), [(0, at(0.0), Tone::Missing), (1, at(100.0), Tone::Missing)]);
+        let focus = Focus::row(&calculated[0]);
+        let (_, related) = focus_links(&listed.links, &focus);
+        assert_eq!(steps(&listed, &by_obj, Some(&related)), [(0, at(0.0), Tone::Missing), (2, at(200.0), Tone::Ok)]);
     }
 
     /// A missing field outranks a loop on the row, but the field is still in its loop.
