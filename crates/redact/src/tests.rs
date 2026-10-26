@@ -684,6 +684,40 @@ fn a_fax_image_that_cannot_be_decoded_in_full_is_removed_whole() {
     }
 }
 
+/// Group 3 on bytes is removed whole: the renderer draws some of its layouts as other rows than
+/// the decoder reads, so the pixels a mark covers on screen needn't be the ones cleared. Group 3
+/// off bytes and Group 4 on bytes are cleared. Each picture is 16 × 2 white, each row a white run
+/// of 16 (`101010`): off bytes; on bytes with no end-of-line codes; on bytes after codes whose fill
+/// ends each on a byte, at `/K 0` and at `/K 1` (a 1 after each code), `/EncodedByteAlign` given by
+/// reference there; and Group 4 rows on bytes, each the one code 1 (vertical, no change).
+#[test]
+fn group_3_on_bytes_is_removed_whole_and_other_fax_images_cleared() {
+    let image = "/Type /XObject /Subtype /Image /Width 16 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /CCITTFaxDecode";
+    for (k, on_bytes, parms, data, extra, removed) in [
+        (0, false, "<< /K 0 /Columns 16 >>", vec![0xAA, 0xA0], vec![], false),
+        (0, true, "<< /K 0 /Columns 16 /EncodedByteAlign true >>", vec![0xA8, 0xA8], vec![], true),
+        (0, true, "<< /K 0 /Columns 16 /EncodedByteAlign true >>", vec![0x00, 0x01, 0xA8, 0x00, 0x01, 0xA8], vec![], true),
+        (1, true, "<< /K 1 /Columns 16 /EncodedByteAlign 8 0 R >>", vec![0x00, 0x01, 0xD4, 0x00, 0x01, 0xD4], vec![b"true".to_vec()], true),
+        (-1, true, "<< /K -1 /Columns 16 /EncodedByteAlign true >>", vec![0x80, 0x80], vec![], false),
+    ] {
+        let p = pdfcraft_filters::CcittParams { k, columns: 16, encoded_byte_align: on_bytes, ..Default::default() };
+        assert_eq!(pdfcraft_filters::decode_ccitt(&data, &p, 2).unwrap(), [0xFF; 4], "{parms}: the picture is white");
+        let dict = format!("{image} /DecodeParms {parms}");
+        let mut objs = vec![stream(&dict, data)];
+        objs.extend(extra);
+        let mut doc = one_page(b"q 160 0 0 20 0 0 cm /Im Do Q", "/XObject << /Im 7 0 R >>", objs);
+        mark(&mut doc, 0, &[[0.0, 12.0, 75.0, 18.0]], "");
+        let report = apply(&mut doc, None).unwrap();
+        if removed {
+            assert_eq!((report.images_cleared, report.images_removed), (0, 1), "{parms}");
+        } else {
+            assert_eq!((report.images_cleared, report.images_removed), (1, 0), "{parms}");
+            let saved = Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap();
+            assert_eq!(named_image(&saved, 0, b"PCRedacted1").as_deref(), Some(&[0x00, 0xFF, 0xFF, 0xFF][..]), "{parms}");
+        }
+    }
+}
+
 /// A busy fax image is cleared, though its code is bigger than three times its raster (the bound
 /// for other images): a code takes up to about a byte per pixel, and the fax image gets that much.
 #[test]

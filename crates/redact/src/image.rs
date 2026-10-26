@@ -1,9 +1,10 @@
 //! Clearing the pixels of an image under redaction regions. The image is decoded, every pixel
 //! whose footprint intersects a region is set to zero (no ink for image masks), and the result is
 //! written as a new Flate image; the original object is untouched (other pages may use it).
-//! CCITT fax images decode through `Document::decoded_image_within`. Images whose codec PdfCraft can't
-//! decode (DCT, JPX, JBIG2) return `None`, and the caller removes the whole image instead; that
-//! is fail-closed.
+//! CCITT fax images decode through `Document::decoded_image_within`, but for Group 3 on bytes,
+//! which PdfCraft's renderer may draw as other rows. Images whose codec PdfCraft can't decode
+//! (DCT, JPX, JBIG2), and Group 3 on bytes, return `None`, and the caller removes the whole image
+//! instead; that is fail-closed.
 
 use pdfcraft_content::{Matrix, overlaps};
 use pdfcraft_cos::{Document, Object, Stream};
@@ -66,6 +67,13 @@ fn decode_and_clear(doc: &Document, s: &Stream, ctm: &Matrix, rects: &[[f64; 4]]
         _ => (false, false),
     };
     if !ok {
+        return None;
+    }
+    // Group 3 on bytes is removed whole for now. The decoder reads it by its end-of-line codes
+    // when the data starts with one, but PdfCraft's renderer draws such rows (the fill ending
+    // each code on a byte) as other rows, so the pixels a mark covers on screen needn't be the
+    // ones cleared.
+    if is_fax && doc.fax_params(s).is_none_or(|p| p.k >= 0 && p.encoded_byte_align) {
         return None;
     }
     let (w, h) = (s.dict.int(b"Width")?, s.dict.int(b"Height")?);

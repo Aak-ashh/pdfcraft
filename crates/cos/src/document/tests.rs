@@ -131,7 +131,15 @@ fn fax_images_decode_with_their_parameters() {
     assert_eq!(image(&doc, Some(Object::Dict(by_reference)), 10, 3).unwrap(), bits, "/K and /Columns by reference");
     let mut understated = parms.clone();
     understated.set(b"Rows".to_vec(), Object::Int(1));
-    assert_eq!(image(&doc, Some(Object::Dict(understated)), 10, 3).unwrap(), bits, "/Height rows, whatever /Rows says");
+    assert_eq!(image(&doc, Some(Object::Dict(understated.clone())), 10, 3).unwrap(), bits, "/Height rows, whatever /Rows says");
+    // The parameters as the file gives them, /Rows included, and Table 11's defaults.
+    let mut d = Dict::new();
+    d.set(b"Filter".to_vec(), Object::name("CCITTFaxDecode"));
+    d.set(b"DecodeParms".to_vec(), Object::Dict(understated));
+    let p = doc.fax_params(&Stream::from_raw(d.clone(), Vec::new())).unwrap();
+    assert_eq!((p.k, p.columns, p.rows, p.end_of_block, p.black_is_1), (-1, 10, 1, true, false));
+    d.set(b"Filter".to_vec(), Object::name("FlateDecode"));
+    assert!(doc.fax_params(&Stream::from_raw(d, Vec::new())).is_none(), "not a fax image");
     assert!(matches!(image(&doc, Some(Object::Dict(parms.clone())), 12, 3), Err(CosError::Filter(_))), "/Columns other than /Width");
     assert!(matches!(image(&doc, None, 10, 3), Err(CosError::Filter(_))), "the default 1728 /Columns");
     let mut plain = Dict::new();
