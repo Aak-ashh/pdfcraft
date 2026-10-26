@@ -544,8 +544,9 @@ fn process(doc: &Document, s: &Stream, ppi: f64, settings: &ImageSettings, n: us
 
 /// Whether colour space `cs` has one colour component, so a 1-bit image in it has one bit per
 /// pixel: grey, a separation, an indexed space or a DeviceN of one colourant. Of names, only
-/// DeviceGray counts: another name is no colour space on its own (`/Indexed` and `/CalGray` need
-/// their parameters), so it can only name a resource, which might be RGB.
+/// DeviceGray counts, with `/G`, its abbreviation, which readers take as grey too: another name
+/// is no colour space on its own (`/Indexed` and `/CalGray` need their parameters), so it can only
+/// name a resource, which might be RGB.
 fn one_component(doc: &Document, cs: &Object) -> bool {
     let cs = doc.resolve(cs);
     match &*cs {

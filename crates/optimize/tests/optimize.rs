@@ -413,6 +413,65 @@ fn black_and_white_images_become_ccitt_group_4() {
     assert!(render(&doc) == before, "the page looks the same");
 }
 
+/// Which 1-bit images qualify for Group 4: those of one colour component, an ICC profile of one
+/// component and a DeviceN of one colourant among them, but not one of three components or two
+/// colourants (more than a bit a pixel); image masks of one bit, as `/BitsPerComponent 1` says or
+/// by default, but not one that says 8; and images of up to 80 million pixels, not one row more.
+/// The byte totals count exactly the images stored again.
+#[test]
+fn group_4_takes_images_of_one_bit_a_pixel_up_to_the_pixel_limit() {
+    let mut doc = Document::new_empty();
+    let (w, h) = (1200u32, 480u32);
+    let text = bilevel(w, h, false);
+    let icc = |doc: &mut Document, n: i64| {
+        let mut d = Dict::new();
+        d.set(b"N".to_vec(), Object::Int(n));
+        Object::Array(vec![Object::name("ICCBased"), Object::Ref(doc.add(Object::Stream(Stream::from_raw(d, Vec::new()))))])
+    };
+    let device_n = |colourants: &[&str]| {
+        let mut tint = Dict::new();
+        tint.set(b"FunctionType".to_vec(), Object::Int(2));
+        tint.set(b"Domain".to_vec(), Object::Array(vec![0.into(), 1.into()]));
+        tint.set(b"N".to_vec(), Object::Int(1));
+        Object::Array(vec![
+            Object::name("DeviceN"),
+            Object::Array(colourants.iter().map(|c| Object::name(c)).collect()),
+            Object::name("DeviceGray"),
+            Object::Dict(tint),
+        ])
+    };
+    let one_bit = |cs: Object| [("BitsPerComponent", 1.into()), ("ColorSpace", cs)];
+    let icc_1 = icc(&mut doc, 1);
+    let icc_1 = mono_image(&mut doc, w, h, &text, None, &one_bit(icc_1));
+    let icc_3 = icc(&mut doc, 3);
+    let icc_3 = mono_image(&mut doc, w, h, &bilevel(3 * w, h, false), None, &one_bit(icc_3));
+    let spot = mono_image(&mut doc, w, h, &text, None, &one_bit(device_n(&["Spot"])));
+    let two_spots = mono_image(&mut doc, w, h, &bilevel(2 * w, h, false), None, &one_bit(device_n(&["Spot", "Other"])));
+    let mask = |bits: i64| [("ImageMask", Object::Bool(true)), ("BitsPerComponent", bits.into())];
+    let mask_1 = mono_image(&mut doc, w, h, &text, None, &mask(1));
+    let mask_8 = mono_image(&mut doc, w, h, &bilevel(8 * w, h, false), None, &mask(8));
+    // 10,000 × 8,000 is the limit itself.
+    let grey = one_bit(Object::name("DeviceGray"));
+    let at_limit = mono_image(&mut doc, 10_000, 8_000, &bilevel(10_000, 8_000, false), None, &grey);
+    let past_limit = mono_image(&mut doc, 10_000, 8_001, &bilevel(10_000, 8_001, false), None, &grey);
+    let all = [icc_1, icc_3, spot, two_spots, mask_1, mask_8, at_limit, past_limit];
+    let names: Vec<String> = (0..all.len()).map(|i| format!("Im{i}")).collect();
+    let content: String = (0..all.len()).map(|i| format!("q 200 0 0 80 {} {} cm /Im{i} Do Q ", 6 + 200 * (i % 3), 690 - 100 * (i / 3))).collect();
+    page(&mut doc, &names.iter().map(String::as_str).zip(all).collect::<Vec<_>>(), &content);
+    let converted = [icc_1, spot, mask_1, at_limit];
+    let left = [icc_3, two_spots, mask_8, past_limit];
+    let before = |doc: &Document, refs: &[ObjRef]| refs.iter().map(|r| stream(doc, *r).raw).collect::<Vec<_>>();
+    let (old, untouched) = (before(&doc, &converted), before(&doc, &left));
+    let r = optimize(&mut doc, &Settings::default()).unwrap();
+    assert_eq!(r.images_recompressed, converted.len(), "{r:?}");
+    for i in converted {
+        assert_eq!(stream(&doc, i).dict.name(b"Filter"), Some(&b"CCITTFaxDecode"[..]), "{i:?}");
+    }
+    assert_eq!(before(&doc, &left), untouched);
+    let new = before(&doc, &converted);
+    assert_eq!((r.image_bytes_before, r.image_bytes_after), (old.iter().map(|b| b.len()).sum(), new.iter().map(|b| b.len()).sum()));
+}
+
 /// An image whose /DecodeParms are a reference, or hold numbers given by reference
 /// (`/Predictor 9 0 R`, which `Dict::int` doesn't follow), is read through them, as one with them
 /// direct: a predictor's tag bytes would otherwise shift every row, and the image would be stored
