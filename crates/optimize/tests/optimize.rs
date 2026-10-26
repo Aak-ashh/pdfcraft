@@ -1050,7 +1050,7 @@ fn retain_keeps_a_group_3_halftone_as_it_is() {
     let a: Vec<u32> = vec![1; 64];
     let b: Vec<u32> = std::iter::once(0).chain(std::iter::repeat_n(1, 64)).collect();
     let runs: Vec<&[u32]> = (0..h).map(|y| if y % 2 == 0 { &a[..] } else { &b[..] }).collect();
-    let g3 = group_3(&runs, false);
+    let g3 = group_3(&runs, false, None);
     let mut doc = Document::new_empty();
     let mut d = Dict::new();
     d.set(b"Subtype".to_vec(), Object::name("Image"));
@@ -1528,8 +1528,10 @@ fn monochrome_images_keep_what_they_should() {
 }
 
 /// `rows` coded as CCITT Group 3, one-dimensional (`/K 0`): each row its runs in turn, white first,
-/// with ITU-T T.4's terminating codes for the few lengths used here.
-fn group_3(rows: &[&[u32]], mixed: bool) -> Vec<u8> {
+/// with ITU-T T.4's terminating codes for the few lengths used here. With `on_bytes`, each row
+/// starts on a byte: `Some(false)`, with no end-of-line codes (TIFF's Modified Huffman); `Some(true)`,
+/// after an end-of-line code that the fill ends on a byte (T.4's fill, as TIFF writes it).
+fn group_3(rows: &[&[u32]], mixed: bool, on_bytes: Option<bool>) -> Vec<u8> {
     let code = |white: bool, run: u32| match (white, run) {
         (true, 0) => "00110101",
         (true, 1) => "000111",
@@ -1544,9 +1546,19 @@ fn group_3(rows: &[&[u32]], mixed: bool) -> Vec<u8> {
     };
     let mut bits = String::new();
     for row in rows {
-        // Mixed coding (/K above 0): an end-of-line code, then a 1 bit, the row one-dimensional.
+        let codes = mixed || on_bytes == Some(true);
+        if on_bytes.is_some() {
+            // The end-of-line code is 12 bits.
+            while !(bits.len() + if codes { 12 } else { 0 }).is_multiple_of(8) {
+                bits.push('0');
+            }
+        }
+        if codes {
+            bits.push_str("000000000001");
+        }
+        // Mixed coding (/K above 0): a 1 bit after the code, the row one-dimensional.
         if mixed {
-            bits.push_str("0000000000011");
+            bits.push('1');
         }
         row.iter().enumerate().for_each(|(i, run)| bits.push_str(code(i % 2 == 0, *run)));
     }
@@ -1554,8 +1566,9 @@ fn group_3(rows: &[&[u32]], mixed: bool) -> Vec<u8> {
 }
 
 /// A Group 3 fax image is stored again as Group 4 when that is smaller, the same picture (to the
-/// pixel on the page); with Retain it stays Group 3. One-dimensional (/K 0) and mixed (/K 1, with
-/// end-of-line codes) alike.
+/// pixel on the page, against the picture in Flate); with Retain it stays Group 3. One-dimensional (/K 0) and mixed (/K 1, with
+/// end-of-line codes) alike, and rows on bytes, with no codes and with codes the fill ends on a byte
+/// (without `/EndOfLine`, which reading by the flag misread).
 #[test]
 fn group_3_fax_images_become_group_4() {
     let (w, h) = (64u32, 64u32);
@@ -1575,10 +1588,11 @@ fn group_3_fax_images_become_group_4() {
         }
         bits.extend(packed);
     }
-    for k in [0, 1] {
-        let g3 = group_3(&runs, k > 0);
-        let p = pdfcraft_filters::CcittParams { k, columns: w.into(), end_of_line: k > 0, ..Default::default() };
-        assert_eq!(pdfcraft_filters::decode_ccitt(&g3, &p, h).unwrap(), bits, "/K {k}: the Group 3 data is the picture");
+    for (k, on_bytes) in [(0, None), (1, None), (0, Some(false)), (0, Some(true)), (1, Some(true))] {
+        let g3 = group_3(&runs, k > 0, on_bytes);
+        let (end_of_line, encoded_byte_align) = (k > 0 && on_bytes.is_none(), on_bytes.is_some());
+        let p = pdfcraft_filters::CcittParams { k, columns: w.into(), end_of_line, encoded_byte_align, ..Default::default() };
+        assert_eq!(pdfcraft_filters::decode_ccitt(&g3, &p, h).unwrap(), bits, "/K {k}, on bytes {on_bytes:?}: the Group 3 data is the picture");
 
         let mut doc = Document::new_empty();
         let mut d = Dict::new();
@@ -1587,28 +1601,32 @@ fn group_3_fax_images_become_group_4() {
         d.set(b"Height".to_vec(), Object::Int(h.into()));
         d.set(b"BitsPerComponent".to_vec(), Object::Int(1));
         d.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+        // The page with the picture in Flate, as it should look.
+        let mut control = Document::new_empty();
+        let flate = control.add(Object::Stream(Stream::flate(d.clone(), &bits)));
+        page(&mut control, &[("A", flate)], "q 64 0 0 64 100 600 cm /A Do Q");
         d.set(b"Filter".to_vec(), Object::name("CCITTFaxDecode"));
         let mut parms = Dict::new();
         parms.set(b"K".to_vec(), Object::Int(k));
-        parms.set(b"EndOfLine".to_vec(), Object::Bool(k > 0));
+        parms.set(b"EndOfLine".to_vec(), Object::Bool(end_of_line));
+        parms.set(b"EncodedByteAlign".to_vec(), Object::Bool(encoded_byte_align));
         parms.set(b"Columns".to_vec(), Object::Int(w.into()));
         parms.set(b"Rows".to_vec(), Object::Int(h.into()));
         d.set(b"DecodeParms".to_vec(), Object::Dict(parms));
         let fax = doc.add(Object::Stream(Stream::from_raw(d, g3.clone())));
         page(&mut doc, &[("A", fax)], "q 64 0 0 64 100 600 cm /A Do Q");
-        let before = render(&doc);
 
         let mut kept = doc.clone();
         optimize(&mut kept, &Settings { mono: RETAIN, ..Settings::default() }).unwrap();
-        assert_eq!(stream(&kept, fax).raw[..], g3[..], "/K {k}: Retain keeps Group 3");
+        assert_eq!(stream(&kept, fax).raw[..], g3[..], "/K {k}, on bytes {on_bytes:?}: Retain keeps Group 3");
 
         let r = optimize(&mut doc, &Settings::default()).unwrap();
-        assert_eq!((r.images_resampled, r.images_recompressed), (0, 1), "/K {k}: {r:?}");
+        assert_eq!((r.images_resampled, r.images_recompressed), (0, 1), "/K {k}, on bytes {on_bytes:?}: {r:?}");
         let s = stream(&doc, fax);
-        assert_eq!(doc.fax_params(&s).map(|p| p.k), Some(-1), "/K {k}: Group 4");
+        assert_eq!(doc.fax_params(&s).map(|p| p.k), Some(-1), "/K {k}, on bytes {on_bytes:?}: Group 4");
         assert!(s.raw.len() < g3.len(), "{} bytes, from {}", s.raw.len(), g3.len());
-        assert_eq!(doc.decoded_image(&s).unwrap(), bits, "/K {k}: the same picture");
-        assert!(render(&doc) == before, "/K {k}: the page looks the same");
+        assert_eq!(doc.decoded_image(&s).unwrap(), bits, "/K {k}, on bytes {on_bytes:?}: the same picture");
+        assert!(render(&doc) == render(&control), "/K {k}, on bytes {on_bytes:?}: the page looks as the picture does");
     }
 }
 
