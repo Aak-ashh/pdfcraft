@@ -72,7 +72,7 @@ The PDF object graph *is* the model (`crates/engine/README.md` §The editing mod
 
 - PDF in: any revision chain, xref tables or streams, hybrid files, damaged files (repaired and
   logged), all standard-security revisions. Image codecs (DCT, JPX, JBIG2, CCITT) decode through
-  the bootstrap renderer.
+  the bootstrap renderer for display; Export ▸ Images decodes CCITT (`hayro-ccitt`) and JPEG itself.
 - PDF out: incremental or full saves, object streams, re-encryption, resource de-duplication when
   combining.
 - Other formats: images and text in (`create`); PNG/JPEG/TIFF, text, RTF, Word and HTML out
