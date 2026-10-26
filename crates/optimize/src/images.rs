@@ -41,9 +41,10 @@ struct Walk<'a> {
     doc: &'a Document,
     /// The forms being walked right now, outermost first: a form drawing one of these is a cycle.
     path: Vec<ObjRef>,
-    /// Forms with their own resources already walked, by the linear part of their matrix. Drawing
-    /// one again at the same scale (only moved) can't change any image's resolution.
-    walked: HashSet<(ObjRef, [u64; 4])>,
+    /// Forms with their own resources already walked, by the linear part of their matrix and
+    /// whether default colour spaces were in force. Drawing one again at the same scale (only
+    /// moved) can't change any image's resolution.
+    walked: HashSet<(ObjRef, [u64; 4], bool)>,
     /// Forms walked at least once.
     seen: HashSet<ObjRef>,
     rewalks: usize,
@@ -52,13 +53,17 @@ struct Walk<'a> {
     /// False once a use may have been missed (depth or work limit).
     complete: bool,
     out: HashMap<ObjRef, f64>,
+    /// Images drawn at least once where `/DefaultGray` or `/DefaultRGB` is in force.
+    defaults: HashSet<ObjRef>,
 }
 
 impl Walk<'_> {
     /// Walk one content stream, recording each image's displayed resolution (pixels per inch, the
-    /// smaller of the two axes) and descending into form XObjects.
-    fn content(&mut self, data: &[u8], resources: &Dict, ctm: Matrix) {
+    /// smaller of the two axes) and descending into form XObjects. `defaults`: an enclosing
+    /// stream's resources remap a device colour space.
+    fn content(&mut self, data: &[u8], resources: &Dict, ctm: Matrix, defaults: bool) {
         let doc = self.doc;
+        let defaults = defaults || remaps_device_spaces(doc, resources);
         let xobjects = resources.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
         let mut stack = vec![ctm];
         for op in pdfcraft_content::parse(data).ops {
@@ -90,8 +95,11 @@ impl Walk<'_> {
                                 let e = self.out.entry(r).or_insert(f64::INFINITY);
                                 *e = e.min(ppi);
                             }
+                            if defaults {
+                                self.defaults.insert(r);
+                            }
                         }
-                        Some(b"Form") => self.form(r, s, resources, top),
+                        Some(b"Form") => self.form(r, s, resources, top, defaults),
                         _ => {}
                     }
                 }
@@ -101,7 +109,7 @@ impl Walk<'_> {
     }
 
     /// Descend into form `r` drawn with `ctm` from a stream whose resources are `resources`.
-    fn form(&mut self, r: ObjRef, s: &Stream, resources: &Dict, ctm: Matrix) {
+    fn form(&mut self, r: ObjRef, s: &Stream, resources: &Dict, ctm: Matrix, defaults: bool) {
         if self.path.contains(&r) {
             return;
         }
@@ -116,7 +124,7 @@ impl Walk<'_> {
         // A form without resources uses its caller's, so the same form can draw other images.
         if own.is_some() {
             let [a, b, c, d, ..] = inner.0;
-            if !self.walked.insert((r, [a.to_bits(), b.to_bits(), c.to_bits(), d.to_bits()])) {
+            if !self.walked.insert((r, [a.to_bits(), b.to_bits(), c.to_bits(), d.to_bits()], defaults)) {
                 return;
             }
         }
@@ -136,9 +144,16 @@ impl Walk<'_> {
             return;
         };
         self.path.push(r);
-        self.content(&data, own.as_ref().unwrap_or(resources), inner);
+        self.content(&data, own.as_ref().unwrap_or(resources), inner, defaults);
         self.path.pop();
     }
+}
+
+/// Whether `resources` remap a device colour space an image may be moved between, so that the
+/// same samples would be drawn otherwise: `/DefaultGray` or `/DefaultRGB` (ISO 32000-2 §8.6.5.6).
+fn remaps_device_spaces(doc: &Document, resources: &Dict) -> bool {
+    let spaces = resources.get(b"ColorSpace").map(|c| doc.resolve(c));
+    spaces.as_deref().and_then(Object::as_dict).is_some_and(|c| c.contains(b"DefaultGray") || c.contains(b"DefaultRGB"))
 }
 
 /// The effective resolution (ppi) of every image drawn by `pages`: the smallest over its uses.
@@ -147,6 +162,12 @@ impl Walk<'_> {
 /// its budget, every image is given `INFINITY` (never resampled), since its largest use may be
 /// among those missed.
 pub fn effective_resolutions(doc: &Document, pages: &[ObjRef]) -> HashMap<ObjRef, f64> {
+    walk_pages(doc, pages).0
+}
+
+/// [`effective_resolutions`], and the images drawn where `/DefaultGray` or `/DefaultRGB` is in
+/// force: all of them when a use may have been missed.
+fn walk_pages(doc: &Document, pages: &[ObjRef]) -> (HashMap<ObjRef, f64>, HashSet<ObjRef>) {
     let mut walk = Walk {
         doc,
         path: Vec::new(),
@@ -156,6 +177,7 @@ pub fn effective_resolutions(doc: &Document, pages: &[ObjRef]) -> HashMap<ObjRef
         budget: DecodeBudget::page(),
         complete: true,
         out: HashMap::new(),
+        defaults: HashSet::new(),
     };
     for p in pages {
         let Some(dict) = doc.get(*p).as_dict().cloned() else { continue };
@@ -169,12 +191,13 @@ pub fn effective_resolutions(doc: &Document, pages: &[ObjRef]) -> HashMap<ObjRef
         };
         // Content coordinates are in page units; image resolution is in physical inches.
         let unit = page.user_unit(doc);
-        walk.content(&data, &res, Matrix([unit, 0.0, 0.0, unit, 0.0, 0.0]));
+        walk.content(&data, &res, Matrix([unit, 0.0, 0.0, unit, 0.0, 0.0]), false);
     }
     if !walk.complete {
         walk.out.values_mut().for_each(|v| *v = f64::INFINITY);
+        walk.defaults.extend(walk.out.keys());
     }
-    walk.out
+    (walk.out, walk.defaults)
 }
 
 /// Colour components of a colour space PdfCraft resamples: gray (1) or RGB (3).
@@ -577,11 +600,13 @@ type Pixel = fn(&[u8]) -> Option<bool>;
 ///   - eight-bit `DeviceRGB` whose every pixel is black or white, which becomes `DeviceGray`. A
 ///     decode array the same for all three components becomes that one pair; another stops it.
 ///     Calibrated RGB and RGB with a profile are left out, as the profile could make them other
-///     than black and white;
+///     than black and white; so is one drawn where `/DefaultGray` or `/DefaultRGB` is in force
+///     (`defaults`), which would draw it otherwise as grey, and one whose soft mask has a `/Matte`
+///     of three components;
 ///   - an indexed image of 2, 4 or 8 bits that uses only palette entries 0 and 1, which stay 0 and
 ///     1 at one bit, whatever their colours, so the colour space stays. A decode array other than
 ///     the default stops it: in index units it would mean something else at one bit.
-fn one_bit(doc: &Document, s: &Stream, pack: bool) -> Option<(Vec<u8>, u32, u32, Option<Dict>)> {
+fn one_bit(doc: &Document, s: &Stream, pack: bool, defaults: bool) -> Option<(Vec<u8>, u32, u32, Option<Dict>)> {
     let d = &s.dict;
     // Through u32 first, as everywhere here, so the product can't overflow.
     let (w, h) = (u32::try_from(d.int(b"Width")?).ok()?, u32::try_from(d.int(b"Height")?).ok()?);
@@ -633,6 +658,10 @@ fn one_bit(doc: &Document, s: &Stream, pack: bool) -> Option<(Vec<u8>, u32, u32,
             })
         }
         Object::Name(name) if matches!(name.as_slice(), b"DeviceRGB" | b"RGB") && bits == Some(8) => {
+            let matte = |m: &Object| matches!(&*doc.resolve(m), Object::Stream(m) if m.dict.contains(b"Matte"));
+            if defaults || d.get(b"SMask").is_some_and(matte) {
+                return None;
+            }
             match decode.as_deref() {
                 None => {}
                 Some(Object::Array(v)) if v.len() == 6 && v.chunks(2).all(|pair| Some(pair) == v.get(..2)) => {
@@ -768,7 +797,8 @@ pub(crate) fn downsample_bits(data: &[u8], w: u32, h: u32, nw: u32, nh: u32, dar
 }
 
 /// A black-and-white image (see [`one_bit`]) resampled and stored again per `settings`, if that is
-/// smaller as stored; `ppi` is its effective resolution. Also says whether it was resampled.
+/// smaller as stored; `ppi` is its effective resolution, and `defaults` says it is drawn where
+/// `/DefaultGray` or `/DefaultRGB` is in force. Also says whether it was resampled.
 ///
 /// - **Resampled** ([`downsample_bits`]) when its resolution is above `above_ppi`, to `target_ppi`,
 ///   unless it has a soft mask, whose own size would then have to follow, or is a halftone or a
@@ -781,9 +811,10 @@ pub(crate) fn downsample_bits(data: &[u8], w: u32, h: u32, nw: u32, nh: u32, dar
 ///   (CCITT, or Flate), and nothing else changes: an image of more bits stays as it is, for the
 ///   grey or colour settings.
 ///
-/// The samples keep their meaning, so the decode array and `/Mask` stay as they are, and the
-/// colour space too, but for black-and-white RGB, which becomes grey.
-fn mono(doc: &Document, s: &Stream, ppi: f64, settings: &MonoSettings) -> Option<(Stream, bool)> {
+/// The samples keep their meaning, so the colour space, decode array and `/Mask` stay, but for
+/// black-and-white RGB, which becomes grey with one decode pair, and an indexed image's default
+/// decode array, which goes as the default at one bit.
+fn mono(doc: &Document, s: &Stream, ppi: f64, defaults: bool, settings: &MonoSettings) -> Option<(Stream, bool)> {
     let d = &s.dict;
     let downsample = settings.downsample && ppi.is_finite() && ppi > settings.above_ppi && settings.target_ppi > 0.0 && !d.contains(b"SMask");
     let retain = settings.compression == MonoCompression::Retain;
@@ -796,7 +827,7 @@ fn mono(doc: &Document, s: &Stream, ppi: f64, settings: &MonoSettings) -> Option
     if (retain || g4_alone) && !downsample {
         return None;
     }
-    let (data, w, h, packed) = one_bit(doc, s, !retain)?;
+    let (data, w, h, packed) = one_bit(doc, s, !retain, defaults)?;
     let packed_from_more = packed.is_some();
     let k = settings.target_ppi / ppi;
     // `downsample_bits` keeps a counter for each column: no more columns than a fax row may have,
@@ -858,7 +889,7 @@ pub(crate) fn run(
     report: &mut Report,
     progress: &mut dyn FnMut(Stage) -> bool,
 ) -> Result<(), OptimizeError> {
-    let ppi = effective_resolutions(doc, pages);
+    let (ppi, defaults) = walk_pages(doc, pages);
     // Soft masks are processed with their image, not on their own.
     let masks: HashSet<ObjRef> = ppi
         .keys()
@@ -877,10 +908,10 @@ pub(crate) fn run(
         let obj = doc.get(r);
         let Object::Stream(s) = &*obj else { continue };
         report.images += 1;
-        // Packed from more bits a sample, it is lossless at one bit, but the grey settings can
-        // make it smaller still (below).
+        // Packed from more bits a sample, it is lossless at one bit, but the grey or colour
+        // settings can make it smaller still (below).
         let packed_from_more = s.dict.int(b"BitsPerComponent").is_some_and(|b| b > 1);
-        let (packed, mono) = match mono(doc, s, ppi, &settings.mono) {
+        let (packed, mono) = match mono(doc, s, ppi, defaults.contains(&r), &settings.mono) {
             Some(m) if packed_from_more => (Some(m), None),
             m => (None, m),
         };

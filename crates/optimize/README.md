@@ -45,12 +45,15 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   row, not as T.4 sends them, is read as PdfCraft draws it, which at `/K 0` may be other rows than
   were coded, and an image stored again keeps them). Packed to one bit first, unless a colour-key `/Mask` is in the image's
   own values: eight-bit grey of only 0 and 255; eight-bit `DeviceRGB` of only black and white,
-  which becomes `DeviceGray` (not calibrated RGB or RGB with a profile); and an indexed image of 2,
-  4 or 8 bits that uses only palette entries 0 and 1, which keeps its palette, whatever its two
-  colours. A decode array stays when it means the same at one bit (grey's, or RGB's if the same
-  for each component, as grey's); otherwise the image is left alone. The grey or colour settings
-  take a packed image instead when they make it smaller still, its soft mask counted (resampled
-  with it there, kept as it is here), as they can a dithered scan by downsampling it to JPEG.
+  which becomes `DeviceGray` (not calibrated RGB or RGB with a profile, nor one drawn where
+  `/DefaultGray` or `/DefaultRGB` is in force, which would then draw it otherwise, nor one whose
+  soft mask has a `/Matte`); and an indexed image of 2, 4 or 8 bits that uses only palette entries
+  0 and 1, which keeps its palette, whatever its two colours. A decode array stays when it means
+  the same at one bit (grey's, or RGB's if the same for each component, as grey's), and an indexed
+  image's default one goes, as the default at one bit; otherwise the image is left alone. The grey
+  or colour settings take a packed image instead when they make it smaller still, its soft mask
+  counted (resampled with it there, kept as it is here), as they can a dithered scan by
+  downsampling it to JPEG.
   - **Downsampling:** one whose effective resolution is above `above_ppi` is averaged down to
     `target_ppi`: each new pixel takes the sample covering more of its area, and the dark one on a
     tie, so a dark line half a new pixel wide stays: black in grey and the painted part of an image
@@ -62,17 +65,18 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
     a fax row (`pdfcraft_filters::MAX_CCITT_COLUMNS`), as the averaging keeps a counter for each
     column. On a 600 ppi text page, Group 4 at 300 ppi is half the size.
   - **Compression:** CCITT Group 4 (`pdfcraft_filters::encode_g4`), or 1-bit Flate when that is
-    smaller, which only a resampled image or one packed from eight bits may be: a 1-bit image that
+    smaller, which only a resampled image or one packed from more bits may be: a 1-bit image that
     is only stored again becomes Group 4 or stays. Group 4 alone is only decoded to be resampled;
     Group 3, or Group 4 inside another filter such as `ASCII85Decode`, is stored again as Group 4
     alone when that is smaller. With Retain, a resampled image keeps its kind of compression (CCITT,
-    or Flate) and nothing else changes; eight-bit grey is then left to the grey settings. Every
-    change is kept only when it is smaller as stored.
+    or Flate) and nothing else changes; an image of more bits is then left to the grey or colour
+    settings. Every change is kept only when it is smaller as stored.
   - Apart from the downsampling it is lossless: the samples keep their meaning, so the colour
-    space, decode array and `/Mask` stay. Group 4 wins on scans, whose ragged edges defeat Flate;
-    on clean computer-drawn 1-bit art Flate can be smaller. Not yet: JBIG2, a lone Group 3 image to
-    Group 4 without resampling (one behind another filter is stored again as Group 4), inline images, an image's own `/SMask` or `/Mask` image (only images drawn
-    on a page are visited), and Group 4 for rows wider than 32,767 samples.
+    space, decode array and `/Mask` stay, but for packed RGB, which becomes grey with one decode
+    pair. Group 4 wins on scans, whose ragged edges defeat Flate; on clean computer-drawn 1-bit
+    art Flate can be smaller. Not yet: JBIG2, inline images, an image's own `/SMask` or `/Mask`
+    image (only images drawn on a page are visited), and Group 4 for rows wider than 32,767
+    samples.
 - **Discard objects:** thumbnails, alternate images, document tags, print settings.
 - **Clean up:** Flate for streams with no filter; for streams with an outer ASCII85 or ASCIIHex
   layer, that layer is removed when the result is smaller (the inner filters keep their encoded

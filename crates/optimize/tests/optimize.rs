@@ -918,6 +918,103 @@ fn rgb_and_two_colour_indexed_black_and_white_images_become_one_bit() {
     assert!(render(&doc) == before, "the page looks the same");
 }
 
+/// Black-and-white RGB stays RGB where grey would be drawn otherwise: drawn, on any of its uses,
+/// where `/DefaultGray` or `/DefaultRGB` is in force (ISO 32000-2 §8.6.5.6), from a page's
+/// resources or a form's own, as grey would then go through DefaultGray, or no longer through
+/// DefaultRGB; or with a soft mask whose `/Matte` has three components, one for each of RGB's. A
+/// form drawn where they are in force counts too, though it has resources of its own. The same
+/// image drawn plainly, or with a soft mask and no `/Matte`, becomes grey.
+#[test]
+fn black_and_white_rgb_stays_rgb_where_grey_would_be_drawn_otherwise() {
+    let mut doc = Document::new_empty();
+    let (w, h) = (1200u32, 480u32);
+    let rgb_data = samples_of(&bilevel(w, h, false), w, h, [&[0, 0, 0], &[255, 255, 255]], 8);
+    let image = |doc: &mut Document, cs: &str, data: &[u8], entries: &[(&str, Object)]| {
+        let mut d = Dict::new();
+        d.set(b"Type".to_vec(), Object::name("XObject"));
+        d.set(b"Subtype".to_vec(), Object::name("Image"));
+        d.set(b"Width".to_vec(), Object::Int(w.into()));
+        d.set(b"Height".to_vec(), Object::Int(h.into()));
+        d.set(b"BitsPerComponent".to_vec(), Object::Int(8));
+        d.set(b"ColorSpace".to_vec(), Object::name(cs));
+        for (k, v) in entries {
+            d.set(k.as_bytes().to_vec(), v.clone());
+        }
+        doc.add(Object::Stream(Stream::flate(d, data)))
+    };
+    let opaque = vec![255u8; (w * h) as usize];
+    let plain_mask = image(&mut doc, "DeviceGray", &opaque, &[]);
+    let matte_mask = image(&mut doc, "DeviceGray", &opaque, &[("Matte", Object::Array(vec![0.into(); 3]))]);
+    let plain = image(&mut doc, "DeviceRGB", &rgb_data, &[]);
+    let masked = image(&mut doc, "DeviceRGB", &rgb_data, &[("SMask", Object::Ref(plain_mask))]);
+    let matted = image(&mut doc, "DeviceRGB", &rgb_data, &[("SMask", Object::Ref(matte_mask))]);
+    let [under_gray, under_rgb, shared, in_form, nested] = [(); 5].map(|_| image(&mut doc, "DeviceRGB", &rgb_data, &[]));
+    let mut white_point = Dict::new();
+    white_point.set(b"WhitePoint".to_vec(), Object::Array(vec![Object::Real(0.9505), 1.into(), Object::Real(1.089)]));
+    let spaces = |key: &str| {
+        let family = if key == "DefaultGray" { "CalGray" } else { "CalRGB" };
+        let mut c = Dict::new();
+        c.set(key.as_bytes().to_vec(), Object::Array(vec![Object::name(family), Object::Dict(white_point.clone())]));
+        Object::Dict(c)
+    };
+    let draw = |names: &[&str]| names.iter().enumerate().map(|(i, n)| format!("q 200 0 0 80 6 {} cm /{n} Do Q ", 690 - 100 * i)).collect::<String>();
+    let form = |doc: &mut Document, im: ObjRef, spaces: Option<Object>| {
+        let mut xobjects = Dict::new();
+        xobjects.set(b"Im".to_vec(), Object::Ref(im));
+        let mut resources = Dict::new();
+        resources.set(b"XObject".to_vec(), Object::Dict(xobjects));
+        if let Some(spaces) = spaces {
+            resources.set(b"ColorSpace".to_vec(), spaces);
+        }
+        let mut f = Dict::new();
+        f.set(b"Type".to_vec(), Object::name("XObject"));
+        f.set(b"Subtype".to_vec(), Object::name("Form"));
+        f.set(b"BBox".to_vec(), Object::Array(vec![0.into(), 0.into(), 612.into(), 792.into()]));
+        f.set(b"Resources".to_vec(), Object::Dict(resources));
+        doc.add(Object::Stream(Stream::from_raw(f, draw(&["Im"]).into_bytes())))
+    };
+    // Drawn plainly first, then where DefaultGray is in force: the second walk must happen.
+    let plain_form = form(&mut doc, nested, None);
+    page(&mut doc, &[("A", plain), ("B", masked), ("C", matted), ("D", shared), ("E", plain_form)], &draw(&["A", "B", "C", "D", "E"]));
+    for (key, xobjects) in [("DefaultGray", vec![("A", under_gray), ("B", shared), ("C", plain_form)]), ("DefaultRGB", vec![("A", under_rgb)])] {
+        let names: Vec<&str> = xobjects.iter().map(|(n, _)| *n).collect();
+        let p = page(&mut doc, &xobjects, &draw(&names));
+        doc.update_dict(p, |d| {
+            let mut res = d.get(b"Resources").and_then(Object::as_dict).cloned().unwrap();
+            res.set(b"ColorSpace".to_vec(), spaces(key));
+            d.set(b"Resources".to_vec(), Object::Dict(res));
+        })
+        .unwrap();
+    }
+    // A form with its own resources, DefaultGray among them, on a page without any.
+    let gray_form = form(&mut doc, in_form, Some(spaces("DefaultGray")));
+    page(&mut doc, &[("F", gray_form)], "/F Do");
+    let kept = [under_gray, under_rgb, shared, in_form, nested, matted];
+    let before = kept.map(|r| stream(&doc, r));
+    // Colour and grey settings that leave images alone, so only this conversion acts.
+    let keep = ImageSettings { downsample: false, target_ppi: 150.0, above_ppi: 225.0, compression: Compression::Retain };
+    let settings = Settings { color: keep, gray: keep, ..Settings::default() };
+    let r = optimize(&mut doc, &settings).unwrap();
+    assert_eq!((r.images_resampled, r.images_recompressed), (0, 2), "{r:?}");
+    for i in [plain, masked] {
+        let s = stream(&doc, i);
+        assert_eq!((s.dict.get(b"ColorSpace"), s.dict.int(b"BitsPerComponent")), (Some(&Object::name("DeviceGray")), Some(1)), "{i:?}");
+    }
+    for (i, b) in kept.iter().zip(&before) {
+        let s = stream(&doc, *i);
+        assert_eq!((&s.dict, &s.raw), (&b.dict, &b.raw), "{i:?}");
+    }
+
+    // A use that couldn't be followed (forms nested too deep) may be where DefaultGray is in force.
+    let mut doc = Document::new_empty();
+    let img = image(&mut doc, "DeviceRGB", &rgb_data, &[]);
+    let deep = nested_forms(&mut doc, img, 13);
+    page(&mut doc, &[("Im", img), ("F", deep)], &draw(&["Im", "F"]));
+    let before = stream(&doc, img);
+    optimize(&mut doc, &settings).unwrap();
+    assert_eq!(stream(&doc, img).raw, before.raw, "a use not followed");
+}
+
 /// Black-and-white images above 450 ppi are averaged down to 300 ppi, by default: 1-bit Flate, CCITT
 /// Group 4 (alone and behind ASCIIHexDecode), an image mask (its inverting decode array stays), and
 /// eight-bit grey and RGB of only black and white (the RGB also the other way round, with a decode
