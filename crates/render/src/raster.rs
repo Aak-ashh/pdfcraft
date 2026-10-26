@@ -72,13 +72,22 @@ pub struct RenderConfig {
     /// holding only what is laid over another raster, such as a comment while it is dragged.
     pub transparent: bool,
     /// Draw a CID font of an Adobe CJK collection that the PDF does not embed with one face already
-    /// installed on this machine (see `system_font`). Off by default and on only for the pool that
-    /// draws the viewer: exports, printing and OCR render without it, so nothing drawn with an
+    /// installed on this machine (see `system_font`). Off by default and on only for on-screen
+    /// viewer and preview rasters: exports, printing and OCR render without it, so nothing drawn with an
     /// installed font is saved or printed (AGENTS.md §1.2, §1.4).
     pub system_fonts: bool,
 }
 
 impl RenderConfig {
+    /// This configuration for a raster that is only shown on screen (the viewer, Combine
+    /// thumbnails, figure previews): installed CJK faces may draw fonts the PDF doesn't embed.
+    /// Never use it for anything that can be saved, printed, recognised or returned to an agent
+    /// (AGENTS.md §1.2, §1.4).
+    #[must_use]
+    pub fn on_screen(self) -> Self {
+        Self { system_fonts: true, ..self }
+    }
+
     fn settings(&self) -> InterpreterSettings {
         let standard = InterpreterSettings::default().font_resolver;
         let system_fonts = self.system_fonts;
@@ -7718,6 +7727,9 @@ trailer << /Root 1 0 R >>
             ("SimSun", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
             ("SimHei", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
             ("KaiTi", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
+            ("FangSong", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
+            ("ABCDEF+FZSSK--GBK1-0", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
+            ("ABCDEF+FZFSK--GBK1-0", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
         ];
         for (base_font, family, ordering, encoding, code, subtype) in cases {
             let query = FontQuery::Fallback(FallbackFontQuery {

@@ -1079,7 +1079,7 @@ fn set_default_layer_state(cos: &mut pdfcraft_cos::Document, layers: &[Layer]) {
 /// the automation tools render with the document's configuration itself, so nothing drawn with an
 /// installed font is saved or printed (AGENTS.md §1.2, §1.4).
 fn display_config(config: &RenderConfig) -> RenderConfig {
-    RenderConfig { system_fonts: true, ..config.clone() }
+    config.clone().on_screen()
 }
 
 /// Render `doc` with the layer visibility in its `info.layers`.

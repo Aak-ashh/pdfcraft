@@ -68,24 +68,40 @@ struct Candidate {
     region: &'static [&'static str],
 }
 
-/// Keep named Windows body, heading and calligraphic faces distinct. A cache keyed only
-/// by script and weight would make the first Chinese font on a page stand in for all three.
+/// Keep named Windows body, heading, calligraphic and FangSong faces distinct. A cache keyed only
+/// by script and weight would make the first Chinese font on a page stand in for all of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ChineseFamily {
     Default,
     Song,
     Hei,
     Kai,
+    FangSong,
 }
 
 impl ChineseFamily {
+    /// The family a font name asks for: the Windows and Founder (方正) names that Chinese PDFs,
+    /// CNKI papers in particular, use without embedding the font. FangSong is tested first, as
+    /// its names contain "song" too. Founder PostScript names are matched by prefix (`FZSSK--GBK1-0`
+    /// is 方正书宋, `FZXBSK--GBK1-0` 方正小标宋, `FZHTK--GBK1-0` 方正黑体, `FZKTK--GBK1-0` 方正楷体,
+    /// `FZFSK--GBK1-0` 方正仿宋).
     fn of(name: &str) -> Self {
+        // PDF subset names prepend six uppercase ASCII letters and '+'. Match the actual
+        // PostScript name so Founder prefixes work for subsets too.
+        let name = match name.split_once('+') {
+            Some((tag, family)) if tag.len() == 6 && tag.bytes().all(|b| b.is_ascii_uppercase()) => family,
+            _ => name,
+        };
         let name = name.to_ascii_lowercase();
-        if ["simsun", "stsong", "songti", "宋体"].iter().any(|hint| name.contains(hint)) {
+        let has = |hints: &[&str]| hints.iter().any(|hint| name.contains(hint));
+        let starts = |prefixes: &[&str]| prefixes.iter().any(|p| name.starts_with(p));
+        if has(&["fangsong", "simfang", "仿宋"]) || starts(&["fzfs"]) {
+            Self::FangSong
+        } else if has(&["simsun", "stsong", "songti", "song", "宋"]) || starts(&["fzss", "fzbs", "fzxbs", "fzcs"]) {
             Self::Song
-        } else if ["simhei", "stheiti", "黑体"].iter().any(|hint| name.contains(hint)) {
+        } else if has(&["simhei", "stheiti", "stxihei", "heiti", "黑"]) || starts(&["fzht", "fzhei", "fzlth", "fzdh"]) {
             Self::Hei
-        } else if ["kaiti", "stkaiti", "楷体"].iter().any(|hint| name.contains(hint)) {
+        } else if has(&["kaiti", "stkaiti", "kai", "楷"]) || starts(&["fzkt", "fzkai"]) {
             Self::Kai
         } else {
             Self::Default
@@ -196,6 +212,7 @@ fn candidates(script: Script, family: ChineseFamily, bold: bool) -> Vec<Candidat
                 ChineseFamily::Song => &["simsun.ttc", "msyh.ttc", "msjh.ttc"],
                 ChineseFamily::Hei => &["simhei.ttf", "msyh.ttc", "simsun.ttc", "msjh.ttc"],
                 ChineseFamily::Kai => &["simkai.ttf", "simsun.ttc", "msyh.ttc", "msjh.ttc"],
+                ChineseFamily::FangSong => &["simfang.ttf", "simsun.ttc", "msyh.ttc", "msjh.ttc"],
                 ChineseFamily::Default if bold => &["msyhbd.ttc", "msyh.ttc", "simsun.ttc", "msjh.ttc"],
                 ChineseFamily::Default => &["msyh.ttc", "simsun.ttc", "msjh.ttc"],
             },
@@ -289,6 +306,38 @@ mod tests {
             assert_eq!(ChineseFamily::of(name), ChineseFamily::Kai, "{name}");
         }
         assert_eq!(ChineseFamily::of("Helvetica"), ChineseFamily::Default);
+        assert_eq!(ChineseFamily::of("MicrosoftYaHei"), ChineseFamily::Default);
+    }
+
+    /// FangSong names contain "song" and must not become Song; Founder (方正) names in CNKI papers
+    /// pick the matching installed family instead of YaHei for everything (#3587).
+    #[test]
+    fn fangsong_and_founder_names_pick_their_family() {
+        for name in ["FangSong", "FangSong_GB2312", "STFangsong", "SimFang", "仿宋", "FZFSK--GBK1-0", "ABCDEF+FZFSK--GBK1-0"] {
+            assert_eq!(ChineseFamily::of(name), ChineseFamily::FangSong, "{name}");
+        }
+        for name in ["FZSSK--GBK1-0", "FZBSK--GBK1-0", "FZXBSK--GBK1-0", "FZShuSong-Z01", "STZhongsong", "NSimSun", "ABCDEF+FZSSK--GBK1-0"] {
+            assert_eq!(ChineseFamily::of(name), ChineseFamily::Song, "{name}");
+        }
+        for name in ["FZHTK--GBK1-0", "FZLTHJW--GB1-0", "STXihei", "ABCDEF+FZHTK--GBK1-0"] {
+            assert_eq!(ChineseFamily::of(name), ChineseFamily::Hei, "{name}");
+        }
+        for name in ["FZKTK--GBK1-0", "KaiTi_GB2312", "ABCDEF+FZKTK--GBK1-0"] {
+            assert_eq!(ChineseFamily::of(name), ChineseFamily::Kai, "{name}");
+        }
+    }
+
+    /// Every family has a Windows list that ends in faces any Chinese Windows has, so a missing
+    /// named face still draws the text.
+    #[cfg(windows)]
+    #[test]
+    fn every_windows_chinese_family_falls_back_to_common_faces() {
+        for family in [ChineseFamily::Default, ChineseFamily::Song, ChineseFamily::Hei, ChineseFamily::Kai, ChineseFamily::FangSong] {
+            let list = candidates(Script::SimplifiedChinese, family, false);
+            assert!(list.iter().any(|c| c.path.ends_with("msyh.ttc")), "{family:?}");
+        }
+        let fangsong = candidates(Script::SimplifiedChinese, ChineseFamily::FangSong, false);
+        assert!(fangsong.first().is_some_and(|c| c.path.ends_with("simfang.ttf")));
     }
 
     #[test]
@@ -364,7 +413,16 @@ mod tests {
     #[test]
     fn windows_preserves_installed_chinese_document_families() {
         use hayro::hayro_interpret::hayro_cmap::CharacterCollection;
-        for (name, file) in [("SimSun", "simsun.ttc"), ("SimHei", "simhei.ttf"), ("KaiTi", "simkai.ttf")] {
+        for (name, expected, file) in [
+            ("SimSun", "SimSun", "simsun.ttc"),
+            ("SimHei", "SimHei", "simhei.ttf"),
+            ("KaiTi", "KaiTi", "simkai.ttf"),
+            ("FangSong", "FangSong", "simfang.ttf"),
+            ("ABCDEF+FZSSK--GBK1-0", "SimSun", "simsun.ttc"),
+            ("ABCDEF+FZHTK--GBK1-0", "SimHei", "simhei.ttf"),
+            ("ABCDEF+FZKTK--GBK1-0", "KaiTi", "simkai.ttf"),
+            ("ABCDEF+FZFSK--GBK1-0", "FangSong", "simfang.ttf"),
+        ] {
             if !windows_fonts().join(file).is_file() {
                 continue;
             }
@@ -376,7 +434,7 @@ mod tests {
             let (bytes, index) = fallback(&query).expect("installed Chinese font");
             let font = skrifa::FontRef::from_index(bytes.as_ref().as_ref(), index).unwrap();
             let names: Vec<String> = font.localized_strings(StringId::POSTSCRIPT_NAME).map(|n| n.chars().collect()).collect();
-            assert!(names.iter().any(|n| n.eq_ignore_ascii_case(name)), "{name} resolved to {names:?}");
+            assert!(names.iter().any(|n| n.eq_ignore_ascii_case(expected)), "{name} resolved to {names:?}, expected {expected}");
         }
     }
 

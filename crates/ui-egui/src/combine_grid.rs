@@ -373,7 +373,7 @@ impl Thumbs {
                 waiting = true;
                 break;
             }
-            let config = RenderConfig { password: w.password, ..Default::default() };
+            let config = thumbnail_config(w.password);
             #[cfg(test)]
             let pool = if self.inline { RenderPool::new_inline(w.bytes, config) } else { RenderPool::new(w.bytes, 1, config).without_replacements() };
             #[cfg(not(test))]
@@ -421,6 +421,13 @@ impl Thumbs {
         }
         self.frame = self.frame.wrapping_add(1);
     }
+}
+
+/// The render configuration of a Combine thumbnail. Thumbnails are only shown on screen, so
+/// installed CJK faces may draw fonts a PDF doesn't embed, as in the viewer; the combined file
+/// itself is written from the original bytes and never from these rasters (AGENTS.md §1.4).
+fn thumbnail_config(password: Option<Arc<str>>) -> RenderConfig {
+    RenderConfig { password, ..Default::default() }.on_screen()
 }
 
 /// A rendered thumbnail as a texture, and its size in bytes. A raster that doesn't add up, or is
@@ -1354,6 +1361,16 @@ mod tests {
 
     use super::*;
     use crate::combine_ui::{moved_order, step_to};
+
+    /// Combine thumbnails are on-screen rasters: like the viewer, they may draw a non-embedded
+    /// CJK font with an installed face, and they keep the file's password.
+    #[test]
+    fn thumbnails_use_the_on_screen_configuration() {
+        let config = thumbnail_config(Some(Arc::from("secret")));
+        assert!(config.system_fonts, "Combine thumbnails draw non-embedded CJK text like the viewer");
+        assert_eq!(config.password.as_deref(), Some("secret"));
+        assert!(!RenderConfig::default().system_fonts, "anything else stays off by default");
+    }
 
     #[test]
     fn long_names_keep_their_extension_and_whole_characters() {
