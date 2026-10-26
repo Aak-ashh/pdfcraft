@@ -10,10 +10,11 @@
 //!   A new image replaces the old one only if it is smaller. The colour and grey settings leave
 //!   alone images they can't decode faithfully (CMYK and other colour spaces, masks, decode arrays
 //!   other than the default, JPEG 2000, JBIG2, CCITT, other than 8 bits, JPEGs whose Adobe marker
-//!   and `/ColorTransform` disagree). Black-and-white images (1-bit, image masks
-//!   and CCITT fax among them, and eight-bit grey of only black and white) above a threshold are
-//!   averaged down to a target resolution, halftones and dithers aside, and are stored as CCITT
-//!   Group 4 when that is smaller.
+//!   and `/ColorTransform` disagree). Black-and-white images (1-bit, image masks and CCITT fax,
+//!   Group 3 among them; and eight-bit grey and RGB of only black and white, and indexed images
+//!   that use only palette entries 0 and 1, packed to one bit) above a threshold are averaged down to a
+//!   target resolution, halftones and dithers aside, and are stored as CCITT Group 4, or 1-bit
+//!   Flate once resampled or packed, when that is smaller.
 //! - **Discard objects:** page thumbnails, alternate images, document tags (structure tree),
 //!   print settings.
 //! - **Clean up:** drop images and forms that pages list but never draw (such as a deleted
@@ -130,8 +131,9 @@ pub enum MonoCompression {
     Retain,
 }
 
-/// How black-and-white images (1-bit, CCITT fax among them, and eight-bit grey of only black
-/// and white), and image masks, are resampled and stored.
+/// How black-and-white images (1-bit, CCITT fax among them; and eight-bit grey and RGB of only black
+/// and white, and indexed images that use only palette entries 0 and 1, packed to one bit), and
+/// image masks, are resampled and stored.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MonoSettings {
     /// Average images whose effective resolution is above `above_ppi` down to `target_ppi`.
