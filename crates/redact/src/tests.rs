@@ -626,6 +626,39 @@ fn a_fax_image_has_its_covered_pixels_cleared_instead_of_being_removed() {
     }
 }
 
+/// Images whose data is more than twice their raster before its last filter are cleared, not
+/// taken for decompression bombs: grey stored as ASCIIHex text broken into lines under Flate (two
+/// digits a byte and a line break every 64), and RGB behind an array of filters, which a fax
+/// image's bound (a byte a pixel) would refuse.
+#[test]
+fn images_behind_ascii_hex_in_lines_or_a_filter_array_are_cleared() {
+    let (w, h) = (1000usize, 200usize);
+    let grey: Vec<u8> = (0..w * h).map(|i| (i % 251) as u8).collect();
+    let digits: Vec<u8> = grey.iter().flat_map(|b| format!("{b:02X}").into_bytes()).collect();
+    let mut lines: Vec<u8> = digits.chunks(64).flat_map(|line| line.iter().copied().chain(*b"\n")).collect();
+    lines.push(b'>');
+    let rgb: Vec<u8> = (0..100 * 100 * 3).map(|i| (i % 253) as u8).collect();
+    let rgb_hex: Vec<u8> = pdfcraft_filters::encode_flate(&rgb).iter().flat_map(|b| format!("{b:02x}").into_bytes()).chain(*b">").collect();
+    for (dict, data) in [
+        (
+            format!(
+                "/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter [/FlateDecode /ASCIIHexDecode]"
+            ),
+            pdfcraft_filters::encode_flate(&lines),
+        ),
+        (
+            "/Type /XObject /Subtype /Image /Width 100 /Height 100 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter [/ASCIIHexDecode /FlateDecode]"
+                .to_string(),
+            rgb_hex,
+        ),
+    ] {
+        let mut doc = one_page(b"q 100 0 0 20 0 0 cm /Im Do Q", "/XObject << /Im 7 0 R >>", vec![stream(&dict, data)]);
+        mark(&mut doc, 0, &[[0.0, 0.0, 10.0, 10.0]], "");
+        let report = apply(&mut doc, None).unwrap();
+        assert_eq!((report.images_cleared, report.images_removed), (1, 0), "{dict}");
+    }
+}
+
 /// A fax image that can't be decoded in full is removed whole, as any other image is: one whose
 /// code is cut short, and one behind a filter that inflates past what a code for its pixels can
 /// take (a decompression bomb, which `decoded_image` alone would undo up to a gigabyte).

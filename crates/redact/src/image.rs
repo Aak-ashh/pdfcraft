@@ -86,14 +86,15 @@ fn decode_and_clear(doc: &Document, s: &Stream, ctm: &Matrix, rects: &[[f64; 4]]
     let row_bits = row.checked_mul(8)?;
     bytes.checked_mul(8)?;
     // Decode no further than the raster can need: a filter stage may legitimately produce up to
-    // twice it (ASCIIHex text under Flate) plus a PNG predictor's byte per row. A fax image's
+    // three bytes for each of it and a PNG predictor's byte per row (ASCIIHex text under Flate,
+    // two digits a byte broken into lines or spaced), as the optimizer allows. A fax image's
     // code, which the filters before its decoder produce, takes at most about a byte per pixel
     // plus each row's end. Data past that can only be a decompression bomb; the image is then
     // removed whole.
     let allowance = if is_fax {
         w.checked_mul(h)?.checked_add(h.checked_mul(4)?)?.checked_add(4096)?
     } else {
-        bytes.checked_add(h)?.checked_mul(2)?.checked_add(4096)?
+        bytes.checked_add(h)?.checked_mul(3)?.checked_add(4096)?
     };
     // Through the document, which reads `/DecodeParms` given by reference (`Stream::decoded*`
     // alone would skip such a predictor, and the cleared bytes would then miss the covered pixels).

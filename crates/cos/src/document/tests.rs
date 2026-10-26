@@ -118,6 +118,13 @@ fn fax_images_decode_with_their_parameters() {
         [0b0000_0111, 0b1100_0000, 0b0000_0111, 0b1100_0000, 0b0000_0111, 0b1100_0000]
     );
     assert_eq!(image(&doc, Some(Object::Dict(parms.clone())), 10, 2).unwrap(), bits[..4], "at most /Height rows");
+    // Within a bound: no more rows than it holds.
+    let mut bounded = Dict::new();
+    bounded.set(b"Width".to_vec(), Object::Int(10));
+    bounded.set(b"Height".to_vec(), Object::Int(3));
+    bounded.set(b"Filter".to_vec(), Object::name("CCITTFaxDecode"));
+    bounded.set(b"DecodeParms".to_vec(), Object::Dict(parms.clone()));
+    assert_eq!(doc.decoded_image_within(&Stream::from_raw(bounded, coded.clone()), 5).unwrap(), bits[..4], "two rows of two bytes in five");
     let mut by_reference = Dict::new();
     by_reference.set(b"K".to_vec(), Object::Ref(doc.add(Object::Int(-1))));
     by_reference.set(b"Columns".to_vec(), Object::Ref(doc.add(Object::Int(10))));
