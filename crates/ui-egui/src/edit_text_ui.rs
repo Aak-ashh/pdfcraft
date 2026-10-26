@@ -266,7 +266,7 @@ pub struct LineEditor {
 
 /// The paragraph editor's text box.
 pub(crate) fn input_id() -> egui::Id {
-    egui::Id::new("edit-text-line-input")
+    egui::Id::unique("edit-text-line-input")
 }
 
 /// The page text box `id` keeps its own Undo history, across every paragraph or box it has shown
@@ -616,6 +616,19 @@ pub struct ImageSelection {
     /// A move or resize applied on release: the frame it had and the one it got, in the page's
     /// 0..1 coordinates, while the page raster still has the picture where it was.
     settled: Option<(Rect, Rect)>,
+}
+
+impl ImageSelection {
+    /// Cancel an in-progress text, rotation or crop drag and restore the crop it was previewing.
+    pub(crate) fn cancel_pointer_gesture(&mut self) {
+        self.drag = None;
+        self.turning = false;
+        if let Some(crop) = &mut self.crop
+            && let Some((_, _, before)) = crop.drag.take()
+        {
+            crop.keep = before;
+        }
+    }
 }
 
 /// Cropping a page image: the handles trim instead of resizing, the part that will go is
@@ -1778,7 +1791,7 @@ pub(crate) fn overlay(ctx: &egui::Context, view: &mut DocView, info: &DocInfo) -
     // Over the page, so only where the document shows: a paragraph scrolled under the mode bar or
     // a side panel must leave them their pointer (#2755). It stays at its paragraph, cut off as
     // the page is, rather than pushed back into the window.
-    egui::Area::new(egui::Id::new("edit-text-line"))
+    egui::Area::new(egui::Id::unique("edit-text-line"))
         .order(egui::Order::Foreground)
         .fade_in(false)
         .fixed_pos(Pos2::new(ed.rect.left(), ed.rect.top()))
@@ -1852,6 +1865,8 @@ pub(crate) fn overlay(ctx: &egui::Context, view: &mut DocView, info: &DocInfo) -
                     .desired_width(width)
                     .desired_rows(rows)
                     .show(ui);
+                // The editor paints over the page with no visible label; name it for assistive tech.
+                output.response.response.clone().accessible_name(tl!("Text editing line"));
                 if ed.has_changes() {
                     if background_ready {
                         reveal = true;
@@ -1943,7 +1958,7 @@ mod tests {
     #[test]
     fn formatting_applied_restarts_the_alignments_by_text() {
         use pdfcraft_engine::{DocId, TextAlign::Right};
-        let (ctx, id) = (egui::Context::default(), egui::Id::new("box"));
+        let (ctx, id) = (egui::Context::default(), egui::Id::unique("box"));
         let mut from = None;
         forget_typing_before(&ctx, id, DocId(1), &mut from, "A\nB");
         let mut aligns = vec![None, Some(Right)];
@@ -1961,7 +1976,7 @@ mod tests {
     #[test]
     fn alignments_by_text_survive_a_trip_to_another_tab() {
         use pdfcraft_engine::{DocId, TextAlign::Right};
-        let (ctx, id) = (egui::Context::default(), egui::Id::new("box"));
+        let (ctx, id) = (egui::Context::default(), egui::Id::unique("box"));
         let (mut a_from, mut b_from) = (None, None);
         forget_typing_before(&ctx, id, DocId(1), &mut a_from, "A\nB");
         let mut aligns = vec![None, Some(Right)];
@@ -1982,7 +1997,7 @@ mod tests {
     #[test]
     fn typing_history_restores_alignments_unless_one_was_picked_since() {
         use pdfcraft_engine::TextAlign::{Center, Right};
-        let (ctx, id) = (egui::Context::default(), egui::Id::new("box"));
+        let (ctx, id) = (egui::Context::default(), egui::Id::unique("box"));
         let mut aligns = vec![None, Some(Center), Some(Right)];
         follow_typing(
             &ctx,
