@@ -674,6 +674,9 @@ impl PdfCraftApp {
         {
             // What the page has now. The aligns stay those of the text in the box.
             d.style = pdfcraft_engine::AddedText { aligns: std::mem::take(&mut d.style.aligns), ..updated };
+            // The page has the box's text: its typing history restarts at the next claim, even
+            // when the restyle left the text as it was, so a Redo can't put undone typing back.
+            d.typing_from = None;
         }
     }
 

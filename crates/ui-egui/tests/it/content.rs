@@ -1241,6 +1241,46 @@ fn undo_in_the_frame_of_the_switch_back_takes_back_added_text_typing() {
     assert_eq!(h.state().views[0].content.draft.as_ref().map(|d| d.text.as_str()), Some("Reviewed"), "Undo takes the typing back in A's box");
 }
 
+/// Retyping taken back with Ctrl+Z, then Bold picked with the added text box still open: the
+/// restyle is applied in place and the page has the box's text, so neither Ctrl+Shift+Z nor the
+/// menu's Redo may bring the undone retyping back on top of the bold (CodeRabbit on a33a8bba).
+#[test]
+fn redo_after_restyling_open_added_text_never_brings_back_typing_undone_before_it() {
+    for route in ["key", "menu"] {
+        let mut h = harness();
+        let rect = [40.0, 195.0, 240.0, 210.0];
+        let text = pdfcraft_engine::AddedText { rect, text: "Reviewed".into(), ..Default::default() };
+        assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::AddText { page: 0, text }));
+        assert!(h.state_mut().execute("edit.text"));
+        h.run_steps(3);
+        let point = at(&h, 45.0, 195.0);
+        click(&mut h, point);
+        assert_eq!(h.state().views[0].content.draft.as_ref().and_then(|d| d.index), Some(0), "the editor opened on the text");
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::End);
+        h.event(egui::Event::Text(" twice".into()));
+        h.run_steps(2);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+        h.run_steps(3);
+        assert_eq!(h.state().views[0].content.draft.as_ref().map(|d| d.text.as_str()), Some("Reviewed"), "{route}: taken back");
+        h.get_by_label("Bold").click();
+        h.run_steps(4);
+        let pdfcraft_engine::AddedContent::Text(now) = &added(&h)[0].content else { panic!() };
+        assert!(now.bold, "{route}: the bold is applied to the item");
+        assert!(h.state().views[0].content.draft.is_some(), "{route}: the box stays open");
+        if route == "key" {
+            h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
+        } else {
+            // The menu item is off: neither the document nor the box has a Redo.
+            assert!(!h.state_mut().execute("edit.redo"), "menu: Redo is refused, there is nothing to redo");
+        }
+        h.run_steps(3);
+        let draft = h.state().views[0].content.draft.as_ref().map(|d| d.text.clone());
+        assert_eq!(draft.as_deref(), Some("Reviewed"), "{route}: the retyping undone before the bold comes back in the box");
+        let pdfcraft_engine::AddedContent::Text(now) = &added(&h)[0].content else { panic!() };
+        assert_eq!(now.text, "Reviewed", "{route}: nor in the document");
+    }
+}
+
 /// Redo with an added text box open and unchanged reaches the document's waiting Redo, even when
 /// the box's text ends in a space: closing the unchanged box writes nothing, so it can't clear
 /// that Redo first.
