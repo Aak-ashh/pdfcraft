@@ -474,6 +474,34 @@ fn images_whose_decode_parms_are_references_come_out_as_with_them_direct() {
     assert_eq!(build("numbers"), direct, "the numbers inside by reference");
 }
 
+/// An image whose data decodes far past what its samples can need (a decompression bomb) is left
+/// alone rather than decoded up to the 1 GiB limit: a 1-bit one that would become Group 4, and an
+/// eight-bit one that would be resampled, each with a megabyte of zeros after its samples.
+#[test]
+fn images_whose_data_decodes_far_past_their_samples_are_left_alone() {
+    let (w, h) = (1200u32, 480u32);
+    let text = bilevel(w, h, false);
+    let shades: Vec<u8> = (0..w * h).map(|i| ((i % w) * 255 / w) as u8 ^ ((i / w) as u8 & 0x0F)).collect();
+    for padding in [0, 1 << 20] {
+        let mut doc = Document::new_empty();
+        let padded = |data: &[u8]| data.iter().copied().chain(std::iter::repeat_n(0, padding)).collect::<Vec<u8>>();
+        let grey = |bits: i64| [("BitsPerComponent", bits.into()), ("ColorSpace", Object::name("DeviceGray"))];
+        let one_bit = mono_image(&mut doc, w, h, &padded(&text), None, &grey(1));
+        let eight_bit = mono_image(&mut doc, w, h, &padded(&shades), None, &grey(8));
+        // 300 × 120 pt is 288 ppi; 144 × 57.6 pt is 600 ppi.
+        page(&mut doc, &[("A", one_bit), ("B", eight_bit)], "q 300 0 0 120 20 600 cm /A Do Q q 144 0 0 57.6 20 400 cm /B Do Q");
+        let before = [one_bit, eight_bit].map(|r| stream(&doc, r).raw);
+        let r = optimize(&mut doc, &Settings::default()).unwrap();
+        let after = [one_bit, eight_bit].map(|r| stream(&doc, r).raw);
+        if padding == 0 {
+            assert_eq!((r.images_resampled, r.images_recompressed), (1, 1), "{r:?}");
+        } else {
+            assert_eq!((r.images_resampled, r.images_recompressed), (0, 0), "{r:?}");
+            assert_eq!(after, before);
+        }
+    }
+}
+
 #[test]
 fn settings_choose_what_happens() {
     let mut doc = Document::new_empty();

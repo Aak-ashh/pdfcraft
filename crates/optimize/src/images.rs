@@ -261,7 +261,8 @@ fn count_decoded(_n: u64) {
 /// 8-bit samples of an image (`n` components), decoded, with `/DecodeParms` given by reference
 /// too ([`Document::with_direct_parms`]): read without them, a predictor's tag bytes would shift
 /// every row, and the image would be written back wrong. `None` for a JPEG whose colour transform
-/// readers may disagree about ([`ycc_encoded`]).
+/// readers may disagree about ([`ycc_encoded`]), and for data that decodes past what the samples
+/// can need ([`allowance`]).
 pub(crate) fn pixels(doc: &Document, s: &Stream, n: usize) -> Option<Vec<u8>> {
     let (w, h) = (u32::try_from(s.dict.int(b"Width")?).ok()?, u32::try_from(s.dict.int(b"Height")?).ok()?);
     if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_PIXELS {
@@ -277,9 +278,16 @@ pub(crate) fn pixels(doc: &Document, s: &Stream, n: usize) -> Option<Vec<u8>> {
         count_decoded(u64::from(w) * u64::from(h));
         (v.len() == bytes).then_some(v)
     } else {
-        let v = doc.with_direct_parms(s).decoded().ok()?;
+        let v = doc.with_direct_parms(s).decoded_within(allowance(bytes, h)?).ok()?;
         Some(v.get(..bytes)?.to_vec())
     }
+}
+
+/// How far an image of `bytes` samples in `rows` rows is decoded: a filter stage may produce up
+/// to twice them (ASCIIHex text under Flate) plus a PNG predictor's byte a row. More can only be a
+/// decompression bomb, and the image is left alone.
+fn allowance(bytes: usize, rows: u32) -> Option<usize> {
+    bytes.checked_add(usize::try_from(rows).ok()?)?.checked_mul(2)?.checked_add(4096)
 }
 
 /// Whether the samples of a three-component JPEG are YCbCr, to be converted to RGB (ISO 32000-2
@@ -575,8 +583,10 @@ fn mono(doc: &Document, s: &Stream, compression: MonoCompression) -> Option<Stre
     if w == 0 || h == 0 || w > pdfcraft_filters::MAX_G4_COLUMNS || u64::from(w) * u64::from(h) > MAX_PIXELS {
         return None;
     }
-    // Through its parameters given by reference too, as `pixels` reads.
-    let g4 = pdfcraft_filters::encode_g4(&doc.with_direct_parms(s).decoded().ok()?, w, h).ok()?;
+    // Through its parameters given by reference too, as `pixels` reads, and no further than its
+    // rows can need.
+    let bytes = usize::try_from(w).ok()?.div_ceil(8).checked_mul(usize::try_from(h).ok()?)?;
+    let g4 = pdfcraft_filters::encode_g4(&doc.with_direct_parms(s).decoded_within(allowance(bytes, h)?).ok()?, w, h).ok()?;
     let mut new = d.clone();
     for k in [&b"Filter"[..], b"DecodeParms", b"Length", b"DL"] {
         new.remove(k);
