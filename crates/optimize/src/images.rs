@@ -637,7 +637,13 @@ fn one_bit(doc: &Document, s: &Stream, pack: bool, defaults: bool) -> Option<(Ve
         return None;
     }
     let cs = d.get(b"ColorSpace")?;
-    let decode = d.get(b"Decode").map(|v| doc.resolve(v));
+    // The decode array's numbers, each given directly or by reference, as integers or reals; `None`
+    // when it has something else.
+    let decode = match d.get(b"Decode").map(|v| doc.resolve(v)).as_deref() {
+        None => None,
+        Some(Object::Array(v)) => Some(v.iter().map(|e| doc.resolve(e).as_f64()).collect::<Option<Vec<f64>>>()?),
+        Some(_) => return None,
+    };
     let mut packed = d.clone();
     packed.set(b"BitsPerComponent".to_vec(), Object::Int(1));
     // Components a pixel, bits a component, and a pixel's samples as 1 or 0.
@@ -646,7 +652,7 @@ fn one_bit(doc: &Document, s: &Stream, pack: bool, defaults: bool) -> Option<(Ve
             let bpc = bits.filter(|b| matches!(b, 2 | 4 | 8))?;
             match decode.as_deref() {
                 None => {}
-                Some(Object::Array(v)) if v[..] == [Object::Int(0), Object::Int((1 << bpc) - 1)] => {
+                Some([d0, d1]) if *d0 == 0.0 && *d1 == f64::from((1u32 << bpc) - 1) => {
                     packed.remove(b"Decode");
                 }
                 Some(_) => return None,
@@ -664,8 +670,9 @@ fn one_bit(doc: &Document, s: &Stream, pack: bool, defaults: bool) -> Option<(Ve
             }
             match decode.as_deref() {
                 None => {}
-                Some(Object::Array(v)) if v.len() == 6 && v.chunks(2).all(|pair| Some(pair) == v.get(..2)) => {
-                    packed.set(b"Decode".to_vec(), Object::Array(v.get(..2)?.to_vec()));
+                Some(v @ [d0, d1, ..]) if v.len() == 6 && v.chunks(2).all(|pair| pair == [*d0, *d1]) => {
+                    let number = |n: f64| if n.fract() == 0.0 { Object::Int(n as i64) } else { Object::Real(n) };
+                    packed.set(b"Decode".to_vec(), Object::Array(vec![number(*d0), number(*d1)]));
                 }
                 Some(_) => return None,
             }

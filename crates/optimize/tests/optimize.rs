@@ -995,6 +995,83 @@ fn a_resampled_group_4_image_is_stored_as_flate_when_smaller() {
     assert_eq!((s.dict.int(b"Width"), s.dict.name(b"Filter")), (Some(600), Some(&b"FlateDecode"[..])));
 }
 
+/// A decode array is read as numbers, whichever way they are written: an indexed image's default
+/// as `[0 255.0]` or with an entry by reference, and RGB's inverting pairs with a real among them,
+/// pack as when written as integers.
+#[test]
+fn decode_arrays_read_as_numbers_however_written() {
+    let mut doc = Document::new_empty();
+    let (w, h) = (1200u32, 480u32);
+    let text = bilevel(w, h, false);
+    let image = |doc: &mut Document, data: &[u8], cs: Object, decode: Object| {
+        let mut d = Dict::new();
+        d.set(b"Subtype".to_vec(), Object::name("Image"));
+        d.set(b"Width".to_vec(), Object::Int(w.into()));
+        d.set(b"Height".to_vec(), Object::Int(h.into()));
+        d.set(b"BitsPerComponent".to_vec(), Object::Int(8));
+        d.set(b"ColorSpace".to_vec(), cs);
+        d.set(b"Decode".to_vec(), decode);
+        doc.add(Object::Stream(Stream::flate(d, data)))
+    };
+    let palette = Object::Array(vec![
+        Object::name("Indexed"),
+        Object::name("DeviceRGB"),
+        1.into(),
+        Object::String(pdfcraft_cos::PdfString::literal(vec![0, 0, 255, 255, 255, 255])),
+    ]);
+    let indices = samples_of(&text, w, h, [&[0], &[1]], 8);
+    let max = doc.add(Object::Int(255));
+    let real = image(&mut doc, &indices, palette.clone(), Object::Array(vec![0.into(), Object::Real(255.0)]));
+    let referred = image(&mut doc, &indices, palette, Object::Array(vec![0.into(), Object::Ref(max)]));
+    let rgb = samples_of(&text, w, h, [&[0, 0, 0], &[255, 255, 255]], 8);
+    let pairs = Object::Array(vec![1.into(), 0.into(), 1.into(), 0.into(), Object::Real(1.0), 0.into()]);
+    let inverted = image(&mut doc, &rgb, Object::name("DeviceRGB"), pairs);
+    page(
+        &mut doc,
+        &[("A", real), ("B", referred), ("C", inverted)],
+        "q 200 0 0 80 6 690 cm /A Do Q q 200 0 0 80 6 590 cm /B Do Q q 200 0 0 80 6 490 cm /C Do Q",
+    );
+    let keep = ImageSettings { downsample: false, target_ppi: 150.0, above_ppi: 225.0, compression: Compression::Retain };
+    optimize(&mut doc, &Settings { color: keep, gray: keep, ..Settings::default() }).unwrap();
+    for r in [real, referred] {
+        let s = stream(&doc, r);
+        assert_eq!((s.dict.int(b"BitsPerComponent"), s.dict.get(b"Decode")), (Some(1), None), "{r:?}");
+    }
+    let s = stream(&doc, inverted);
+    let decode = Object::Array(vec![1.into(), 0.into()]);
+    assert_eq!((s.dict.int(b"BitsPerComponent"), s.dict.get(b"Decode")), (Some(1), Some(&decode)));
+}
+
+/// With Retain, a Group 3 halftone above 450 ppi, which isn't resampled, stays Group 3 byte for
+/// byte: Retain stores nothing again that it doesn't resample.
+#[test]
+fn retain_keeps_a_group_3_halftone_as_it_is() {
+    let (w, h) = (64u32, 64u32);
+    let a: Vec<u32> = vec![1; 64];
+    let b: Vec<u32> = std::iter::once(0).chain(std::iter::repeat_n(1, 64)).collect();
+    let runs: Vec<&[u32]> = (0..h).map(|y| if y % 2 == 0 { &a[..] } else { &b[..] }).collect();
+    let g3 = group_3(&runs, false);
+    let mut doc = Document::new_empty();
+    let mut d = Dict::new();
+    d.set(b"Subtype".to_vec(), Object::name("Image"));
+    d.set(b"Width".to_vec(), Object::Int(w.into()));
+    d.set(b"Height".to_vec(), Object::Int(h.into()));
+    d.set(b"BitsPerComponent".to_vec(), Object::Int(1));
+    d.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+    d.set(b"Filter".to_vec(), Object::name("CCITTFaxDecode"));
+    let mut parms = Dict::new();
+    parms.set(b"K".to_vec(), Object::Int(0));
+    parms.set(b"Columns".to_vec(), Object::Int(w.into()));
+    d.set(b"DecodeParms".to_vec(), Object::Dict(parms));
+    let fax = doc.add(Object::Stream(Stream::from_raw(d, g3.clone())));
+    // 7.68 pt for 64 samples is 600 ppi.
+    page(&mut doc, &[("A", fax)], "q 7.68 0 0 7.68 100 600 cm /A Do Q");
+    assert_eq!(doc.decoded_image(&stream(&doc, fax)).unwrap().len(), 64 * 8, "the fixture decodes");
+    let r = optimize(&mut doc, &Settings { mono: RETAIN, ..Settings::default() }).unwrap();
+    assert_eq!((r.images_resampled, r.images_recompressed), (0, 0), "{r:?}");
+    assert_eq!(stream(&doc, fax).raw[..], g3[..]);
+}
+
 /// Black-and-white RGB stays RGB where grey would be drawn otherwise: drawn, on any of its uses,
 /// where `/DefaultGray` or `/DefaultRGB` is in force (ISO 32000-2 §8.6.5.6), from a page's
 /// resources or a form's own, as grey would then go through DefaultGray, or no longer through
@@ -1455,6 +1532,8 @@ fn monochrome_images_keep_what_they_should() {
 fn group_3(rows: &[&[u32]], mixed: bool) -> Vec<u8> {
     let code = |white: bool, run: u32| match (white, run) {
         (true, 0) => "00110101",
+        (true, 1) => "000111",
+        (false, 1) => "010",
         (true, 8) => "10011",
         (true, 16) => "101010",
         (true, 32) => "00011011",
