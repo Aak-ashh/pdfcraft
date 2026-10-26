@@ -100,13 +100,15 @@ fn filters(s: &Stream) -> Vec<Vec<u8>> {
     }
 }
 
-/// The samples of image `s`, decoded: through its filters, or, for a JBIG2 image (its only
-/// filter), through a JBIG2 decoder with its `/JBIG2Globals`, as rows of one-bit samples each
-/// starting on a byte, with black as 0, as `JBIG2Decode` gives them (ISO 32000-2 §7.4.7).
+/// The samples of image `s`, decoded: through its filters, with a `/DecodeParms` dictionary given
+/// by reference, or as an array's entry, or with numbers inside by reference, read too (a predictor
+/// given so would otherwise be lost), or, for a JBIG2 image
+/// (its only filter), through a JBIG2 decoder with its `/JBIG2Globals`, as rows of one-bit samples
+/// each starting on a byte, with black as 0, as `JBIG2Decode` gives them (ISO 32000-2 §7.4.7).
 fn decoded(doc: &Document, s: &Stream) -> Result<Vec<u8>, String> {
     match filters(s).as_slice() {
         [f] if f == b"JBIG2Decode" => jbig2(doc, s),
-        _ => s.decoded().map_err(|e| e.to_string()),
+        _ => doc.with_direct_parms(s).decoded().map_err(|e| e.to_string()),
     }
 }
 
@@ -129,7 +131,7 @@ fn decode_parms(doc: &Document, s: &Stream) -> Dict {
 /// decoding it without them.
 fn jbig2(doc: &Document, s: &Stream) -> Result<Vec<u8>, String> {
     let globals = match decode_parms(doc, s).get(b"JBIG2Globals").map(|g| doc.resolve(g)).as_deref() {
-        Some(Object::Stream(g)) => Some(g.decoded().map_err(|e| format!("the JBIG2 globals can't be read: {e}"))?),
+        Some(Object::Stream(g)) => Some(doc.with_direct_parms(g).decoded().map_err(|e| format!("the JBIG2 globals can't be read: {e}"))?),
         _ => None,
     };
     let image = hayro_jbig2::Image::new_embedded(&s.raw, globals.as_deref()).map_err(|e| format!("the JBIG2 image can't be read: {e}"))?;
@@ -498,9 +500,10 @@ fn space(doc: &Document, cs: Option<&Object>) -> Result<Space, String> {
                 };
                 let table = match a.get(3).map(|t| doc.resolve(t)).as_deref() {
                     Some(Object::String(s)) => s.bytes.clone(),
-                    Some(Object::Stream(t)) => {
-                        t.decoded_within(MAX_LOOKUP).map_err(|_| "an indexed colour space with an oversized or damaged lookup table".to_string())?
-                    }
+                    Some(Object::Stream(t)) => doc
+                        .with_direct_parms(t)
+                        .decoded_within(MAX_LOOKUP)
+                        .map_err(|_| "an indexed colour space with an oversized or damaged lookup table".to_string())?,
                     _ => return Err("an indexed colour space without a lookup table".into()),
                 };
                 Ok(Space::Indexed(Box::new(base), hival, table))
