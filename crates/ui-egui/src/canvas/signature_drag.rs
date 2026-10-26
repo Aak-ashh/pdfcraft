@@ -20,6 +20,10 @@ pub(crate) struct SignatureDrag {
     /// The comment being moved that has no stamp layers: (edit generation, page, index), and
     /// the comment alone, drawn over the page where it goes.
     moving: Option<((u64, usize, usize), Moving)>,
+    /// The comment being moved whose layer couldn't be made (nothing to draw, or a document that
+    /// can't be read): only its frame follows the pointer, and the layer isn't made again on
+    /// every frame of the drag.
+    no_layer: Option<(u64, usize, usize)>,
 }
 
 struct Moving {
@@ -60,6 +64,8 @@ struct StampLayer {
     tag: Option<u64>,
     /// The rendered stamp: its tag, and the view-space box its pixels cover.
     pixels: Option<(u64, TextureHandle, [f32; 4])>,
+    /// The tag whose render failed: not waited for, and asked for again only at another scale.
+    failed: Option<u64>,
 }
 
 impl SignatureDrag {
@@ -86,7 +92,7 @@ impl SignatureDrag {
                     let front = Front::Image { texture, opacity: preview.opacity, turn: preview.turn };
                     self.layers = Some(Layers::new(front, preview.renderer()));
                 } else if let Ok(Some(preview)) = doc.stamp_preview(page, index) {
-                    let stamp = StampLayer { renderer: preview.stamp_renderer(), from: a.rect, tag: None, pixels: None };
+                    let stamp = StampLayer { renderer: preview.stamp_renderer(), from: a.rect, tag: None, pixels: None, failed: None };
                     self.layers = Some(Layers::new(Front::Stamp(Box::new(stamp)), preview.background_renderer()));
                 }
             }
@@ -230,16 +236,25 @@ impl SignatureDrag {
         if self.moving.as_ref().is_some_and(|(key, m)| !keep(*key, m)) {
             self.moving = None;
         }
+        if self.no_layer != dragged {
+            self.no_layer = None;
+        }
         if self.moving.is_none()
+            && self.no_layer.is_none()
             && let Some(key @ (_, page, index)) = dragged
             && let Some(a) = doc.info.annotations.iter().find(|a| a.page == page && a.index == index && !a.locked)
-            && let Ok(Some(alone)) = doc.comment_layer(page, &[index])
         {
-            // The box it is drawn in: a comment kept upright on a turned page (NoRotate) isn't
-            // drawn in its /Rect, and the frame it follows is that box too.
-            let rotation = doc.info.pages.get(page).map_or(0, |p| p.rotation);
-            let layer = StampLayer { renderer: alone.renderer(), from: a.shown_rect(rotation), tag: None, pixels: None };
-            self.moving = Some((key, Moving { layer, settling: false }));
+            // Made once per drag: it copies and writes out the whole document.
+            match doc.comment_layer(page, &[index]) {
+                Ok(Some(alone)) => {
+                    // The box it is drawn in: a comment kept upright on a turned page (NoRotate)
+                    // isn't drawn in its /Rect, and the frame it follows is that box too.
+                    let rotation = doc.info.pages.get(page).map_or(0, |p| p.rotation);
+                    let layer = StampLayer { renderer: alone.renderer(), from: a.shown_rect(rotation), tag: None, pixels: None, failed: None };
+                    self.moving = Some((key, Moving { layer, settling: false }));
+                }
+                _ => self.no_layer = Some(key),
+            }
         }
         let Some(((_, page, _), m)) = self.moving.as_mut() else { return };
         let Some(p) = doc.info.pages.get(*page) else { return };
@@ -249,8 +264,10 @@ impl SignatureDrag {
                     ctx.request_repaint_after(std::time::Duration::from_millis(16));
                 }
             }
-            // Nothing to lay over the page: the frame alone follows the pointer, as before.
-            None => self.moving = None,
+            // Nothing to lay over the page at this scale (no box, or the render failed): the
+            // frame alone follows the pointer, as before. The layer stays, so another scale
+            // renders it again without making it anew.
+            None => m.layer.pixels = None,
         }
     }
 
@@ -282,10 +299,16 @@ impl StampLayer {
             self.renderer.set_queue(vec![RenderRequest { page, scale, tag, tile: Some(tile), ..Default::default() }]);
             self.tag = Some(tag);
         }
+        if self.failed == Some(tag) {
+            return None;
+        }
         if let Some(out) = self.renderer.try_recv()
             && out.request.tag == tag
         {
-            let (Some(t), None) = (out.request.tile, &out.error) else { return None };
+            let (Some(t), None) = (out.request.tile, &out.error) else {
+                self.failed = Some(tag);
+                return None;
+            };
             let s = out.request.scale;
             let area = [t.x as f32 / s, t.y as f32 / s, t.x.saturating_add(t.w) as f32 / s, t.y.saturating_add(t.h) as f32 / s];
             let image = crate::canvas::texture_image([out.width as usize, out.height as usize], out.rgba);
@@ -337,4 +360,59 @@ fn stamp_tile(p: &PageInfo, rect: [f32; 4], scale: f32) -> Option<(f32, Tile)> {
     let (left, top) = (((x0 * scale).floor() - 1.0).max(0.0).min(width), ((y0 * scale).floor() - 1.0).max(0.0).min(height));
     let (right, bottom) = (((x1 * scale).ceil() + 1.0).min(width).max(left + 1.0), ((y1 * scale).ceil() + 1.0).min(height).max(top + 1.0));
     Some((scale, Tile { x: left as u32, y: top as u32, w: (right - left) as u32, h: (bottom - top) as u32 }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    /// One page with one comment that has nothing to draw: a sound annotation without an
+    /// appearance, for which none is built.
+    fn silent() -> Vec<u8> {
+        let objs = [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R] >>",
+            "<< /Type /Annot /Subtype /Sound /Rect [50 50 70 70] /Contents (hush) >>",
+        ];
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+        for o in offsets {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+        out
+    }
+
+    /// A moved comment whose own layer can't be made is asked for once per drag, not on every
+    /// pointer frame (making it copies and writes out the whole document); only its frame follows
+    /// the pointer. Once the drag ends, the next one asks again.
+    #[test]
+    fn a_comment_with_nothing_to_draw_is_prepared_once_per_drag() {
+        let mut session = pdfcraft_engine::Session::new();
+        let id = session.open("silent.pdf", None, Arc::new(silent()), None).expect("opens");
+        let doc = session.get(id).expect("open");
+        let index = doc.info.annotations.iter().find(|a| a.subtype == "Sound").expect("listed").index;
+        let ctx = egui::Context::default();
+        let mut cv = CommentView::default();
+        cv.gesture = Some(Gesture::Move { page: 0, index, from: pos2(0.0, 0.0) });
+        let mut drag = SignatureDrag::default();
+        let key = Some((doc.edit_generation(), 0, index));
+        drag.prepare_move(&ctx, doc, &cv, None, false, 1.0);
+        assert!(drag.moving.is_none(), "nothing to draw");
+        assert_eq!(drag.no_layer, key, "remembered for this drag");
+        drag.prepare_move(&ctx, doc, &cv, None, false, 1.0);
+        assert!(drag.moving.is_none() && drag.no_layer == key, "and not made again");
+        cv.gesture = None;
+        drag.prepare_move(&ctx, doc, &cv, None, false, 1.0);
+        assert_eq!(drag.no_layer, None, "forgotten when the drag ends");
+    }
 }
