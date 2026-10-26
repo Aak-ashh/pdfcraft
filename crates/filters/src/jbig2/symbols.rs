@@ -21,17 +21,24 @@ const MAX_SYMBOL_SIDE: u32 = 256;
 /// which suits it better anyway; this bounds the memory the marks take.
 const MAX_RUNS: usize = 1 << 20;
 
-/// The most distinct symbols, and the most pixels their bitmaps may hold together. The decoder
-/// PdfCraft renders JBIG2 with (`hayro-jbig2`) refuses 32,768 symbols or more, and others may
-/// too: past it the image is coded generically.
-const MAX_SYMBOLS: usize = (1 << 15) - 1;
+/// The most distinct marks sorted into symbols, and the most pixels their bitmaps may hold
+/// together: past either the image is left to generic coding. These bound the memory they take.
+const MAX_SYMBOLS: usize = 1 << 16;
 const MAX_SYMBOL_PIXELS: usize = 1 << 24;
+
+/// The most symbols one plan codes. The decoder PdfCraft renders JBIG2 with (`hayro-jbig2`)
+/// refuses 32,768 symbols or more, and others may too, so a plan with more isn't made.
+const MAX_CODED_SYMBOLS: usize = (1 << 15) - 1;
 
 /// The most symbol instances one text region places. The decoder PdfCraft renders JBIG2 with
 /// refuses a text region of more than 10,000 (a page it then draws blank), so a page with more is
-/// placed by several regions, each over a band of rows, all referring to the one dictionary. At
-/// most [`MAX_RUNS`] marks keeps their segment numbers below 256.
+/// placed by several regions, each over a band of rows, all referring to the one dictionary.
 const MAX_REGION_INSTANCES: usize = 10_000;
+
+// Segment numbers stay at most 256, so a referred-to one takes a byte (7.2.5): the page, the
+// dictionary, a text region for each MAX_REGION_INSTANCES of at most MAX_RUNS marks, and the
+// generic region.
+const _: () = assert!(MAX_RUNS.div_ceil(MAX_REGION_INSTANCES) + 3 <= 256);
 
 /// The most rows symbol coded. With rows at most 2^20 samples wide, every coordinate and
 /// difference coded then fits the 32-bit integers Annex A codes.
@@ -94,7 +101,8 @@ struct Instance {
 
 /// `rows` rows of `columns` 1-bit PDF samples (black 0), symbol coded: the smaller of two plans,
 /// every mark of at most [`MAX_SYMBOL_SIDE`] a side as a symbol, or only those with a copy.
-/// `None` when neither plan has two symbols, or the image is too large or too busy to look at.
+/// `None` when neither plan has from two to [`MAX_CODED_SYMBOLS`] symbols, or the image is too
+/// large or too busy to look at.
 pub(super) fn encode(samples: &[u8], columns: u32, rows: u32) -> Option<Vec<u8>> {
     let page = page(samples, columns, rows)?;
     [1, 2].into_iter().filter_map(|copies| plan(&page, columns, rows, copies, None)).min_by_key(Vec::len)
@@ -294,13 +302,14 @@ fn symbols(page: &mut Page) -> Option<()> {
 
 /// One plan's stream: the symbols with at least `copies` uses in a symbol dictionary, text
 /// regions placing them (in strips of 2^`log_strips` rows, or whichever size codes smallest), and
-/// the other marks in a generic region. `None` with fewer than two such symbols: their IDs would
-/// take no bits at all (SBSYMCODELEN 0), a corner of the standard left alone here.
+/// the other marks in a generic region. `None` with fewer than two such symbols (their IDs would
+/// take no bits at all, SBSYMCODELEN 0, a corner of the standard left alone here) or more than
+/// [`MAX_CODED_SYMBOLS`].
 fn plan(page: &Page, columns: u32, rows: u32, copies: u32, log_strips: Option<u32>) -> Option<Vec<u8>> {
     let symbol = |s: u32| page.symbols.get(s as usize);
     // The dictionary's order (6.5.5): height classes from the shortest, each narrowest first.
     let mut kept: Vec<u32> = (0..page.symbols.len() as u32).filter(|s| symbol(*s).is_some_and(|s| s.uses >= copies)).collect();
-    if kept.len() < 2 {
+    if kept.len() < 2 || kept.len() > MAX_CODED_SYMBOLS {
         return None;
     }
     kept.sort_by_key(|s| symbol(*s).map(|s| (s.height, s.width)));
@@ -628,9 +637,9 @@ mod tests {
         page
     }
 
-    /// A segment's type, whether it is retained, and the segments it refers to, each with its
-    /// retain bit.
-    type Segment = (u8, bool, Vec<(u8, bool)>);
+    /// A segment's number and type, whether it is retained, and the segments it refers to, each
+    /// with its retain bit.
+    type Segment = (u32, u8, bool, Vec<(u8, bool)>);
 
     /// The segments of a stream in the embedded organisation, from their headers (7.2).
     fn segments(data: &[u8]) -> Vec<Segment> {
@@ -641,14 +650,15 @@ mod tests {
             let length_at = at + 6 + refers + 1;
             let length = u32::from_be_bytes(data[length_at..length_at + 4].try_into().unwrap()) as usize;
             let referred = data[at + 6..at + 6 + refers].iter().enumerate().map(|(k, n)| (*n, flags >> (k + 1) & 1 == 1)).collect();
-            segments.push((data[at + 4] & 0x3F, flags & 1 == 1, referred));
+            let number = u32::from_be_bytes(data[at..at + 4].try_into().unwrap());
+            segments.push((number, data[at + 4] & 0x3F, flags & 1 == 1, referred));
             at = length_at + 4 + length;
         }
         segments
     }
 
     fn segment_types(data: &[u8]) -> Vec<u8> {
-        segments(data).into_iter().map(|(kind, ..)| kind).collect()
+        segments(data).into_iter().map(|(_, kind, ..)| kind).collect()
     }
 
     /// Every plan, at every strip size, decodes to the picture; returns how many plans there were.
@@ -796,32 +806,60 @@ mod tests {
         assert!(page(&tall, 1, MAX_ROWS).is_some());
     }
 
-    /// Past 32,767 distinct symbols, or 2^24 pixels of them, the image is left to generic coding;
-    /// at either cap it is symbol coded, and decodes.
+    /// A plan codes at most 32,767 symbols, which an independent decoder reads back; with more,
+    /// the second plan can still code the repeated ones. Past 65,536 distinct marks, or 2^24
+    /// pixels of them, the image is left to generic coding; at either cap it is still looked at.
     #[test]
     fn too_many_symbols_are_left_to_generic_coding() {
-        // `n` distinct marks of 17 × 3: full top and bottom rows joined by a code of 1 to n, in
-        // binary, on the row between.
-        let codes = |n: usize| {
-            let (columns, rows) = (256 * 18, n.div_ceil(256) * 4);
+        // `n` distinct marks of 17 × 3 (full top and bottom rows joined by a code of 1 to n, in
+        // binary, on the row between), then `again` more with the codes 1 and 2 in turn.
+        let codes = |n: usize, again: usize| {
+            let (columns, rows) = (256 * 18, (n + again).div_ceil(256) * 4);
             let mut picture = vec![vec![0u8; columns]; rows];
-            for k in 0..n {
+            for k in 0..n + again {
                 let (x, y) = (k % 256 * 18, k / 256 * 4);
+                let code = if k < n { k + 1 } else { (k - n) % 2 + 1 };
                 picture[y][x..x + 17].fill(1);
                 picture[y + 2][x..x + 17].fill(1);
-                for b in (0..17).filter(|b| (k + 1) >> b & 1 == 1) {
+                for b in (0..17).filter(|b| code >> b & 1 == 1) {
                     picture[y + 1][x + b] = 1;
                 }
             }
             (samples(&picture), columns as u32, rows as u32)
         };
-        // At the cap the symbols are coded, and an independent decoder reads them back.
-        let (data, columns, rows) = codes(MAX_SYMBOLS);
+        let (data, columns, rows) = codes(MAX_CODED_SYMBOLS, 0);
         let at_cap = page(&data, columns, rows).unwrap();
-        assert_eq!(at_cap.symbols.len(), MAX_SYMBOLS);
-        let coded = plan(&at_cap, columns, rows, 1, None).unwrap();
+        assert_eq!(decode(&plan(&at_cap, columns, rows, 1, None).unwrap()), unpack(&data, columns, rows));
+        // One more distinct mark, each once: neither plan is made.
+        let (data, columns, rows) = codes(MAX_CODED_SYMBOLS + 1, 0);
+        let past = page(&data, columns, rows).unwrap();
+        assert!(plan(&past, columns, rows, 1, None).is_none() && plan(&past, columns, rows, 2, None).is_none());
+        assert_eq!(encode_jbig2(&data, columns, rows).unwrap(), encode_jbig2_generic(&data, columns, rows).unwrap());
+        // With two of them repeated, the second plan codes those two.
+        let (data, columns, rows) = codes(MAX_CODED_SYMBOLS + 1, 200);
+        let past = page(&data, columns, rows).unwrap();
+        assert!(plan(&past, columns, rows, 1, None).is_none());
+        assert_eq!(decode(&plan(&past, columns, rows, 2, None).unwrap()), unpack(&data, columns, rows));
+        // Above a page of text whose letters repeat, that second plan is the one `encode_jbig2`
+        // keeps: the first, of every mark, would code too many symbols.
+        let mut picture: Bitmap = vec![vec![0u8; 256 * 18]; 512];
+        for k in 0..=MAX_CODED_SYMBOLS {
+            let (x, y) = (k % 256 * 18, k / 256 * 4);
+            picture[y][x..x + 17].fill(1);
+            picture[y + 2][x..x + 17].fill(1);
+            for b in (0..17).filter(|b| (k + 1) >> b & 1 == 1) {
+                picture[y + 1][x + b] = 1;
+            }
+        }
+        picture.extend(text(256 * 18, 600, &glyphs(40, 7), 11));
+        let data = samples(&picture);
+        let (columns, rows) = (picture[0].len() as u32, picture.len() as u32);
+        let coded = encode_jbig2(&data, columns, rows).unwrap();
+        assert_eq!(segment_types(&coded)[1], 0, "symbol coded");
         assert_eq!(decode(&coded), unpack(&data, columns, rows));
-        let (data, columns, rows) = codes(MAX_SYMBOLS + 1);
+        let (data, columns, rows) = codes(MAX_SYMBOLS, 0);
+        assert_eq!(page(&data, columns, rows).map(|p| p.symbols.len()), Some(MAX_SYMBOLS));
+        let (data, columns, rows) = codes(MAX_SYMBOLS + 1, 0);
         assert!(page(&data, columns, rows).is_none());
         // `n` black squares of 256 × 256, each with a white pixel in a different place: 2^16
         // pixels a symbol, so 256 of them are exactly the cap.
@@ -847,22 +885,30 @@ mod tests {
 
     /// More than 10,000 marks are placed by several text regions, each of at most 10,000 (more
     /// than the decoder PdfCraft renders with accepts in one), over bands of rows, all referring to
-    /// the dictionary, which each region but the last keeps retained.
+    /// the dictionary, which each region but the last keeps retained; the generic region comes
+    /// after them, every segment numbered one more than the one before.
     #[test]
     fn more_than_10000_marks_are_placed_by_several_regions() {
-        // 25,000 copies of two 17 × 3 shapes, 256 a line, the lines 5 rows apart.
-        let mut picture = vec![vec![0u8; 256 * 18]; 25_000usize.div_ceil(256) * 5];
+        // 25,000 copies of two 17 × 3 shapes, 256 a line, the lines 5 rows apart, and a bar too
+        // tall to be a symbol beside them.
+        let mut picture = vec![vec![0u8; 256 * 18 + 100]; 25_000usize.div_ceil(256) * 5];
         for k in 0..25_000 {
             let (x, y) = (k % 256 * 18, k / 256 * 5);
             picture[y][x..x + 17].fill(1);
             picture[y + 2][x..x + 17].fill(1);
             picture[y + 1][x + k % 2] = 1;
         }
+        for row in &mut picture[0..300] {
+            row[256 * 18 + 50] = 1;
+        }
         let data = samples(&picture);
         let (columns, rows) = (picture[0].len() as u32, picture.len() as u32);
         let coded = encode_jbig2(&data, columns, rows).unwrap();
-        let region = |kept| (7, false, vec![(1, kept)]);
-        assert_eq!(segments(&coded), [(48, false, vec![]), (0, true, vec![]), region(true), region(true), region(false)]);
+        let region = |number, kept| (number, 7, false, vec![(1, kept)]);
+        assert_eq!(
+            segments(&coded),
+            [(0, 48, false, vec![]), (1, 0, true, vec![]), region(2, true), region(3, true), region(4, false), (5, 39, false, vec![])]
+        );
         assert_eq!(decode(&coded), unpack(&data, columns, rows));
         assert_eq!(every_plan_round_trips(&picture), 8);
     }
@@ -876,7 +922,7 @@ mod tests {
         let coded = encode_jbig2(&data, 1700, 400).unwrap();
         let generic = encode_jbig2_generic(&data, 1700, 400).unwrap();
         // The dictionary is retained for the text region, which refers to it (7.2.4, 7.2.5).
-        assert_eq!(segments(&coded), [(48, false, vec![]), (0, true, vec![]), (7, false, vec![(1, false)])]);
+        assert_eq!(segments(&coded), [(0, 48, false, vec![]), (1, 0, true, vec![]), (2, 7, false, vec![(1, false)])]);
         assert_eq!(decode(&coded), unpack(&data, 1700, 400));
         assert!(coded.len() * 2 < generic.len(), "symbols {} bytes, generic {}", coded.len(), generic.len());
         assert_eq!(every_plan_round_trips(&picture), 8);

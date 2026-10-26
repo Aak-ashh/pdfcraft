@@ -749,6 +749,17 @@ fn a_dense_page_of_rendered_text_looks_the_same_as_jbig2_symbols() {
     let s = stream(&doc, im);
     assert_eq!(s.dict.name(b"Filter"), Some(&b"JBIG2Decode"[..]));
     assert!(s.raw.len() * 2 < pdfcraft_filters::encode_jbig2_generic(&text, w, h).unwrap().len(), "symbol coded");
+    // The copies take several text regions (segment type 7, ISO/IEC 14492 7.3), read from the
+    // segment headers (7.2): number, flags, referred-to count and numbers, page, data length.
+    let mut regions = 0;
+    let mut at = 0;
+    while let Some(header) = s.raw.get(at..at + 6) {
+        let refers = usize::from(header[5] >> 5);
+        let length = u32::from_be_bytes(s.raw[at + 7 + refers..at + 11 + refers].try_into().unwrap()) as usize;
+        regions += usize::from(header[4] & 0x3F == 7);
+        at += 11 + refers + length;
+    }
+    assert!(regions > 1, "{regions} text regions");
     assert!(render(&doc) == before, "the page looks the same");
 }
 
