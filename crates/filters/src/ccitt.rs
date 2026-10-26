@@ -318,6 +318,135 @@ mod tests {
         assert_eq!(CcittParams::default().columns, 1728, "Table 11");
     }
 
+    /// Group 3 data: rows of run lengths below 64, white first, coded one-dimensionally with T.4's
+    /// terminating codes (ITU-T T.4 Tables 2 and 3). Each row starts with an end-of-line code with
+    /// `eol`, then with `tag` a 1 bit (the next row one-dimensional, as `k` above 0 has it). Fill
+    /// bits (0s) go where `fill` says.
+    fn group_3(rows: &[Vec<u32>], eol: bool, tag: bool, fill: Fill) -> Vec<u8> {
+        // The codes for runs 0 to 63, in order.
+        const WHITE: &str = concat!(
+            "00110101 000111 0111 1000 1011 1100 1110 1111 10011 10100 00111 01000 001000 000011 110100 110101 101010 101011 ",
+            "0100111 0001100 0001000 0010111 0000011 0000100 0101000 0101011 0010011 0100100 0011000 00000010 00000011 00011010 ",
+            "00011011 00010010 00010011 00010100 00010101 00010110 00010111 00101000 00101001 00101010 00101011 00101100 00101101 ",
+            "00000100 00000101 00001010 00001011 01010010 01010011 01010100 01010101 00100100 00100101 01011000 01011001 01011010 ",
+            "01011011 01001010 01001011 00110010 00110011 00110100",
+        );
+        const BLACK: &str = concat!(
+            "0000110111 010 11 10 011 0011 0010 00011 000101 000100 0000100 0000101 0000111 00000100 00000111 000011000 0000010111 ",
+            "0000011000 0000001000 00001100111 00001101000 00001101100 00000110111 00000101000 00000010111 00000011000 ",
+            "000011001010 000011001011 000011001100 000011001101 000001101000 000001101001 000001101010 000001101011 000011010010 ",
+            "000011010011 000011010100 000011010101 000011010110 000011010111 000001101100 000001101101 000011011010 000011011011 ",
+            "000001010100 000001010101 000001010110 000001010111 000001100100 000001100101 000001010010 000001010011 000000100100 ",
+            "000000110111 000000111000 000000100111 000000101000 000001011000 000001011001 000000101011 000000101100 000001011010 ",
+            "000001100110 000001100111",
+        );
+        let code = |white: bool, run: u32| (if white { WHITE } else { BLACK }).split(' ').nth(run as usize).expect("a run below 64");
+        let mut bits = String::new();
+        for row in rows {
+            // The end-of-line code is 12 bits.
+            let ends_code = if fill == Fill::CodeEnd && eol { 12 } else { 0 };
+            while fill != Fill::None && !(bits.len() + ends_code).is_multiple_of(8) {
+                bits.push('0');
+            }
+            if eol {
+                bits.push_str("000000000001");
+            }
+            if tag {
+                bits.push('1');
+            }
+            row.iter().enumerate().for_each(|(i, run)| bits.push_str(code(i % 2 == 0, *run)));
+        }
+        bits.as_bytes().chunks(8).map(|c| c.iter().enumerate().fold(0u8, |b, (i, d)| b | (u8::from(*d == b'1') << (7 - i)))).collect()
+    }
+
+    /// Where [`group_3`] puts fill bits: none; so each row, its end-of-line code first, starts on a
+    /// byte; or so each end-of-line code ends on one (T.4's fill, as TIFF writes it).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Fill {
+        None,
+        RowStart,
+        CodeEnd,
+    }
+
+    /// `rows` text-like rows of `columns` samples as runs, white first, from `seed`: long white runs
+    /// and short black ones; a row may start black.
+    fn text_like(seed: u64, columns: u32, rows: u32) -> Vec<Vec<u32>> {
+        let mut seed = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut random = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n) as u32
+        };
+        (0..rows)
+            .map(|_| {
+                let (mut runs, mut left) = (Vec::new(), columns);
+                while left > 0 {
+                    let run = match runs.len() % 2 {
+                        0 if runs.is_empty() => random(31),
+                        0 => 1 + random(30),
+                        _ => 1 + random(5),
+                    };
+                    runs.push(run.min(left));
+                    left -= run.min(left);
+                }
+                runs
+            })
+            .collect()
+    }
+
+    /// Rows of runs, white first, packed as `decode_ccitt` gives them (white 1).
+    fn pack(runs: &[Vec<u32>], columns: u32) -> Vec<u8> {
+        let stride = (columns as usize).div_ceil(8);
+        let mut out = vec![0u8; stride * runs.len()];
+        for (y, row) in runs.iter().enumerate() {
+            let mut x = 0;
+            for (i, run) in row.iter().enumerate() {
+                if i % 2 == 0 {
+                    (x..x + *run as usize).for_each(|x| out[y * stride + x / 8] |= 0x80 >> (x % 8));
+                }
+                x += *run as usize;
+            }
+        }
+        out
+    }
+
+    /// Group 3 rows on bytes in each layout, over many pictures, as how a misreading comes out
+    /// depends on the picture: no codes (as TIFF's Modified Huffman has it), and `end_of_line`
+    /// without them; codes, each starting on a byte or ending on one, `end_of_line` or not. Each
+    /// decodes to its picture, and a byte short to fewer rows, not to other rows read another way.
+    /// Group 4 rows on bytes keep their aligned read, `end_of_line` or not.
+    #[test]
+    fn group_3_rows_on_bytes_read_by_the_codes_in_the_data() {
+        for seed in 0..32u64 {
+            let (columns, rows) = (8 + (seed as u32 * 37) % 200, 2 + seed as u32 % 20);
+            let runs = text_like(seed, columns, rows);
+            let picture = pack(&runs, columns);
+            for k in [0, 1] {
+                for (codes, fill, end_of_line) in [
+                    (false, Fill::RowStart, false),
+                    (false, Fill::RowStart, true),
+                    (true, Fill::RowStart, false),
+                    (true, Fill::RowStart, true),
+                    (true, Fill::CodeEnd, false),
+                    (true, Fill::CodeEnd, true),
+                ] {
+                    let p = CcittParams { k, columns: i64::from(columns), end_of_line, encoded_byte_align: true, ..CcittParams::default() };
+                    let mut data = group_3(&runs, codes, k > 0, fill);
+                    let case = format!("seed {seed}, {columns} × {rows}, k {k}, codes {codes}, fill {fill:?}, end_of_line {end_of_line}");
+                    assert_eq!(decode_ccitt(&data, &p, rows).unwrap(), picture, "{case}");
+                    data.pop();
+                    assert!(decode_ccitt(&data, &p, rows).unwrap().len() < picture.len(), "{case}, a byte short");
+                }
+            }
+        }
+        // White rows, each the one code 1 (vertical, no change) and its fill.
+        for end_of_line in [false, true] {
+            let p = CcittParams { k: -1, columns: 64, end_of_line, encoded_byte_align: true, ..CcittParams::default() };
+            assert_eq!(decode_ccitt(&[0x80; 16], &p, 16).unwrap(), [0xFF; 8 * 16], "Group 4, end_of_line {end_of_line}");
+        }
+    }
+
     proptest::proptest! {
         /// Any bitmap, of noise or of runs, decodes to its own bits, through an independent decoder
         /// and through `decode_ccitt`.
@@ -337,9 +466,16 @@ mod tests {
 
         /// Whatever it is given, it returns.
         #[test]
-        fn any_input_returns(data in proptest::collection::vec(0u8..=255, 0..600), columns in 0u32..40_000, rows in 0u32..80, k in -2i64..3) {
+        fn any_input_returns(
+            data in proptest::collection::vec(0u8..=255, 0..600),
+            columns in 0u32..40_000,
+            rows in 0u32..80,
+            k in -2i64..3,
+            end_of_line in proptest::bool::ANY,
+            encoded_byte_align in proptest::bool::ANY,
+        ) {
             let _ = encode_g4(&data, columns, rows);
-            let p = CcittParams { k, columns: i64::from(columns), ..CcittParams::default() };
+            let p = CcittParams { k, columns: i64::from(columns), end_of_line, encoded_byte_align, ..CcittParams::default() };
             if let Ok(out) = decode_ccitt(&data, &p, rows) {
                 proptest::prop_assert!(out.len() <= (columns as usize).div_ceil(8) * rows as usize);
             }
