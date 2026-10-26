@@ -1664,18 +1664,29 @@ fn ccitt_fax_images_export_as_their_picture() {
     assert!(out.images.is_empty() && out.skipped.len() == 1, "columns other than the width: skipped");
 }
 
-/// Group 3 data: rows of run lengths, white first, coded one-dimensionally (ITU-T T.4), from the
-/// few codes these runs need. Each row starts with an end-of-line code with `eol`, then with
-/// `tag` a 1 bit (the next row one-dimensional, as `/K` above 0 has it). Fill bits (0s) go where
-/// `fill` says.
-fn group_3(rows: &[&[u32]], eol: bool, tag: bool, fill: Fill) -> Vec<u8> {
-    let code = |white: bool, run: u32| match (white, run) {
-        (true, 16) => "101010",
-        (true, 32) => "00011011",
-        (false, 16) => "0000010111",
-        (false, 32) => "000001101010",
-        _ => panic!("no code here for a run of {run}"),
-    };
+/// Group 3 data: rows of run lengths below 64, white first, coded one-dimensionally with T.4's
+/// terminating codes (ITU-T T.4 Tables 2 and 3). Each row starts with an end-of-line code with
+/// `eol`, then with `tag` a 1 bit (the next row one-dimensional, as `/K` above 0 has it). Fill bits
+/// (0s) go where `fill` says.
+fn group_3(rows: &[impl AsRef<[u32]>], eol: bool, tag: bool, fill: Fill) -> Vec<u8> {
+    // The codes for runs 0 to 63, in order.
+    const WHITE: &str = concat!(
+        "00110101 000111 0111 1000 1011 1100 1110 1111 10011 10100 00111 01000 001000 000011 110100 110101 101010 101011 ",
+        "0100111 0001100 0001000 0010111 0000011 0000100 0101000 0101011 0010011 0100100 0011000 00000010 00000011 00011010 ",
+        "00011011 00010010 00010011 00010100 00010101 00010110 00010111 00101000 00101001 00101010 00101011 00101100 00101101 ",
+        "00000100 00000101 00001010 00001011 01010010 01010011 01010100 01010101 00100100 00100101 01011000 01011001 01011010 ",
+        "01011011 01001010 01001011 00110010 00110011 00110100",
+    );
+    const BLACK: &str = concat!(
+        "0000110111 010 11 10 011 0011 0010 00011 000101 000100 0000100 0000101 0000111 00000100 00000111 000011000 0000010111 ",
+        "0000011000 0000001000 00001100111 00001101000 00001101100 00000110111 00000101000 00000010111 00000011000 ",
+        "000011001010 000011001011 000011001100 000011001101 000001101000 000001101001 000001101010 000001101011 000011010010 ",
+        "000011010011 000011010100 000011010101 000011010110 000011010111 000001101100 000001101101 000011011010 000011011011 ",
+        "000001010100 000001010101 000001010110 000001010111 000001100100 000001100101 000001010010 000001010011 000000100100 ",
+        "000000110111 000000111000 000000100111 000000101000 000001011000 000001011001 000000101011 000000101100 000001011010 ",
+        "000001100110 000001100111",
+    );
+    let code = |white: bool, run: u32| (if white { WHITE } else { BLACK }).split(' ').nth(run as usize).expect("a run below 64");
     let mut bits = String::new();
     for row in rows {
         // The end-of-line code is 12 bits.
@@ -1689,9 +1700,48 @@ fn group_3(rows: &[&[u32]], eol: bool, tag: bool, fill: Fill) -> Vec<u8> {
         if tag {
             bits.push('1');
         }
-        row.iter().enumerate().for_each(|(i, run)| bits.push_str(code(i % 2 == 0, *run)));
+        row.as_ref().iter().enumerate().for_each(|(i, run)| bits.push_str(code(i % 2 == 0, *run)));
     }
     bits.as_bytes().chunks(8).map(|c| c.iter().enumerate().fold(0u8, |b, (i, d)| b | (u8::from(*d == b'1') << (7 - i)))).collect()
+}
+
+/// `count` text-like pictures `w` by `h` for [`group_3`], from a fixed seed: rows of random runs,
+/// long white ones and short black ones, and a row may start black.
+fn random_pictures(w: u32, h: u32, count: usize) -> Vec<Vec<Vec<u32>>> {
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    let mut random = |n: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n) as u32
+    };
+    let mut row = || {
+        let (mut runs, mut left) = (Vec::new(), w);
+        while left > 0 {
+            let run = match runs.len() % 2 {
+                0 if runs.is_empty() => random(31),
+                0 => 1 + random(30),
+                _ => 1 + random(5),
+            };
+            runs.push(run.min(left));
+            left -= run.min(left);
+        }
+        runs
+    };
+    (0..count).map(|_| (0..h).map(|_| row()).collect()).collect()
+}
+
+/// The picture `rows` of runs (white first) make, `w` by `h`, true where white.
+fn white_of(rows: &[Vec<u32>], w: u32, h: u32) -> Vec<bool> {
+    let mut white = vec![false; (w * h) as usize];
+    for (y, row) in rows.iter().enumerate() {
+        let mut x = y * w as usize;
+        for (i, run) in row.iter().enumerate() {
+            white[x..x + *run as usize].fill(i % 2 == 0);
+            x += *run as usize;
+        }
+    }
+    white
 }
 
 /// Where [`group_3`] puts fill bits: none; so each row, its end-of-line code first, starts on a
@@ -1782,6 +1832,58 @@ fn group_3_ccitt_masks_and_parameters_by_reference_export_as_their_picture() {
         let out = extract_images(&doc, &[0], 0);
         assert!(out.skipped.is_empty(), "{case}: {:?}", out.skipped);
         assert_eq!(exported_white(&out.images[0].data), if black_is_1 { inverted.clone() } else { picture.clone() }, "{case}");
+    }
+    // Byte-aligned rows against /EndOfLine, over several pictures, as how a misreading comes out
+    // depends on the picture: no codes (as TIFF's Modified Huffman has it), and /EndOfLine without
+    // them; codes, each starting on a byte or ending on one, /EndOfLine or not. Each exports as its
+    // picture, and a byte short is reported. The first picture is stripes, every row 32 white then
+    // 32 black; the others are text-like rows of random runs.
+    let image_with = |doc: &mut Document, k: i64, eol: bool, data: Vec<u8>| {
+        let mut d = image(&[&grey(1)[..], &fax(k)].concat());
+        if let Some(Object::Dict(parms)) = d.get_mut(b"DecodeParms") {
+            parms.set(b"EndOfLine".to_vec(), Object::Bool(eol));
+            parms.set(b"EncodedByteAlign".to_vec(), Object::Bool(true));
+        }
+        doc.set(r, Object::Stream(Stream::from_raw(d, data)));
+        extract_images(doc, &[0], 0)
+    };
+    let mut pictures = vec![vec![vec![32u32, 32]; h as usize]];
+    pictures.extend(random_pictures(w, h, 8));
+    for (n, runs) in pictures.iter().enumerate() {
+        let white = white_of(runs, w, h);
+        for k in [0, 1] {
+            for (codes, fill, eol) in [
+                (false, Fill::RowStart, false),
+                (false, Fill::RowStart, true),
+                (true, Fill::RowStart, false),
+                (true, Fill::RowStart, true),
+                (true, Fill::CodeEnd, false),
+                (true, Fill::CodeEnd, true),
+            ] {
+                let out = image_with(&mut doc, k, eol, group_3(runs, codes, k > 0, fill));
+                let case = format!("picture {n}, /K {k}, codes {codes}, fill {fill:?}, /EndOfLine {eol}");
+                assert!(out.skipped.is_empty(), "{case}: {:?}", out.skipped);
+                assert_eq!(exported_white(&out.images[0].data), white, "{case}");
+                // A byte short, it is reported, not read the other way into other rows.
+                let mut short = group_3(runs, codes, k > 0, fill);
+                short.pop();
+                let out = image_with(&mut doc, k, eol, short);
+                assert!(out.images.is_empty() && out.skipped.len() == 1, "{case}, a byte short: {:?}", out.skipped);
+                // At /K 1, codes with none before the first row (the first code and its fill are 2
+                // bytes here) are read on bytes: the picture or reported, never another picture.
+                if k == 1 && fill == Fill::CodeEnd {
+                    let out = image_with(&mut doc, k, eol, group_3(runs, codes, true, fill).split_off(2));
+                    assert!(out.images.iter().all(|i| exported_white(&i.data) == white), "{case}, no code first");
+                }
+            }
+        }
+    }
+    // Group 4 rows on bytes keep their aligned read, /EndOfLine or not: here white rows, each the
+    // one code 1 (vertical, no change) and its fill.
+    for eol in [false, true] {
+        let out = image_with(&mut doc, -1, eol, vec![0x80; h as usize]);
+        assert!(out.skipped.is_empty(), "byte-aligned Group 4, /EndOfLine {eol}: {:?}", out.skipped);
+        assert!(exported_white(&out.images[0].data).iter().all(|white| *white), "byte-aligned Group 4, /EndOfLine {eol}");
     }
 
     // A grey picture under the same bits as a soft mask, then as a stencil mask: CCITT against Flate.
