@@ -68,9 +68,12 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
     smaller, which only a resampled image or one packed from more bits may be: a 1-bit image that
     is only stored again becomes Group 4 or stays. Group 4 alone is only decoded to be resampled;
     Group 3, or Group 4 inside another filter such as `ASCII85Decode`, is stored again as Group 4
-    alone when that is smaller. With Retain, a resampled image keeps its kind of compression (CCITT,
-    or Flate) and nothing else changes; an image of more bits is then left to the grey or colour
-    settings. Every change is kept only when it is smaller as stored.
+    alone when that is smaller. Damaged Group 3 with end-of-line codes is stored as the decoder
+    recovers it, a bad row picked up again at the next code, as it reports no damage there; without
+    them, damage stops the decoding and the image is left alone. With Retain, a resampled image
+    keeps its kind of compression (CCITT, or Flate) and nothing else changes; an image of more bits
+    is then left to the grey or colour settings. Every change is kept only when it is smaller as
+    stored.
   - Apart from the downsampling it is lossless: the samples keep their meaning, so the colour
     space, decode array and `/Mask` stay, but for packed RGB, which becomes grey with one decode
     pair. Group 4 wins on scans, whose ragged edges defeat Flate; on clean computer-drawn 1-bit
