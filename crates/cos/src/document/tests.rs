@@ -58,6 +58,25 @@ fn decode_parms_given_by_reference_are_read_once_direct() {
     assert_eq!(made.dict.get(b"DecodeParms").and_then(Object::as_array).map(Vec::len), Some(1));
     let long = stream(pdfcraft_filters::MAX_CHAIN + 1, Object::Array(vec![Object::Ref(r); 9]));
     assert!(matches!(doc.with_direct_parms(&long), Cow::Borrowed(_)));
+    // A chain as long as a decoder takes is resolved, and a `/Crypt` in it doesn't count, as
+    // the decoders leave it out: ASCIIHex as often as the limit allows, then the predictor's
+    // Flate, its parameters by reference.
+    let hex = |b: &[u8]| b.iter().flat_map(|x| format!("{x:02X}").into_bytes()).chain(*b">").collect::<Vec<u8>>();
+    let wrapped = (1..pdfcraft_filters::MAX_CHAIN).fold(coded.clone(), |data, _| hex(&data));
+    for crypt in [false, true] {
+        let mut names = vec![Object::name("ASCIIHexDecode"); pdfcraft_filters::MAX_CHAIN - 1];
+        names.push(Object::name("FlateDecode"));
+        if crypt {
+            names.insert(0, Object::name("Crypt"));
+        }
+        let mut entries = vec![Object::Null; names.len() - 1];
+        entries.push(Object::Ref(r));
+        let mut d = Dict::new();
+        d.set(b"Filter".to_vec(), Object::Array(names));
+        d.set(b"DecodeParms".to_vec(), Object::Array(entries));
+        let s = Stream::from_raw(d, wrapped.clone());
+        assert_eq!(doc.with_direct_parms(&s).decoded().unwrap(), rows, "with /Crypt: {crypt}");
+    }
 }
 
 #[test]

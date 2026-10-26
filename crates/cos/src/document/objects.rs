@@ -162,18 +162,20 @@ impl Document {
     /// an indirect dictionary resolved, and of an array (itself perhaps indirect), the entries at
     /// the filters' places (`/Crypt` counts, ISO 32000-2 §7.4.1) resolved, the rest dropped. Of
     /// each dictionary only the entries the decoders read are kept, numbers and flags given by
-    /// reference (`/Predictor 7 0 R`) resolved; `/JBIG2Globals` stays a reference. `s` itself
-    /// when none of those is indirect, or when the chain is longer than any decoder takes
+    /// reference (`/Predictor 7 0 R`) resolved; `/JBIG2Globals` stays a reference. A `/Crypt`
+    /// entry, which no decoder reads ([`Stream::filters`] leaves it out), is null. `s` itself
+    /// when none of those is indirect, or when the other filters are more than any decoder takes
     /// ([`pdfcraft_filters::MAX_CHAIN`]). Only small values are copied, so a file can't have a
     /// large object copied once for each key and filter.
     pub fn with_direct_parms<'s>(&self, s: &'s Stream) -> Cow<'s, Stream> {
         let Some(p) = s.dict.get(b"DecodeParms") else { return Cow::Borrowed(s) };
-        let filters = match s.dict.get(b"Filter") {
-            Some(Object::Array(a)) => a.len(),
-            Some(_) => 1,
-            None => 0,
+        let crypt = |f: &Object| matches!(f.as_name(), Some(b"Crypt"));
+        let filters: Vec<bool> = match s.dict.get(b"Filter") {
+            Some(Object::Array(a)) => a.iter().map(crypt).collect(),
+            Some(f) => vec![crypt(f)],
+            None => Vec::new(),
         };
-        if filters > pdfcraft_filters::MAX_CHAIN {
+        if filters.iter().filter(|c| !**c).count() > pdfcraft_filters::MAX_CHAIN {
             return Cow::Borrowed(s);
         }
         let mut changed = matches!(p, Object::Ref(_));
@@ -196,7 +198,9 @@ impl Document {
             Object::Dict(made)
         };
         let made = match &*self.held(p) {
-            Object::Array(a) => Object::Array(a.get(..filters.min(a.len())).unwrap_or_default().iter().map(|e| one(e, &mut changed)).collect()),
+            Object::Array(a) => {
+                Object::Array(a.iter().zip(&filters).map(|(e, crypt)| if *crypt { Object::Null } else { one(e, &mut changed) }).collect())
+            }
             _ => one(p, &mut changed),
         };
         if !changed {
