@@ -708,15 +708,20 @@ mod tests {
         }
     }
 
-    /// Pixels touching only at a corner are one mark (8-connected); side by side with a white
-    /// column between, two. A mark of 256 pixels a side is a symbol, one of 257 is left to the
-    /// generic region. The diagonal and the dot occur twice, so both plans are made.
+    /// Pixels touching only at a corner, down to the right or down to the left, are one mark
+    /// (8-connected); side by side with a white column between, two. A mark of 256 pixels a side
+    /// is a symbol; one 257 wide, or 257 tall, is left to the generic region. The diagonal and the
+    /// dot occur twice, so both plans are made.
     #[test]
     fn marks_join_at_corners_and_large_ones_are_left_out() {
         let mut picture = vec![vec![0u8; 300]; 300];
         for i in 0..6 {
             picture[10 + i][10 + i] = 1;
             picture[10 + i][100 + i] = 1;
+            picture[10 + i][60 - i] = 1;
+        }
+        for row in &mut picture[0..257] {
+            row[280] = 1;
         }
         picture[30][10] = 1;
         picture[30][12] = 1;
@@ -728,9 +733,22 @@ mod tests {
         let data = samples(&picture);
         let page = page(&data, 300, 300).unwrap();
         let boxes: Vec<(u32, u32, u32, u32)> = page.marks.iter().map(|m| (m.x0, m.y0, m.x1 - m.x0, m.y1 - m.y0)).collect();
-        assert_eq!(boxes, [(10, 10, 6, 6), (100, 10, 6, 6), (10, 30, 1, 1), (12, 30, 1, 1), (0, 40, 256, 1), (290, 44, 1, 256), (0, 60, 257, 1)]);
+        assert_eq!(
+            boxes,
+            [
+                (280, 0, 1, 257),
+                (10, 10, 6, 6),
+                (55, 10, 6, 6),
+                (100, 10, 6, 6),
+                (10, 30, 1, 1),
+                (12, 30, 1, 1),
+                (0, 40, 256, 1),
+                (290, 44, 1, 256),
+                (0, 60, 257, 1)
+            ]
+        );
         let large: Vec<(u32, u32)> = page.large.iter().map(|m| (page.marks[*m as usize].x0, page.marks[*m as usize].y0)).collect();
-        assert_eq!(large, [(0, 60)]);
+        assert_eq!(large, [(280, 0), (0, 60)]);
         assert_eq!(every_plan_round_trips(&picture), 8);
     }
 
@@ -746,6 +764,49 @@ mod tests {
         let tall = vec![0xFFu8; MAX_ROWS as usize + 1];
         assert!(page(&tall, 1, MAX_ROWS + 1).is_none());
         assert!(page(&tall, 1, MAX_ROWS).is_some());
+    }
+
+    /// Past 65,536 distinct symbols, or 2^24 pixels of them, the image is left to generic coding;
+    /// at either cap it is still looked at.
+    #[test]
+    fn too_many_symbols_are_left_to_generic_coding() {
+        // `n` distinct marks of 17 × 3: full top and bottom rows joined by a code of 1 to n, in
+        // binary, on the row between.
+        let codes = |n: usize| {
+            let (columns, rows) = (256 * 18, n.div_ceil(256) * 4);
+            let mut picture = vec![vec![0u8; columns]; rows];
+            for k in 0..n {
+                let (x, y) = (k % 256 * 18, k / 256 * 4);
+                picture[y][x..x + 17].fill(1);
+                picture[y + 2][x..x + 17].fill(1);
+                for b in (0..17).filter(|b| (k + 1) >> b & 1 == 1) {
+                    picture[y + 1][x + b] = 1;
+                }
+            }
+            (samples(&picture), columns as u32, rows as u32)
+        };
+        let (data, columns, rows) = codes(MAX_SYMBOLS);
+        assert_eq!(page(&data, columns, rows).map(|p| p.symbols.len()), Some(MAX_SYMBOLS));
+        let (data, columns, rows) = codes(MAX_SYMBOLS + 1);
+        assert!(page(&data, columns, rows).is_none());
+        // `n` black squares of 256 × 256, each with a white pixel in a different place: 2^16
+        // pixels a symbol, so 256 of them are exactly the cap.
+        let squares = |n: usize| {
+            let (columns, rows) = (16 * 258, n.div_ceil(16) * 258);
+            let mut picture = vec![vec![0u8; columns]; rows];
+            for k in 0..n {
+                let (x, y) = (k % 16 * 258, k / 16 * 258);
+                for row in &mut picture[y..y + 256] {
+                    row[x..x + 256].fill(1);
+                }
+                picture[y + 1 + k / 254][x + 1 + k % 254] = 0;
+            }
+            (samples(&picture), columns as u32, rows as u32)
+        };
+        let (data, columns, rows) = squares(256);
+        assert_eq!(page(&data, columns, rows).map(|p| p.symbols.len()), Some(256));
+        let (data, columns, rows) = squares(257);
+        assert!(page(&data, columns, rows).is_none());
     }
 
     /// A page of text whose letters repeat exactly, as rendered text does, keeps each letter once:
@@ -798,7 +859,7 @@ mod tests {
         for (x, y) in [(10, 5), (28, 14), (12, 14)] {
             draw(&mut picture, &ell, x, y);
         }
-        // Corners touching: one mark.
+        // Corners touching: one mark (`marks_join_at_corners_and_large_ones_are_left_out` checks it).
         picture[3][6] = 1;
         picture[4][7] = 1;
         picture[5][8] = 1;

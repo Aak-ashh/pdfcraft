@@ -41,8 +41,9 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   its catalog) when that is smaller as stored. JBIG2 stores each distinct mark once, as a
   symbol, when the image's marks repeat exactly, as rendered text's do: on six pages of
   300 dpi text that came to 28% of a generic region's size and 17% of Group 4's. On scans,
-  whose copies of a letter are seldom identical, it is nearly always a generic region: 27–33%
-  smaller than Group 4 on the same pages with scan-like noise added. It is lossless: the
+  whose copies of a letter are seldom identical, symbols gain little: on the same pages with 2%
+  or more of the letters' edge pixels flipped at random, at most 8% below a generic region,
+  which was 27–33% below Group 4. It is lossless: the
   samples decode to the same bits, so the colour space, decode array and masks stay. Group 4
   wins on scans, whose ragged edges defeat Flate; on clean computer-drawn 1-bit art Flate can
   be smaller, and the image then stays. Not yet:
