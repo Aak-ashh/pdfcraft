@@ -6293,6 +6293,15 @@ fn optimizing_through_tools() {
     let cat_doc = ok(&mut a, "doc_open", json!({ "path": "cat16.pdf" }))["doc"].as_u64().unwrap();
     let retained = ok(&mut a, "doc_optimize", json!({ "doc": cat_doc, "path": "retained.pdf", "compatibility": "retain", "object_streams": false }));
     assert_eq!(retained["pdf_version"].as_str(), Some("1.6"), "{retained}");
+    // The same with the catalog's /Version given by reference: read through it.
+    let v16 = cos14.add(pdfcraft_cos::Object::name("1.6"));
+    cos14.update_dict(root, |c| c.set(b"Version".to_vec(), pdfcraft_cos::Object::Ref(v16))).unwrap();
+    let ref16 = pdfcraft_cos::write_full(&cos14, &pdfcraft_cos::SaveOptions { object_streams: false, ..Default::default() }).unwrap();
+    std::fs::write(dir.join("ref16.pdf"), &ref16).unwrap();
+    let ref_doc = ok(&mut a, "doc_open", json!({ "path": "ref16.pdf" }))["doc"].as_u64().unwrap();
+    let by_ref =
+        ok(&mut a, "doc_optimize", json!({ "doc": ref_doc, "path": "retained-ref.pdf", "compatibility": "retain", "object_streams": false }));
+    assert_eq!(by_ref["pdf_version"].as_str(), Some("1.6"), "{by_ref}");
 
     assert!(matches!(a.call("doc_optimize", &json!({ "doc": doc, "path": "x.pdf", "compatibility": "1.3" })), Err(ToolError::InvalidArgs(_))));
     assert!(matches!(

@@ -373,7 +373,9 @@ impl Automation {
                 let pw = self.doc(a).ok().and_then(|d| d.password.as_deref());
                 let doc = pdfcraft_cos::Document::open_with_password(bytes.clone(), pw).ok()?;
                 let root = doc.root()?;
-                doc.get(root).as_dict()?.name(b"Version").and_then(valid_version).map(str::to_owned)
+                // Through a reference too, as the optimizer reads it.
+                let version = doc.get(root).as_dict()?.get(b"Version")?.clone();
+                doc.resolve(&version).as_name().and_then(valid_version).map(str::to_owned)
             })
             .flatten();
         let header_version = bytes.strip_prefix(b"%PDF-").and_then(|b| b.get(..3)).and_then(valid_version);
