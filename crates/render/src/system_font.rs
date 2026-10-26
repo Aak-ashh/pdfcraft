@@ -38,6 +38,8 @@ enum Script {
 }
 
 impl Script {
+    /// Map the four supported Adobe CJK collections to their writing systems. Identity and
+    /// custom collections provide no regional hint and cannot select an installed face here.
     fn of(family: &CidFamily) -> Option<Self> {
         match family {
             CidFamily::AdobeJapan1 => Some(Self::Japanese),
@@ -133,6 +135,9 @@ pub(crate) fn fallback(query: &FallbackFontQuery) -> Option<(FontData, u32)> {
     found.as_ref().map(|(bytes, index)| (Arc::clone(bytes) as FontData, *index))
 }
 
+/// Read a candidate through the bounded file cache and select a face that maps `probe`,
+/// preferring the requested region and weight. Unreadable files and unsuitable faces return
+/// `None`, allowing the caller to try the next candidate without changing the PDF.
 fn read(candidate: &Candidate, probe: char, bold: bool) -> Option<(Arc<Vec<u8>>, u32)> {
     let bytes = file_bytes(&candidate.path)?;
     let index = pick_face(&bytes, probe, candidate.region, bold)?;
@@ -197,6 +202,10 @@ fn pick_face(bytes: &[u8], probe: char, region: &[&str], bold: bool) -> Option<u
     best.map(|(index, _)| index)
 }
 
+/// List installed-font paths in preference order, with regional face-name hints for collections.
+/// Windows Simplified Chinese first tries the named document family; its generic list also
+/// prefers a bold face for bold requests. macOS includes bounded downloaded-font locations.
+/// Only fixed platform filenames are used: a PDF font name never becomes a filesystem path.
 fn candidates(script: Script, family: ChineseFamily, bold: bool) -> Vec<Candidate> {
     let region: &'static [&'static str] = match script {
         Script::Japanese => &["JP", "Japanese"],
@@ -283,6 +292,8 @@ fn macos_font_asset_dirs() -> &'static [PathBuf] {
     })
 }
 
+/// Locate the Windows Fonts directory using `WINDIR`, then `SystemRoot`, then `C:\Windows`.
+/// This only constructs the path; candidate reads still enforce regular-file and size limits.
 fn windows_fonts() -> PathBuf {
     let dir = std::env::var_os("WINDIR").or_else(|| std::env::var_os("SystemRoot")).map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
     dir.join("Fonts")
@@ -294,6 +305,8 @@ mod tests {
 
     const SCRIPTS: [Script; 4] = [Script::Japanese, Script::SimplifiedChinese, Script::TraditionalChinese, Script::Korean];
 
+    /// Standard, localized and subset-prefixed names retain their Chinese family hint;
+    /// unrelated Latin names and generic YaHei requests use the default candidate list.
     #[test]
     fn chinese_family_hints_include_subset_and_localized_names() {
         for name in ["SimSun", "ABCDEF+SimSun", "STSong-Light", "宋体"] {
@@ -340,6 +353,8 @@ mod tests {
         assert!(fangsong.first().is_some_and(|c| c.path.ends_with("simfang.ttf")));
     }
 
+    /// Invalid font bytes, missing paths and directories produce no candidate face rather
+    /// than preventing the resolver from trying a later installed font.
     #[test]
     fn broken_and_missing_files_are_skipped() {
         assert_eq!(pick_face(b"", '\u{7269}', &[], false), None);
@@ -372,6 +387,8 @@ mod tests {
         assert!(file_bytes(missing).is_none() && file_bytes(missing).is_none());
     }
 
+    /// A Latin-only face fails every CJK probe even though its Latin glyph remains readable,
+    /// distinguishing unsupported script coverage from an unparseable font file.
     #[test]
     fn a_latin_face_is_rejected_for_every_script() {
         let inter = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
@@ -381,6 +398,8 @@ mod tests {
         assert_eq!(pick_face(inter, 'A', &[], false), Some(0));
     }
 
+    /// Platform candidates are absolute TrueType paths and exclude the font families barred
+    /// by the asset policy, independently of whether those files are installed locally.
     #[test]
     fn candidates_are_absolute_font_files_without_adobe_designs() {
         for script in SCRIPTS {
@@ -398,6 +417,8 @@ mod tests {
         }
     }
 
+    /// The four regional Adobe collections select their corresponding scripts; Identity
+    /// carries no regional information and must not acquire an installed fallback by guess.
     #[test]
     fn only_the_four_adobe_collections_have_a_script() {
         assert_eq!(Script::of(&CidFamily::AdobeCNS1), Some(Script::TraditionalChinese));
@@ -465,6 +486,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_candidates_include_a_pingfang_that_lives_in_the_font_assets() {
+        /// Independently locate an installed asset by filename within the test's depth limit,
+        /// providing an oracle for the production candidate list without using its discovery.
         fn find(dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
             for entry in std::fs::read_dir(dir).ok()?.flatten() {
                 let path = entry.path();

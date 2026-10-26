@@ -88,6 +88,10 @@ impl RenderConfig {
         Self { system_fonts: true, ..self }
     }
 
+    /// Build interpreter settings with layer and comment preferences and a font resolver that
+    /// tries bundled Japanese faces, then opt-in installed CJK faces, then standard substitutes.
+    /// Passwords belong to parser construction; request-specific preview overrides are applied
+    /// by `render_page`, which also preserves the caller's warning and cancellation hooks.
     fn settings(&self) -> InterpreterSettings {
         let standard = InterpreterSettings::default().font_resolver;
         let system_fonts = self.system_fonts;
