@@ -27,7 +27,8 @@ new engine importers become available here automatically. Without `convert`,
 only `.pdf` inputs are processed. Unsupported extensions are reported as skipped.
 
 - `optimize` uses Reduce File Size settings: JPEG quality 60, resampling to 150 ppi
-  above 225 ppi, plus the existing document cleanup. `--ppi` (9–1600) sets the target
+  above 225 ppi (black-and-white images stored as CCITT Group 4 when smaller), plus the
+  existing document cleanup. `--ppi` (9–1600) sets the target
   and a threshold of 1.5 times that value; `--quality` (1–100) sets JPEG quality.
   These settings can lose image detail. A candidate that is not smaller retains
   the bytes entering that step. This is not an images-only or lossless preset.

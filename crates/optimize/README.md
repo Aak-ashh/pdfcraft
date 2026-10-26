@@ -41,7 +41,8 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   space, decode array and masks stay. Group 4 wins on scans, whose ragged edges defeat Flate;
   on clean computer-drawn 1-bit art Flate can be smaller, and the image then stays. Not yet:
   JBIG2, monochrome downsampling, inline images, soft masks and `/Mask` images, and rows wider
-  than 32,767 samples.
+  than 32,767 samples. Redaction doesn't decode Group 4 yet: a mark over part of an image stored
+  this way removes the whole image (nothing leaks), and Export ▸ Images can't export one.
 - **Discard objects:** thumbnails, alternate images, document tags, print settings.
 - **Clean up:** Flate for streams with no filter; for streams with an outer ASCII85 or ASCIIHex
   layer, that layer is removed when the result is smaller (the inner filters keep their encoded
