@@ -929,6 +929,96 @@ fn black_and_white_images_above_450_ppi_are_averaged_down_to_300() {
     assert!(differ * 200 < before.len(), "{differ} of {} channel values differ visibly", before.len());
 }
 
+/// Monochrome downsampling leaves a halftone or a dither at its resolution, as most new pixels
+/// would cover both black and white and taking the sample covering more would turn its tones
+/// solid: a 50% checkerboard, a 25% ordered dither and an error-diffused one, each at 600 ppi.
+/// Text at 600 ppi, which covers both only along its edges, is averaged down. Rows no wider than
+/// a fax row (`MAX_CCITT_COLUMNS`) are averaged down too, but not one column wider: the averaging
+/// keeps a counter for each column.
+#[test]
+fn monochrome_downsampling_leaves_halftones_and_overwide_rows_at_their_resolution() {
+    let (w, h) = (1200u32, 480u32);
+    let stride = (w as usize).div_ceil(8);
+    let pattern = |white: &dyn Fn(usize, usize) -> bool| {
+        let mut data = vec![0u8; stride * h as usize];
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                if white(x, y) {
+                    data[y * stride + x / 8] |= 0x80 >> (x % 8);
+                }
+            }
+        }
+        data
+    };
+    let diffused = dithered(w, h);
+    let grey = [("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))];
+    let mut doc = Document::new_empty();
+    let text = mono_image(&mut doc, w, h, &bilevel(w, h, false), None, &grey);
+    let halftones =
+        [pattern(&|x, y| (x + y) % 2 == 0), pattern(&|x, y| x % 2 == 1 || y % 2 == 1), pattern(&|x, y| diffused[y * w as usize + x] == 255)]
+            .map(|data| mono_image(&mut doc, w, h, &data, None, &grey));
+    // 144 × 57.6 pt is 600 ppi.
+    let names = ["T", "A", "B", "C"];
+    let content: String = (0..4).map(|i| format!("q 144 0 0 57.6 {} 600 cm /{} Do Q ", 6 + 150 * i, names[i])).collect();
+    page(&mut doc, &names.into_iter().zip([text, halftones[0], halftones[1], halftones[2]]).collect::<Vec<_>>(), &content);
+    optimize(&mut doc, &Settings::default()).unwrap();
+    let size = |r: ObjRef| {
+        let d = stream(&doc, r).dict;
+        (d.int(b"Width"), d.int(b"Height"))
+    };
+    assert_eq!(size(text), (Some(600), Some(240)), "text");
+    for (i, r) in halftones.iter().enumerate() {
+        assert_eq!(size(*r), (Some(1200), Some(480)), "halftone {i}");
+    }
+
+    for (columns, resampled) in [(pdfcraft_filters::MAX_CCITT_COLUMNS, 1), (pdfcraft_filters::MAX_CCITT_COLUMNS + 1, 0)] {
+        let mut doc = Document::new_empty();
+        let white = vec![0xFF; (columns as usize).div_ceil(8) * 2];
+        let img = mono_image(&mut doc, columns, 2, &white, None, &grey);
+        // Far above 450 ppi both ways.
+        page(&mut doc, &[("A", img)], "q 612 0 0 0.1 0 400 cm /A Do Q");
+        let r = optimize(&mut doc, &Settings::default()).unwrap();
+        assert_eq!(r.images_resampled, resampled, "{columns} columns: {r:?}");
+    }
+}
+
+/// A fax image behind a decompression bomb is left alone: the filters before its decoder may
+/// produce no more than a fax code of its size can take (about a byte a pixel), not the 1 GiB
+/// limit. Here a Group 4 page at 600 ppi behind Flate, with four megabytes of zeros after its
+/// code; without them it is averaged down.
+#[test]
+fn a_fax_image_behind_a_decompression_bomb_is_left_alone() {
+    let (w, h) = (1200u32, 480u32);
+    let g4 = pdfcraft_filters::encode_g4(&bilevel(w, h, false), w, h).unwrap();
+    for padding in [0, 4 << 20] {
+        let mut doc = Document::new_empty();
+        let mut code = g4.clone();
+        code.resize(g4.len() + padding, 0);
+        let mut d = Dict::new();
+        d.set(b"Subtype".to_vec(), Object::name("Image"));
+        d.set(b"Width".to_vec(), Object::Int(w.into()));
+        d.set(b"Height".to_vec(), Object::Int(h.into()));
+        d.set(b"BitsPerComponent".to_vec(), Object::Int(1));
+        d.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+        d.set(b"Filter".to_vec(), Object::Array(vec![Object::name("FlateDecode"), Object::name("CCITTFaxDecode")]));
+        let mut parms = Dict::new();
+        parms.set(b"K".to_vec(), Object::Int(-1));
+        parms.set(b"Columns".to_vec(), Object::Int(w.into()));
+        d.set(b"DecodeParms".to_vec(), Object::Array(vec![Object::Null, Object::Dict(parms)]));
+        let img = doc.add(Object::Stream(Stream::from_raw(d, pdfcraft_filters::encode_flate(&code))));
+        // 144 × 57.6 pt is 600 ppi.
+        page(&mut doc, &[("A", img)], "q 144 0 0 57.6 20 600 cm /A Do Q");
+        let before = stream(&doc, img).raw;
+        let r = optimize(&mut doc, &Settings::default()).unwrap();
+        if padding == 0 {
+            assert_eq!(r.images_resampled, 1, "{r:?}");
+        } else {
+            assert_eq!((r.images_resampled, r.images_recompressed), (0, 0), "{r:?}");
+            assert_eq!(stream(&doc, img).raw, before);
+        }
+    }
+}
+
 #[test]
 fn settings_choose_what_happens() {
     let mut doc = Document::new_empty();
