@@ -1417,6 +1417,45 @@ fn images_whose_predictor_is_given_by_reference_export_as_their_picture() {
     assert_eq!(exported_rgba(&doc), ("png", picture), "the JBIG2 globals' /DecodeParms by reference");
 }
 
+/// An image the optimizer stored as JBIG2 symbols (a symbol dictionary and text regions, rather
+/// than one generic region) exports as its picture.
+#[test]
+fn symbol_coded_jbig2_images_export_as_their_picture() {
+    const LETTERS: [[&str; 7]; 3] = [
+        ["#####", "#....", "####.", "#....", "#....", "#....", "#####"],
+        [".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."],
+        ["#...#", "#...#", "#####", "#...#", "#...#", "#...#", "#...#"],
+    ];
+    let (w, h) = (400usize, 40usize);
+    let stride = w.div_ceil(8);
+    // 1 samples white, as a grey image's are; the letters' pixels 0.
+    let mut bits = vec![0xFFu8; stride * h];
+    for (line, top) in [2usize, 12, 22, 32].into_iter().enumerate() {
+        for (k, x) in (3..w - 6).step_by(7).enumerate() {
+            for (dy, row) in LETTERS[(k + line) % 3].iter().enumerate() {
+                for (dx, c) in row.bytes().enumerate() {
+                    if c == b'#' {
+                        bits[(top + dy) * stride + (x + dx) / 8] &= !(0x80 >> ((x + dx) % 8));
+                    }
+                }
+            }
+        }
+    }
+    let jbig2 = pdfcraft_filters::encode_jbig2(&bits, w as u32, h as u32).unwrap();
+    let generic = pdfcraft_filters::encode_jbig2_generic(&bits, w as u32, h as u32).unwrap();
+    assert!(jbig2.len() < generic.len(), "symbol coded: {} bytes, generic {}", jbig2.len(), generic.len());
+    let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+    with_image(&mut doc, |_| {
+        let mut d = image_dict(w as i64, h as i64, "DeviceGray", 1);
+        d.set(b"Filter".to_vec(), Object::name("JBIG2Decode"));
+        Stream::from_raw(d, jbig2)
+    });
+    let picture: Vec<u8> = (0..w * h)
+        .flat_map(|i| if bits[i / w * stride + i % w / 8] & (0x80 >> (i % w % 8)) != 0 { [255, 255, 255, 255] } else { [0, 0, 0, 255] })
+        .collect();
+    assert_eq!(exported_rgba(&doc), ("png", picture));
+}
+
 /// Export ▸ Images reads JBIG2 images (ISO 32000-2 §7.4.7), JBIG2 black as 0: as the image, and as
 /// a stencil `/Mask` of another. Their `/JBIG2Globals` are read, from a dictionary or the one in
 /// an array, so globals that can't be read skip the image rather than being ignored. Rows past the
