@@ -56,6 +56,13 @@ pub fn auto_text_size(text: &str, width: f64, height: f64, multiline: bool, widt
     )
 }
 
+/// The automatic font size of a comb field (`Field::is_comb`) whose cells are `height` tall inside
+/// the padding: 4 to 12 pt, as only the height bounds a one-character cell. The page appearance
+/// and the on-screen editor share this.
+pub fn comb_auto_text_size(height: f64) -> f64 {
+    if height.is_finite() { (height / 1.15).clamp(4.0, 12.0) } else { 4.0 }
+}
+
 /// The tallest box single-line auto-size follows, as a sanity bound: the largest page side
 /// ISO 32000-1 Annex C recommends.
 pub(crate) const MAX_AUTO_HEIGHT: f64 = 14_400.0;
@@ -115,7 +122,7 @@ pub fn text_box(doc: &Document, f: &Field, w: &Widget) -> TextBox {
         size: (da.size > 0.0 && da.size.is_finite()).then_some(da.size),
         multiline,
         password: f.has(flags::PASSWORD),
-        comb: f.has(flags::COMB) && !multiline && !f.has(flags::PASSWORD) && f.max_len.is_some_and(|m| m > 0),
+        comb: f.is_comb(),
     }
 }
 
@@ -819,7 +826,7 @@ fn field_appearance_fit(doc: &Document, f: &Field, w: &Widget, values: &[String]
             }
         }
         _ => {
-            let comb = f.has(flags::COMB) && !f.has(flags::MULTILINE) && !f.has(flags::PASSWORD) && f.max_len.is_some_and(|m| m > 0);
+            let comb = f.is_comb();
             if f.kind == FieldKind::Text && f.has(flags::MULTILINE) {
                 if size == 0.0 {
                     size = auto_text_size(&text, inner_w, height - 2.0 * pad, true, width_of);
@@ -846,9 +853,8 @@ fn field_appearance_fit(doc: &Document, f: &Field, w: &Widget, values: &[String]
                 }
             } else {
                 if size == 0.0 {
-                    // Comb cells hold one character each, so only the height limits them.
                     size = if comb {
-                        ((height - 2.0 * pad) / 1.15).clamp(4.0, 12.0)
+                        comb_auto_text_size(height - 2.0 * pad)
                     } else {
                         auto_text_size(&text, inner_w, height - 2.0 * pad, false, width_of)
                     };
