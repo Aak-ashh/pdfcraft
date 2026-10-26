@@ -519,9 +519,11 @@ fn space(doc: &Document, cs: Option<&Object>) -> Result<Space, String> {
                 };
                 let table = match a.get(3).map(|t| doc.resolve(t)).as_deref() {
                     Some(Object::String(s)) => s.bytes.clone(),
-                    Some(Object::Stream(t)) => {
-                        t.decoded_within(MAX_LOOKUP).map_err(|_| "an indexed colour space with an oversized or damaged lookup table".to_string())?
-                    }
+                    // Through its parameters given by reference too, as the image's samples.
+                    Some(Object::Stream(t)) => doc
+                        .with_direct_parms(t)
+                        .decoded_within(MAX_LOOKUP)
+                        .map_err(|_| "an indexed colour space with an oversized or damaged lookup table".to_string())?,
                     _ => return Err("an indexed colour space without a lookup table".into()),
                 };
                 Ok(Space::Indexed(Box::new(base), hival, table))
