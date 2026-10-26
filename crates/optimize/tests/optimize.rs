@@ -602,10 +602,16 @@ fn images_whose_data_decodes_far_past_their_samples_are_left_alone() {
     let page_scan = bilevel(2560, 1200, false);
     let one_bit = as_hex(&mut doc, &page_scan, 1, (2560, 1200));
     let eight_bit = as_hex(&mut doc, &shades, 8, (w, h));
-    page(&mut doc, &[("A", one_bit), ("B", eight_bit)], "q 460.8 0 0 216 20 500 cm /A Do Q q 144 0 0 57.6 20 400 cm /B Do Q");
+    let packed = as_hex(&mut doc, &self::eight_bit(&text, w, h), 8, (w, h));
+    page(
+        &mut doc,
+        &[("A", one_bit), ("B", eight_bit), ("C", packed)],
+        "q 460.8 0 0 216 20 500 cm /A Do Q q 144 0 0 57.6 20 400 cm /B Do Q q 300 0 0 120 20 200 cm /C Do Q",
+    );
     optimize(&mut doc, &Settings::default()).unwrap();
     assert_eq!(stream(&doc, one_bit).dict.name(b"Filter"), Some(&b"CCITTFaxDecode"[..]), "1-bit hex text in lines: Group 4");
     assert!(stream(&doc, eight_bit).dict.int(b"Width").is_some_and(|nw| nw < i64::from(w)), "8-bit hex text in lines: resampled");
+    assert_eq!(stream(&doc, packed).dict.int(b"BitsPerComponent"), Some(1), "8-bit black-and-white hex text in lines: packed");
 }
 
 /// Eight-bit samples (0 or 255) from rows of one-bit ones.
@@ -673,30 +679,33 @@ fn eight_bit_black_and_white_takes_the_smaller_of_one_bit_and_the_grey_settings(
 
 /// The smaller of one bit and the grey settings counts the soft mask each leaves: packed, the
 /// image keeps its mask as it is; resampled by the grey settings, the mask is resampled with it.
-/// Here clean text, which packs to well under its JPEG, under a noisy mask the grey settings
-/// shrink by far more than the image's saving: the grey settings win.
+/// Clean text, 1200 × 1500 at 300 ppi, under a noisy mask. A mask as large: the grey settings
+/// shrink it by far more than packing saves on the image, and win. A mask of 640 × 800 (a soft
+/// mask may be another size than its image): resampled to the image's new size it shrinks only a
+/// little, by less than the grey settings' JPEG adds over the packed image, and packing wins.
 #[test]
 fn eight_bit_black_and_white_with_a_soft_mask_counts_the_mask() {
     let (w, h) = (1200u32, 1500u32);
-    let mut doc = Document::new_empty();
-    let mut seed = 0x2545_F491_4F6C_DD1Du64;
-    let noise: Vec<u8> = (0..w * h)
-        .map(|_| {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            (seed >> 24) as u8
-        })
-        .collect();
-    let mask = mono_image(&mut doc, w, h, &noise, None, &[("BitsPerComponent", 8.into()), ("ColorSpace", Object::name("DeviceGray"))]);
-    let grey = [("BitsPerComponent", 8.into()), ("ColorSpace", Object::name("DeviceGray")), ("SMask", Object::Ref(mask))];
-    let img = mono_image(&mut doc, w, h, &eight_bit(&bilevel(w, h, false), w, h), None, &grey);
-    // 288 × 360 pt is 300 ppi, above where the grey settings downsample.
-    page(&mut doc, &[("A", img)], "q 288 0 0 360 20 400 cm /A Do Q");
-    optimize(&mut doc, &Settings::default()).unwrap();
-    let s = stream(&doc, img);
-    assert_eq!((s.dict.int(b"BitsPerComponent"), s.dict.name(b"Filter")), (Some(8), Some(&b"DCTDecode"[..])), "{:?}", s.dict);
-    assert!(stream(&doc, mask).raw.len() < (w * h) as usize / 2, "the mask resampled with it");
+    for ((mw, mh), grey_wins) in [((w, h), true), ((640, 800), false)] {
+        let mut doc = Document::new_empty();
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let noise: Vec<u8> = (0..mw * mh)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                (seed >> 24) as u8
+            })
+            .collect();
+        let mask = mono_image(&mut doc, mw, mh, &noise, None, &[("BitsPerComponent", 8.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+        let grey = [("BitsPerComponent", 8.into()), ("ColorSpace", Object::name("DeviceGray")), ("SMask", Object::Ref(mask))];
+        let img = mono_image(&mut doc, w, h, &eight_bit(&bilevel(w, h, false), w, h), None, &grey);
+        page(&mut doc, &[("A", img)], "q 288 0 0 360 20 400 cm /A Do Q");
+        optimize(&mut doc, &Settings::default()).unwrap();
+        let s = stream(&doc, img);
+        let expected = if grey_wins { (Some(8), Some(&b"DCTDecode"[..])) } else { (Some(1), Some(&b"CCITTFaxDecode"[..])) };
+        assert_eq!((s.dict.int(b"BitsPerComponent"), s.dict.name(b"Filter")), expected, "mask {mw} × {mh}: {:?}", s.dict);
+    }
 }
 
 /// Eight-bit grey images of only black and white (as some scanners and converters write scans)
