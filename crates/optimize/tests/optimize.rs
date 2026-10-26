@@ -918,6 +918,83 @@ fn rgb_and_two_colour_indexed_black_and_white_images_become_one_bit() {
     assert!(render(&doc) == before, "the page looks the same");
 }
 
+/// Eight-bit black-and-white images in other one-component spaces are packed too: calibrated
+/// grey, an ICC profile of one component, a separation, each keeping its colour space. Calibrated
+/// RGB whose samples are only 0 and 1 is no indexed image, and stays as it is.
+#[test]
+fn eight_bit_black_and_white_in_other_one_component_spaces_is_packed() {
+    let mut doc = Document::new_empty();
+    let (w, h) = (1200u32, 480u32);
+    let text = bilevel(w, h, false);
+    let image = |doc: &mut Document, data: &[u8], cs: Object| {
+        let mut d = Dict::new();
+        d.set(b"Subtype".to_vec(), Object::name("Image"));
+        d.set(b"Width".to_vec(), Object::Int(w.into()));
+        d.set(b"Height".to_vec(), Object::Int(h.into()));
+        d.set(b"BitsPerComponent".to_vec(), Object::Int(8));
+        d.set(b"ColorSpace".to_vec(), cs);
+        doc.add(Object::Stream(Stream::flate(d, data)))
+    };
+    let mut white_point = Dict::new();
+    white_point.set(b"WhitePoint".to_vec(), Object::Array(vec![Object::Real(0.9505), 1.into(), Object::Real(1.089)]));
+    let mut profile = Dict::new();
+    profile.set(b"N".to_vec(), Object::Int(1));
+    let profile = doc.add(Object::Stream(Stream::from_raw(profile, Vec::new())));
+    let mut tint = Dict::new();
+    tint.set(b"FunctionType".to_vec(), Object::Int(2));
+    tint.set(b"Domain".to_vec(), Object::Array(vec![0.into(), 1.into()]));
+    tint.set(b"N".to_vec(), Object::Int(1));
+    let spaces = [
+        Object::Array(vec![Object::name("CalGray"), Object::Dict(white_point.clone())]),
+        Object::Array(vec![Object::name("ICCBased"), Object::Ref(profile)]),
+        Object::Array(vec![Object::name("Separation"), Object::name("Spot"), Object::name("DeviceGray"), Object::Dict(tint)]),
+    ];
+    let grey = samples_of(&text, w, h, [&[0], &[255]], 8);
+    let packed = spaces.clone().map(|cs| image(&mut doc, &grey, cs));
+    let cal_rgb = Object::Array(vec![Object::name("CalRGB"), Object::Dict(white_point)]);
+    let cal_rgb = image(&mut doc, &samples_of(&text, w, h, [&[0, 0, 0], &[1, 1, 1]], 8), cal_rgb);
+    let names = ["A", "B", "C", "D"];
+    // 200 × 80 pt is 432 ppi: below where monochrome downsampling starts.
+    let content: String = (0..4).map(|i| format!("q 200 0 0 80 6 {} cm /{} Do Q ", 690 - 100 * i, names[i])).collect();
+    page(&mut doc, &names.into_iter().zip([packed[0], packed[1], packed[2], cal_rgb]).collect::<Vec<_>>(), &content);
+    let untouched = stream(&doc, cal_rgb).raw;
+    // Colour and grey settings that leave images alone, so only the packing acts.
+    let keep = ImageSettings { downsample: false, target_ppi: 150.0, above_ppi: 225.0, compression: Compression::Retain };
+    optimize(&mut doc, &Settings { color: keep, gray: keep, ..Settings::default() }).unwrap();
+    for (r, cs) in packed.iter().zip(&spaces) {
+        let s = stream(&doc, *r);
+        assert_eq!((s.dict.int(b"BitsPerComponent"), s.dict.get(b"ColorSpace")), (Some(1), Some(cs)), "{cs:?}");
+    }
+    assert_eq!(stream(&doc, cal_rgb).raw, untouched, "calibrated RGB");
+}
+
+/// A resampled Group 4 image is stored as 1-bit Flate when that is smaller, as any resampled image
+/// may be: here vertical stripes, whose identical rows Flate takes for almost nothing.
+#[test]
+fn a_resampled_group_4_image_is_stored_as_flate_when_smaller() {
+    let (w, h) = (1200u32, 480u32);
+    let stripes = vec![0x0Fu8; (w as usize).div_ceil(8) * h as usize];
+    let mut doc = Document::new_empty();
+    let mut d = Dict::new();
+    d.set(b"Subtype".to_vec(), Object::name("Image"));
+    d.set(b"Width".to_vec(), Object::Int(w.into()));
+    d.set(b"Height".to_vec(), Object::Int(h.into()));
+    d.set(b"BitsPerComponent".to_vec(), Object::Int(1));
+    d.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+    d.set(b"Filter".to_vec(), Object::name("CCITTFaxDecode"));
+    let mut parms = Dict::new();
+    parms.set(b"K".to_vec(), Object::Int(-1));
+    parms.set(b"Columns".to_vec(), Object::Int(w.into()));
+    d.set(b"DecodeParms".to_vec(), Object::Dict(parms));
+    let img = doc.add(Object::Stream(Stream::from_raw(d, pdfcraft_filters::encode_g4(&stripes, w, h).unwrap())));
+    // 144 × 57.6 pt is 600 ppi.
+    page(&mut doc, &[("A", img)], "q 144 0 0 57.6 20 600 cm /A Do Q");
+    let r = optimize(&mut doc, &Settings::default()).unwrap();
+    assert_eq!(r.images_resampled, 1, "{r:?}");
+    let s = stream(&doc, img);
+    assert_eq!((s.dict.int(b"Width"), s.dict.name(b"Filter")), (Some(600), Some(&b"FlateDecode"[..])));
+}
+
 /// Black-and-white RGB stays RGB where grey would be drawn otherwise: drawn, on any of its uses,
 /// where `/DefaultGray` or `/DefaultRGB` is in force (ISO 32000-2 §8.6.5.6), from a page's
 /// resources or a form's own, as grey would then go through DefaultGray, or no longer through
@@ -1375,7 +1452,7 @@ fn monochrome_images_keep_what_they_should() {
 
 /// `rows` coded as CCITT Group 3, one-dimensional (`/K 0`): each row its runs in turn, white first,
 /// with ITU-T T.4's terminating codes for the few lengths used here.
-fn group_3(rows: &[&[u32]]) -> Vec<u8> {
+fn group_3(rows: &[&[u32]], mixed: bool) -> Vec<u8> {
     let code = |white: bool, run: u32| match (white, run) {
         (true, 0) => "00110101",
         (true, 8) => "10011",
@@ -1386,12 +1463,20 @@ fn group_3(rows: &[&[u32]]) -> Vec<u8> {
         (false, 32) => "000001101010",
         _ => panic!("no code here for a run of {run}"),
     };
-    let bits: String = rows.iter().flat_map(|row| row.iter().enumerate().map(|(i, run)| code(i % 2 == 0, *run))).collect();
+    let mut bits = String::new();
+    for row in rows {
+        // Mixed coding (/K above 0): an end-of-line code, then a 1 bit, the row one-dimensional.
+        if mixed {
+            bits.push_str("0000000000011");
+        }
+        row.iter().enumerate().for_each(|(i, run)| bits.push_str(code(i % 2 == 0, *run)));
+    }
     bits.as_bytes().chunks(8).map(|c| c.iter().enumerate().fold(0u8, |b, (i, d)| b | (u8::from(*d == b'1') << (7 - i)))).collect()
 }
 
 /// A Group 3 fax image is stored again as Group 4 when that is smaller, the same picture (to the
-/// pixel on the page); with Retain it stays Group 3.
+/// pixel on the page); with Retain it stays Group 3. One-dimensional (/K 0) and mixed (/K 1, with
+/// end-of-line codes) alike.
 #[test]
 fn group_3_fax_images_become_group_4() {
     let (w, h) = (64u32, 64u32);
@@ -1411,38 +1496,41 @@ fn group_3_fax_images_become_group_4() {
         }
         bits.extend(packed);
     }
-    let g3 = group_3(&runs);
-    let p = pdfcraft_filters::CcittParams { k: 0, columns: w.into(), ..Default::default() };
-    assert_eq!(pdfcraft_filters::decode_ccitt(&g3, &p, h).unwrap(), bits, "the Group 3 data is the picture");
+    for k in [0, 1] {
+        let g3 = group_3(&runs, k > 0);
+        let p = pdfcraft_filters::CcittParams { k, columns: w.into(), end_of_line: k > 0, ..Default::default() };
+        assert_eq!(pdfcraft_filters::decode_ccitt(&g3, &p, h).unwrap(), bits, "/K {k}: the Group 3 data is the picture");
 
-    let mut doc = Document::new_empty();
-    let mut d = Dict::new();
-    d.set(b"Subtype".to_vec(), Object::name("Image"));
-    d.set(b"Width".to_vec(), Object::Int(w.into()));
-    d.set(b"Height".to_vec(), Object::Int(h.into()));
-    d.set(b"BitsPerComponent".to_vec(), Object::Int(1));
-    d.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
-    d.set(b"Filter".to_vec(), Object::name("CCITTFaxDecode"));
-    let mut parms = Dict::new();
-    parms.set(b"K".to_vec(), Object::Int(0));
-    parms.set(b"Columns".to_vec(), Object::Int(w.into()));
-    parms.set(b"Rows".to_vec(), Object::Int(h.into()));
-    d.set(b"DecodeParms".to_vec(), Object::Dict(parms));
-    let fax = doc.add(Object::Stream(Stream::from_raw(d, g3.clone())));
-    page(&mut doc, &[("A", fax)], "q 64 0 0 64 100 600 cm /A Do Q");
-    let before = render(&doc);
+        let mut doc = Document::new_empty();
+        let mut d = Dict::new();
+        d.set(b"Subtype".to_vec(), Object::name("Image"));
+        d.set(b"Width".to_vec(), Object::Int(w.into()));
+        d.set(b"Height".to_vec(), Object::Int(h.into()));
+        d.set(b"BitsPerComponent".to_vec(), Object::Int(1));
+        d.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+        d.set(b"Filter".to_vec(), Object::name("CCITTFaxDecode"));
+        let mut parms = Dict::new();
+        parms.set(b"K".to_vec(), Object::Int(k));
+        parms.set(b"EndOfLine".to_vec(), Object::Bool(k > 0));
+        parms.set(b"Columns".to_vec(), Object::Int(w.into()));
+        parms.set(b"Rows".to_vec(), Object::Int(h.into()));
+        d.set(b"DecodeParms".to_vec(), Object::Dict(parms));
+        let fax = doc.add(Object::Stream(Stream::from_raw(d, g3.clone())));
+        page(&mut doc, &[("A", fax)], "q 64 0 0 64 100 600 cm /A Do Q");
+        let before = render(&doc);
 
-    let mut kept = doc.clone();
-    optimize(&mut kept, &Settings { mono: RETAIN, ..Settings::default() }).unwrap();
-    assert_eq!(stream(&kept, fax).raw[..], g3[..], "Retain keeps Group 3");
+        let mut kept = doc.clone();
+        optimize(&mut kept, &Settings { mono: RETAIN, ..Settings::default() }).unwrap();
+        assert_eq!(stream(&kept, fax).raw[..], g3[..], "/K {k}: Retain keeps Group 3");
 
-    let r = optimize(&mut doc, &Settings::default()).unwrap();
-    assert_eq!((r.images_resampled, r.images_recompressed), (0, 1), "{r:?}");
-    let s = stream(&doc, fax);
-    assert_eq!(doc.fax_params(&s).map(|p| p.k), Some(-1), "Group 4");
-    assert!(s.raw.len() < g3.len(), "{} bytes, from {}", s.raw.len(), g3.len());
-    assert_eq!(doc.decoded_image(&s).unwrap(), bits, "the same picture");
-    assert!(render(&doc) == before, "the page looks the same");
+        let r = optimize(&mut doc, &Settings::default()).unwrap();
+        assert_eq!((r.images_resampled, r.images_recompressed), (0, 1), "/K {k}: {r:?}");
+        let s = stream(&doc, fax);
+        assert_eq!(doc.fax_params(&s).map(|p| p.k), Some(-1), "/K {k}: Group 4");
+        assert!(s.raw.len() < g3.len(), "{} bytes, from {}", s.raw.len(), g3.len());
+        assert_eq!(doc.decoded_image(&s).unwrap(), bits, "/K {k}: the same picture");
+        assert!(render(&doc) == before, "/K {k}: the page looks the same");
+    }
 }
 
 #[test]
