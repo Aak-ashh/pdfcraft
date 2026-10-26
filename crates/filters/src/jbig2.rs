@@ -139,16 +139,18 @@ fn at_pixels(out: &mut Vec<u8>) {
 }
 
 /// A segment (7.2): its header (number, type, the segments it refers to, page 1, data length),
-/// then its data. `retained`: a later segment refers to this one. Segment numbers here are below
-/// 256, so each referred-to one takes a byte (7.2.5); a segment refers to at most four, so their
-/// count and retain bits take one byte too (7.2.4), and the retain bits of the referred-to ones
-/// are 0: nothing after this segment refers to them.
-fn segment(out: &mut Vec<u8>, number: u32, kind: u8, refers_to: &[u8], retained: bool, data: &[u8]) {
+/// then its data. `retained`: a later segment refers to this one. `refers_to` holds each
+/// referred-to segment's number and whether a segment after this one refers to it too (its
+/// retain bit, 7.2.4). Segment numbers here stay below 256, so each referred-to one takes a byte
+/// (7.2.5); a segment refers to at most four, so their count and retain bits take one byte too.
+fn segment(out: &mut Vec<u8>, number: u32, kind: u8, refers_to: &[(u8, bool)], retained: bool, data: &[u8]) {
     out.extend_from_slice(&number.to_be_bytes());
     out.push(kind);
-    let count = refers_to.len().min(4);
-    out.push((count as u8) << 5 | u8::from(retained));
-    out.extend_from_slice(refers_to.get(..count).unwrap_or_default());
+    // At most four, so the count fits its three bits.
+    let refers_to = refers_to.get(..refers_to.len().min(4)).unwrap_or_default();
+    let kept = refers_to.iter().enumerate().fold(0u8, |bits, (k, (_, kept))| bits | u8::from(*kept) << (k + 1));
+    out.push((refers_to.len() as u8) << 5 | kept | u8::from(retained));
+    out.extend(refers_to.iter().map(|(n, _)| *n));
     out.push(1);
     // A segment's data never comes near 4 GiB here: a row is at most 1 MiB wide.
     out.extend_from_slice(&u32::try_from(data.len()).unwrap_or(u32::MAX).to_be_bytes());

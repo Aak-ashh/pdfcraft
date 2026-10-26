@@ -734,6 +734,24 @@ fn rendered_text_becomes_jbig2_symbols() {
     assert!(render(&doc) == before, "the page looks the same");
 }
 
+/// A whole 300 dpi letter page of rendered text, more marks than one JBIG2 text region of the
+/// decoder PdfCraft renders with takes, still looks the same as JBIG2 symbols.
+#[test]
+fn a_dense_page_of_rendered_text_looks_the_same_as_jbig2_symbols() {
+    let mut doc = Document::new_empty();
+    let (w, h) = (2550, 3300);
+    let text = rendered_text(w, h);
+    let im = mono_image(&mut doc, w, h, &text, None, &[("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+    page(&mut doc, &[("Im", im)], "q 612 0 0 792 0 0 cm /Im Do Q");
+    let before = render(&doc);
+    let r = optimize(&mut doc, &Settings { mono: MonoCompression::Jbig2, ..Settings::default() }).unwrap();
+    assert_eq!(r.images_recompressed, 1);
+    let s = stream(&doc, im);
+    assert_eq!(s.dict.name(b"Filter"), Some(&b"JBIG2Decode"[..]));
+    assert!(s.raw.len() * 2 < pdfcraft_filters::encode_jbig2_generic(&text, w, h).unwrap().len(), "symbol coded");
+    assert!(render(&doc) == before, "the page looks the same");
+}
+
 #[test]
 fn settings_choose_what_happens() {
     let mut doc = Document::new_empty();

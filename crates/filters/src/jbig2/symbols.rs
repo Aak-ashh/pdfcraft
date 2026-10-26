@@ -1,8 +1,8 @@
 //! JBIG2 symbol coding, lossless: each distinct mark of an image (a group of black pixels that
-//! touch, side by side or at a corner) is stored once, as a symbol in a symbol dictionary, and a
-//! text region places a copy of it wherever it occurs. Marks too large to be symbols (rules,
-//! frames, pictures) are left to a generic region beside it, and so, in [`encode`]'s second plan,
-//! are marks that occur only once. Only exact copies share a symbol, so the image decodes to the
+//! touch, side by side or at a corner) is stored once, as a symbol in a symbol dictionary, and
+//! text regions place a copy of it wherever it occurs. Marks too large to be symbols (rules,
+//! frames, pictures) are left to a generic region beside them, and so, in [`encode`]'s second
+//! plan, are marks that occur only once. Only exact copies share a symbol, so the image decodes to the
 //! same bits. Written from the committee draft's 6.4 (the text region decoding procedure), 6.5
 //! (the symbol dictionary decoding procedure), 7.4.2 and 7.4.3 (their segments) and Annex A (the
 //! arithmetic integer coders).
@@ -21,9 +21,17 @@ const MAX_SYMBOL_SIDE: u32 = 256;
 /// which suits it better anyway; this bounds the memory the marks take.
 const MAX_RUNS: usize = 1 << 20;
 
-/// The most distinct symbols, and the most pixels their bitmaps may hold together.
-const MAX_SYMBOLS: usize = 1 << 16;
+/// The most distinct symbols, and the most pixels their bitmaps may hold together. The decoder
+/// PdfCraft renders JBIG2 with (`hayro-jbig2`) refuses 32,768 symbols or more, and others may
+/// too: past it the image is coded generically.
+const MAX_SYMBOLS: usize = (1 << 15) - 1;
 const MAX_SYMBOL_PIXELS: usize = 1 << 24;
+
+/// The most symbol instances one text region places. The decoder PdfCraft renders JBIG2 with
+/// refuses a text region of more than 10,000 (a page it then draws blank), so a page with more is
+/// placed by several regions, each over a band of rows, all referring to the one dictionary. At
+/// most [`MAX_RUNS`] marks keeps their segment numbers below 256.
+const MAX_REGION_INSTANCES: usize = 10_000;
 
 /// The most rows symbol coded. With rows at most 2^20 samples wide, every coordinate and
 /// difference coded then fits the 32-bit integers Annex A codes.
@@ -73,14 +81,15 @@ struct Page {
     large: Vec<u32>,
 }
 
-/// A symbol instance (6.4.5): the symbol, and where its bottom-left pixel goes, as S (the column)
-/// and T (the row). `width` is the symbol's.
+/// A symbol instance (6.4.5): the symbol, and where its bottom-left pixel goes on the page, as S
+/// (the column) and T (the row). `width` and `height` are the symbol's.
 #[derive(Clone, Copy, Debug)]
 struct Instance {
     id: u32,
     s: u32,
     t: u32,
     width: u32,
+    height: u32,
 }
 
 /// `rows` rows of `columns` 1-bit PDF samples (black 0), symbol coded: the smaller of two plans,
@@ -283,8 +292,8 @@ fn symbols(page: &mut Page) -> Option<()> {
     Some(())
 }
 
-/// One plan's stream: the symbols with at least `copies` uses in a symbol dictionary, a text
-/// region placing them (in strips of 2^`log_strips` rows, or whichever size codes smallest), and
+/// One plan's stream: the symbols with at least `copies` uses in a symbol dictionary, text
+/// regions placing them (in strips of 2^`log_strips` rows, or whichever size codes smallest), and
 /// the other marks in a generic region. `None` with fewer than two such symbols: their IDs would
 /// take no bits at all (SBSYMCODELEN 0), a corner of the standard left alone here.
 fn plan(page: &Page, columns: u32, rows: u32, copies: u32, log_strips: Option<u32>) -> Option<Vec<u8>> {
@@ -305,23 +314,37 @@ fn plan(page: &Page, columns: u32, rows: u32, copies: u32, log_strips: Option<u3
     let mut left = page.large.clone();
     for (s, m) in &page.copies {
         match (id.get(*s as usize).copied().flatten(), page.marks.get(*m as usize), symbol(*s)) {
-            (Some(id), Some(mark), Some(symbol)) => instances.push(Instance { id, s: mark.x0, t: mark.y1.saturating_sub(1), width: symbol.width }),
+            (Some(id), Some(mark), Some(symbol)) => {
+                instances.push(Instance { id, s: mark.x0, t: mark.y1.saturating_sub(1), width: symbol.width, height: symbol.height })
+            }
             _ => left.push(*m),
         }
     }
     let kept: Vec<&Symbol> = kept.iter().filter_map(|s| symbol(*s)).collect();
     let dictionary = symbol_dictionary(&kept)?;
     let count = u32::try_from(kept.len()).ok()?;
-    let text = match log_strips {
-        Some(l) => text_region(&mut instances, count, columns, rows, l)?,
-        None => (0..4).filter_map(|l| text_region(&mut instances, count, columns, rows, l)).min_by_key(Vec::len)?,
-    };
+    // Bands of at most MAX_REGION_INSTANCES, from the top.
+    instances.sort_by_key(|i| (i.t, i.s));
+    let mut regions = Vec::new();
+    for band in instances.chunks_mut(MAX_REGION_INSTANCES) {
+        let top = band.iter().map(|i| i.t.saturating_add(1).saturating_sub(i.height)).min()?;
+        let height = band.iter().map(|i| i.t).max()?.checked_sub(top)?.checked_add(1)?;
+        regions.push(match log_strips {
+            Some(l) => text_region(band, count, columns, top, height, l)?,
+            None => (0..4).filter_map(|l| text_region(band, count, columns, top, height, l)).min_by_key(Vec::len)?,
+        });
+    }
     let mut out = Vec::new();
     segment(&mut out, 0, 48, &[], false, &page_information(columns, rows));
     segment(&mut out, 1, 0, &[], true, &dictionary);
-    segment(&mut out, 2, 7, &[1], false, &text);
+    let mut number = 2;
+    for (k, text) in regions.iter().enumerate() {
+        // The dictionary stays retained for the next region, until the last (7.2.4).
+        segment(&mut out, number, 7, &[(1, k + 1 < regions.len())], false, text);
+        number += 1;
+    }
     if !left.is_empty() {
-        segment(&mut out, 3, 39, &[], false, &leftover_region(&left, page)?);
+        segment(&mut out, number, 39, &[], false, &leftover_region(&left, page)?);
     }
     Some(out)
 }
@@ -363,20 +386,22 @@ fn symbol_dictionary(symbols: &[&Symbol]) -> Option<Vec<u8>> {
     Some(data)
 }
 
-/// An immediate lossless text region segment's data (7.4.3) placing `instances` over the whole
-/// page: arithmetic coded, no refinement, strips of 2^`log_strips` rows, each symbol's
-/// bottom-left pixel at (S, T) (REFCORNER BOTTOMLEFT, so a line's letters share their T),
-/// not transposed, OR, default pixel 0, SBDSOFFSET 0. Sorts `instances` into strips, each
-/// left to right.
-fn text_region(instances: &mut [Instance], symbols: u32, columns: u32, rows: u32, log_strips: u32) -> Option<Vec<u8>> {
+/// An immediate lossless text region segment's data (7.4.3) placing `instances` in the band of
+/// `height` rows from row `top` (which holds them): arithmetic coded, no refinement, strips of
+/// 2^`log_strips` rows, each symbol's bottom-left pixel at (S, T) (REFCORNER BOTTOMLEFT, so a
+/// line's letters share their T), not transposed, OR, default pixel 0, SBDSOFFSET 0. Sorts
+/// `instances` into strips, each left to right.
+fn text_region(instances: &mut [Instance], symbols: u32, columns: u32, top: u32, height: u32, log_strips: u32) -> Option<Vec<u8>> {
     // LOGSBSTRIPS has two bits: strips of 1, 2, 4 or 8 rows.
     if log_strips > 3 {
         return None;
     }
     let strips = 1i64 << log_strips;
-    instances.sort_by_key(|i| (i.t >> log_strips, i.s));
+    // T counts from the band's top row.
+    let t = |i: &Instance| i.t.saturating_sub(top);
+    instances.sort_by_key(|i| (t(i) >> log_strips, i.s));
     let mut data = Vec::new();
-    region_information(&mut data, columns, rows, 0, 0);
+    region_information(&mut data, columns, height, 0, top);
     data.extend_from_slice(&((log_strips as u16) << 2).to_be_bytes());
     data.extend_from_slice(&u32::try_from(instances.len()).ok()?.to_be_bytes());
     // SBSYMCODELEN (Table 31): ⌈log2 SBNUMSYMS⌉.
@@ -388,10 +413,10 @@ fn text_region(instances: &mut [Instance], symbols: u32, columns: u32, rows: u32
     // strip size, from the strip before.
     iadt.encode(&mut mq, Some(0));
     let (mut strip_t, mut first_s) = (0i64, 0i64);
-    for strip in instances.chunk_by(|a, b| a.t >> log_strips == b.t >> log_strips) {
-        let t = i64::from(strip.first()?.t >> log_strips << log_strips);
-        iadt.encode(&mut mq, Some(int((t - strip_t) / strips)?));
-        strip_t = t;
+    for strip in instances.chunk_by(|a, b| t(a) >> log_strips == t(b) >> log_strips) {
+        let first = i64::from(t(strip.first()?) >> log_strips << log_strips);
+        iadt.encode(&mut mq, Some(int((first - strip_t) / strips)?));
+        strip_t = first;
         let mut cur_s = 0;
         for (k, instance) in strip.iter().enumerate() {
             let s = i64::from(instance.s);
@@ -402,7 +427,7 @@ fn text_region(instances: &mut [Instance], symbols: u32, columns: u32, rows: u32
                 iads.encode(&mut mq, Some(int(s - cur_s)?));
             }
             if strips > 1 {
-                iait.encode(&mut mq, Some(int(i64::from(instance.t) - strip_t)?));
+                iait.encode(&mut mq, Some(int(i64::from(t(instance)) - strip_t)?));
             }
             encode_id(&mut mq, &mut ids, length, instance.id);
             // The next S counts from this symbol's last column (6.4.5 step 3c x).
@@ -603,15 +628,20 @@ mod tests {
         page
     }
 
-    /// The segments of a stream in the embedded organisation, from their headers (7.2): each one's
-    /// type, whether it is retained, and the segments it refers to.
-    fn segments(data: &[u8]) -> Vec<(u8, bool, Vec<u8>)> {
+    /// A segment's type, whether it is retained, and the segments it refers to, each with its
+    /// retain bit.
+    type Segment = (u8, bool, Vec<(u8, bool)>);
+
+    /// The segments of a stream in the embedded organisation, from their headers (7.2).
+    fn segments(data: &[u8]) -> Vec<Segment> {
         let (mut segments, mut at) = (Vec::new(), 0);
         while at < data.len() {
-            let refers = usize::from(data[at + 5] >> 5);
+            let flags = data[at + 5];
+            let refers = usize::from(flags >> 5);
             let length_at = at + 6 + refers + 1;
             let length = u32::from_be_bytes(data[length_at..length_at + 4].try_into().unwrap()) as usize;
-            segments.push((data[at + 4] & 0x3F, data[at + 5] & 1 == 1, data[at + 6..at + 6 + refers].to_vec()));
+            let referred = data[at + 6..at + 6 + refers].iter().enumerate().map(|(k, n)| (*n, flags >> (k + 1) & 1 == 1)).collect();
+            segments.push((data[at + 4] & 0x3F, flags & 1 == 1, referred));
             at = length_at + 4 + length;
         }
         segments
@@ -752,7 +782,7 @@ mod tests {
         assert_eq!(every_plan_round_trips(&picture), 8);
     }
 
-    /// Past 2^20 black runs or 2^24 rows the image is left to generic coding; at 2^20 runs it is
+    /// Past 2^20 black runs or 2^24 rows the image is left to generic coding; at either cap it is
     /// still looked at.
     #[test]
     fn busy_or_tall_images_are_left_to_generic_coding() {
@@ -766,8 +796,8 @@ mod tests {
         assert!(page(&tall, 1, MAX_ROWS).is_some());
     }
 
-    /// Past 65,536 distinct symbols, or 2^24 pixels of them, the image is left to generic coding;
-    /// at either cap it is still looked at.
+    /// Past 32,767 distinct symbols, or 2^24 pixels of them, the image is left to generic coding;
+    /// at either cap it is symbol coded, and decodes.
     #[test]
     fn too_many_symbols_are_left_to_generic_coding() {
         // `n` distinct marks of 17 × 3: full top and bottom rows joined by a code of 1 to n, in
@@ -785,8 +815,12 @@ mod tests {
             }
             (samples(&picture), columns as u32, rows as u32)
         };
+        // At the cap the symbols are coded, and an independent decoder reads them back.
         let (data, columns, rows) = codes(MAX_SYMBOLS);
-        assert_eq!(page(&data, columns, rows).map(|p| p.symbols.len()), Some(MAX_SYMBOLS));
+        let at_cap = page(&data, columns, rows).unwrap();
+        assert_eq!(at_cap.symbols.len(), MAX_SYMBOLS);
+        let coded = plan(&at_cap, columns, rows, 1, None).unwrap();
+        assert_eq!(decode(&coded), unpack(&data, columns, rows));
         let (data, columns, rows) = codes(MAX_SYMBOLS + 1);
         assert!(page(&data, columns, rows).is_none());
         // `n` black squares of 256 × 256, each with a white pixel in a different place: 2^16
@@ -804,9 +838,33 @@ mod tests {
             (samples(&picture), columns as u32, rows as u32)
         };
         let (data, columns, rows) = squares(256);
-        assert_eq!(page(&data, columns, rows).map(|p| p.symbols.len()), Some(256));
+        let at_cap = page(&data, columns, rows).unwrap();
+        assert_eq!(at_cap.symbols.len(), 256);
+        assert_eq!(decode(&plan(&at_cap, columns, rows, 1, None).unwrap()), unpack(&data, columns, rows));
         let (data, columns, rows) = squares(257);
         assert!(page(&data, columns, rows).is_none());
+    }
+
+    /// More than 10,000 marks are placed by several text regions, each of at most 10,000 (more
+    /// than the decoder PdfCraft renders with accepts in one), over bands of rows, all referring to
+    /// the dictionary, which each region but the last keeps retained.
+    #[test]
+    fn more_than_10000_marks_are_placed_by_several_regions() {
+        // 25,000 copies of two 17 × 3 shapes, 256 a line, the lines 5 rows apart.
+        let mut picture = vec![vec![0u8; 256 * 18]; 25_000usize.div_ceil(256) * 5];
+        for k in 0..25_000 {
+            let (x, y) = (k % 256 * 18, k / 256 * 5);
+            picture[y][x..x + 17].fill(1);
+            picture[y + 2][x..x + 17].fill(1);
+            picture[y + 1][x + k % 2] = 1;
+        }
+        let data = samples(&picture);
+        let (columns, rows) = (picture[0].len() as u32, picture.len() as u32);
+        let coded = encode_jbig2(&data, columns, rows).unwrap();
+        let region = |kept| (7, false, vec![(1, kept)]);
+        assert_eq!(segments(&coded), [(48, false, vec![]), (0, true, vec![]), region(true), region(true), region(false)]);
+        assert_eq!(decode(&coded), unpack(&data, columns, rows));
+        assert_eq!(every_plan_round_trips(&picture), 8);
     }
 
     /// A page of text whose letters repeat exactly, as rendered text does, keeps each letter once:
@@ -818,7 +876,7 @@ mod tests {
         let coded = encode_jbig2(&data, 1700, 400).unwrap();
         let generic = encode_jbig2_generic(&data, 1700, 400).unwrap();
         // The dictionary is retained for the text region, which refers to it (7.2.4, 7.2.5).
-        assert_eq!(segments(&coded), [(48, false, vec![]), (0, true, vec![]), (7, false, vec![1])]);
+        assert_eq!(segments(&coded), [(48, false, vec![]), (0, true, vec![]), (7, false, vec![(1, false)])]);
         assert_eq!(decode(&coded), unpack(&data, 1700, 400));
         assert!(coded.len() * 2 < generic.len(), "symbols {} bytes, generic {}", coded.len(), generic.len());
         assert_eq!(every_plan_round_trips(&picture), 8);
