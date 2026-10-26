@@ -1019,6 +1019,103 @@ fn a_fax_image_behind_a_decompression_bomb_is_left_alone() {
     }
 }
 
+/// A CCITT image `w` × `h` coded as Group 4 from `bits`, behind ASCIIHexDecode when `hex`.
+fn g4_image(doc: &mut Document, bits: &[u8], (w, h): (u32, u32), hex: bool) -> ObjRef {
+    let g4 = pdfcraft_filters::encode_g4(bits, w, h).unwrap();
+    let mut d = Dict::new();
+    d.set(b"Subtype".to_vec(), Object::name("Image"));
+    d.set(b"Width".to_vec(), Object::Int(w.into()));
+    d.set(b"Height".to_vec(), Object::Int(h.into()));
+    d.set(b"BitsPerComponent".to_vec(), Object::Int(1));
+    d.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+    let mut parms = Dict::new();
+    parms.set(b"K".to_vec(), Object::Int(-1));
+    parms.set(b"Columns".to_vec(), Object::Int(w.into()));
+    let data = if hex {
+        d.set(b"Filter".to_vec(), Object::Array(vec![Object::name("ASCIIHexDecode"), Object::name("CCITTFaxDecode")]));
+        d.set(b"DecodeParms".to_vec(), Object::Array(vec![Object::Null, Object::Dict(parms)]));
+        g4.iter().flat_map(|b| format!("{b:02x}").into_bytes()).chain(*b">").collect()
+    } else {
+        d.set(b"Filter".to_vec(), Object::name("CCITTFaxDecode"));
+        d.set(b"DecodeParms".to_vec(), Object::Dict(parms));
+        g4
+    };
+    doc.add(Object::Stream(Stream::from_raw(d, data)))
+}
+
+/// What Monochrome Images leaves alone and what it may still do. A Group 4 halftone above 450 ppi
+/// isn't resampled, so it stays byte for byte: alone, by default; behind ASCIIHexDecode, with
+/// Retain (by default it is stored again as Group 4 alone). Under Retain a resampled Flate scan
+/// stays Flate though Group 4 would be smaller. A busy Group 4 image behind ASCIIHexDecode, whose
+/// code is more than three times its raster, decodes within a fax code's bound and is stored
+/// again as Group 4 alone. Sixteen-bit grey of only 0x0000 and 0xFFFF isn't eight-bit black and
+/// white, and keeps its bytes.
+#[test]
+fn monochrome_images_keep_what_they_should() {
+    let (w, h) = (1200u32, 480u32);
+    let stride = (w as usize).div_ceil(8);
+    let checker: Vec<u8> = (0..h as usize).flat_map(|y| vec![if y % 2 == 0 { 0xAA } else { 0x55 }; stride]).collect();
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    // Twelve dark bands a row, their edges ragged by up to five samples, as a scan's are.
+    let mut ragged = vec![0xFFu8; stride * h as usize];
+    for y in 0..h as usize {
+        for band in 0..12 {
+            let (x0, x1) = (band * 100 + (next() % 5) as usize, band * 100 + 50 + (next() % 5) as usize);
+            for x in x0..x1.min(w as usize) {
+                ragged[y * stride + x / 8] &= !(0x80 >> (x % 8));
+            }
+        }
+    }
+    let busy: Vec<u8> = (0..256).flat_map(|y| [if y % 2 == 0 { 0xAA } else { 0xFF }; 32]).collect();
+    let build = || {
+        let mut doc = Document::new_empty();
+        let alone = g4_image(&mut doc, &checker, (w, h), false);
+        let wrapped = g4_image(&mut doc, &checker, (w, h), true);
+        let grey = [("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))];
+        let scan = mono_image(&mut doc, w, h, &ragged, None, &grey);
+        let fax = g4_image(&mut doc, &busy, (256, 256), true);
+        let mut d = Dict::new();
+        d.set(b"Subtype".to_vec(), Object::name("Image"));
+        d.set(b"Width".to_vec(), Object::Int(w.into()));
+        d.set(b"Height".to_vec(), Object::Int(h.into()));
+        d.set(b"BitsPerComponent".to_vec(), Object::Int(16));
+        d.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+        let samples: Vec<u8> = eight_bit(&bilevel(w, h, false), w, h).iter().flat_map(|v| [*v, *v]).collect();
+        let deep = doc.add(Object::Stream(Stream::flate(d, &samples)));
+        // 144 × 57.6 pt is 600 ppi; 46.08 pt for 256 samples is 400 ppi.
+        page(
+            &mut doc,
+            &[("A", alone), ("B", wrapped), ("C", scan), ("D", fax), ("E", deep)],
+            "q 144 0 0 57.6 20 700 cm /A Do Q q 144 0 0 57.6 200 700 cm /B Do Q q 144 0 0 57.6 20 600 cm /C Do Q \
+             q 46.08 0 0 46.08 200 600 cm /D Do Q q 144 0 0 57.6 20 500 cm /E Do Q",
+        );
+        (doc, [alone, wrapped, scan, fax, deep])
+    };
+    let raw = |doc: &Document, r: ObjRef| stream(doc, r).raw;
+    let filters = |doc: &Document, r: ObjRef| stream(doc, r).filters().len();
+
+    let (mut doc, [alone, wrapped, scan, fax, deep]) = build();
+    let before = [alone, deep].map(|r| raw(&doc, r));
+    optimize(&mut doc, &Settings::default()).unwrap();
+    assert_eq!([alone, deep].map(|r| raw(&doc, r)), before, "a Group 4 halftone alone, and sixteen-bit grey");
+    assert_eq!(filters(&doc, wrapped), 1, "a wrapped Group 4 halftone is stored again alone by default");
+    assert_eq!(stream(&doc, scan).dict.name(b"Filter"), Some(&b"CCITTFaxDecode"[..]), "the scan: Group 4 is smaller");
+    assert_eq!((stream(&doc, fax).dict.name(b"Filter"), filters(&doc, fax)), (Some(&b"CCITTFaxDecode"[..]), 1), "the busy fax image");
+
+    let (mut doc, [_, wrapped, scan, _, _]) = build();
+    let before = raw(&doc, wrapped);
+    let r = optimize(&mut doc, &Settings { mono: RETAIN, ..Settings::default() }).unwrap();
+    assert_eq!(raw(&doc, wrapped), before, "Retain: a wrapped Group 4 halftone stays as it is");
+    let s = stream(&doc, scan);
+    assert_eq!((s.dict.int(b"Width"), s.dict.name(b"Filter")), (Some(600), Some(&b"FlateDecode"[..])), "Retain: Flate stays Flate: {r:?}");
+}
+
 #[test]
 fn settings_choose_what_happens() {
     let mut doc = Document::new_empty();

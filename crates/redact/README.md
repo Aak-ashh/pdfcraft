@@ -22,8 +22,9 @@ clear_marks(&mut doc, None)?;                        // remove marks without app
   filter, decoded through `Document::decoded_image_within`; `/DecodeParms` given by reference,
   numbers inside included, count). Codecs redaction doesn't decode (DCT, JPX, JBIG2) are removed
   whole (fail-closed); inline images under an area are removed. Images with separate `/SMask`
-  or `/Mask` data, and images whose data decodes to more than twice their declared raster (plus
-  a byte per row and 4 KiB; for a fax image's code, about a byte per pixel), are removed whole;
+  or `/Mask` data, and images whose data decodes to more than three times their declared raster
+  and a byte per row, plus 4 KiB (ASCIIHex text broken into lines under Flate is a little over
+  twice; for a fax image's code, about a byte per pixel), are removed whole;
   cleared copies drop `/Alternates` so alternate pixels cannot survive;
 - **vectors**: covered paths are removed; partly covered paths and shadings are clipped so
   nothing paints inside the areas;

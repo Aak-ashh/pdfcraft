@@ -684,15 +684,16 @@ fn a_fax_image_that_cannot_be_decoded_in_full_is_removed_whole() {
     }
 }
 
-/// A busy fax image is cleared, though its code is bigger than twice its raster (the bound for
-/// other images): a code takes up to about a byte per pixel, and the fax image gets that much.
+/// A busy fax image is cleared, though its code is bigger than three times its raster (the bound
+/// for other images): a code takes up to about a byte per pixel, and the fax image gets that much.
 #[test]
 fn a_busy_fax_image_behind_another_filter_is_cleared() {
-    // A 256 × 256 checkerboard, the worst case for a fax code.
-    let rows: Vec<u8> = (0..256).flat_map(|y| [if y % 2 == 0 { 0xAA } else { 0x55 }; 32]).collect();
+    // 256 × 256, rows of a one-pixel checkerboard between white ones: each checkered row is coded
+    // afresh against the white one above it, about four bits a pixel.
+    let rows: Vec<u8> = (0..256).flat_map(|y| [if y % 2 == 0 { 0xAA } else { 0xFF }; 32]).collect();
     let g4 = pdfcraft_filters::encode_g4(&rows, 256, 256).unwrap();
     let raster = 32 * 256;
-    assert!(g4.len() > (raster + 256) * 2 + 4096, "{} bytes: within the bound for other images", g4.len());
+    assert!(g4.len() > (raster + 256) * 3 + 4096, "{} bytes: within the bound for other images", g4.len());
     let dict = "/Type /XObject /Subtype /Image /Width 256 /Height 256 /ColorSpace /DeviceGray /BitsPerComponent 1 \
                 /Filter [/FlateDecode /CCITTFaxDecode] /DecodeParms [null << /K -1 /Columns 256 /Rows 256 >>]";
     let mut doc = one_page(b"q 256 0 0 256 0 0 cm /Im Do Q", "/XObject << /Im 7 0 R >>", vec![stream(dict, pdfcraft_filters::encode_flate(&g4))]);
