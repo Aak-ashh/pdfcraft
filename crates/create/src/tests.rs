@@ -1664,9 +1664,11 @@ fn ccitt_fax_images_export_as_their_picture() {
     assert!(out.images.is_empty() && out.skipped.len() == 1, "columns other than the width: skipped");
 }
 
-/// Group 3 data: rows of run lengths, white first, coded one-dimensionally (ITU-T T.4) with no
-/// end-of-line codes, from the few codes these runs need.
-fn group_3(rows: &[&[u32]]) -> Vec<u8> {
+/// Group 3 data: rows of run lengths, white first, coded one-dimensionally (ITU-T T.4), from the
+/// few codes these runs need. Each row starts with an end-of-line code with `eol`, then with
+/// `tag` a 1 bit (the next row one-dimensional, as `/K` above 0 has it). With `align` each row
+/// starts on a byte, its end-of-line code too.
+fn group_3(rows: &[&[u32]], eol: bool, tag: bool, align: bool) -> Vec<u8> {
     let code = |white: bool, run: u32| match (white, run) {
         (true, 16) => "101010",
         (true, 32) => "00011011",
@@ -1674,7 +1676,19 @@ fn group_3(rows: &[&[u32]]) -> Vec<u8> {
         (false, 32) => "000001101010",
         _ => panic!("no code here for a run of {run}"),
     };
-    let bits: String = rows.iter().flat_map(|row| row.iter().enumerate().map(|(i, run)| code(i % 2 == 0, *run))).collect();
+    let mut bits = String::new();
+    for row in rows {
+        while align && !bits.len().is_multiple_of(8) {
+            bits.push('0');
+        }
+        if eol {
+            bits.push_str("000000000001");
+        }
+        if tag {
+            bits.push('1');
+        }
+        row.iter().enumerate().for_each(|(i, run)| bits.push_str(code(i % 2 == 0, *run)));
+    }
     bits.as_bytes().chunks(8).map(|c| c.iter().enumerate().fold(0u8, |b, (i, d)| b | (u8::from(*d == b'1') << (7 - i)))).collect()
 }
 
@@ -1726,11 +1740,19 @@ fn group_3_ccitt_masks_and_parameters_by_reference_export_as_their_picture() {
     };
     let grey = |bits: i64| [("BitsPerComponent", Object::Int(bits)), ("ColorSpace", Object::name("DeviceGray"))];
 
-    let d = image(&[&grey(1)[..], &fax(0)].concat());
-    doc.set(r, Object::Stream(Stream::from_raw(d, group_3(&rows))));
-    let out = extract_images(&doc, &[0], 0);
-    assert!(out.skipped.is_empty(), "{:?}", out.skipped);
-    assert_eq!(exported_white(&out.images[0].data), picture, "Group 3");
+    // One-dimensional (/K 0) plain, with end-of-line codes, with each row on a byte, and with
+    // both; mixed (/K 1, each row tagged one-dimensional) with end-of-line codes and without.
+    for (k, eol, align) in [(0, false, false), (0, true, false), (0, false, true), (0, true, true), (1, true, false), (1, false, false)] {
+        let mut d = image(&[&grey(1)[..], &fax(k)].concat());
+        if let Some(Object::Dict(parms)) = d.get_mut(b"DecodeParms") {
+            parms.set(b"EndOfLine".to_vec(), Object::Bool(eol));
+            parms.set(b"EncodedByteAlign".to_vec(), Object::Bool(align));
+        }
+        doc.set(r, Object::Stream(Stream::from_raw(d, group_3(&rows, eol, k > 0, align))));
+        let out = extract_images(&doc, &[0], 0);
+        assert!(out.skipped.is_empty(), "/K {k}, EndOfLine {eol}, EncodedByteAlign {align}: {:?}", out.skipped);
+        assert_eq!(exported_white(&out.images[0].data), picture, "/K {k}, EndOfLine {eol}, EncodedByteAlign {align}");
+    }
 
     // A grey picture under the same bits as a soft mask, then as a stencil mask: CCITT against Flate.
     let g4 = pdfcraft_filters::encode_g4(&bits, w, h).unwrap();

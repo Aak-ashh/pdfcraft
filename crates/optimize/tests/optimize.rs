@@ -671,6 +671,34 @@ fn eight_bit_black_and_white_takes_the_smaller_of_one_bit_and_the_grey_settings(
     }
 }
 
+/// The smaller of one bit and the grey settings counts the soft mask each leaves: packed, the
+/// image keeps its mask as it is; resampled by the grey settings, the mask is resampled with it.
+/// Here clean text, which packs to well under its JPEG, under a noisy mask the grey settings
+/// shrink by far more than the image's saving: the grey settings win.
+#[test]
+fn eight_bit_black_and_white_with_a_soft_mask_counts_the_mask() {
+    let (w, h) = (1200u32, 1500u32);
+    let mut doc = Document::new_empty();
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let noise: Vec<u8> = (0..w * h)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 24) as u8
+        })
+        .collect();
+    let mask = mono_image(&mut doc, w, h, &noise, None, &[("BitsPerComponent", 8.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+    let grey = [("BitsPerComponent", 8.into()), ("ColorSpace", Object::name("DeviceGray")), ("SMask", Object::Ref(mask))];
+    let img = mono_image(&mut doc, w, h, &eight_bit(&bilevel(w, h, false), w, h), None, &grey);
+    // 288 × 360 pt is 300 ppi, above where the grey settings downsample.
+    page(&mut doc, &[("A", img)], "q 288 0 0 360 20 400 cm /A Do Q");
+    optimize(&mut doc, &Settings::default()).unwrap();
+    let s = stream(&doc, img);
+    assert_eq!((s.dict.int(b"BitsPerComponent"), s.dict.name(b"Filter")), (Some(8), Some(&b"DCTDecode"[..])), "{:?}", s.dict);
+    assert!(stream(&doc, mask).raw.len() < (w * h) as usize / 2, "the mask resampled with it");
+}
+
 /// Eight-bit grey images of only black and white (as some scanners and converters write scans)
 /// become one-bit Group 4, losslessly: the page looks the same, an inverting decode array
 /// included. Not touched by this: a grey image with any other shade, an indexed image (its samples
@@ -724,8 +752,11 @@ fn eight_bit_black_and_white_images_become_one_bit() {
     assert_eq!(r.images_recompressed, 0, "Retain keeps every image as it is");
 
     let untouched = [shade, indexed, keyed].map(|r| raw(&doc, r));
+    let old: usize = [plain, inverted].map(|r| raw(&doc, r).len()).iter().sum();
     let r = optimize(&mut doc, &settings).unwrap();
     assert_eq!(r.images_recompressed, 2);
+    let new: usize = [plain, inverted].map(|r| raw(&doc, r).len()).iter().sum();
+    assert_eq!((r.image_bytes_before, r.image_bytes_after), (old, new), "the byte totals count both");
     for i in [plain, inverted] {
         let s = stream(&doc, i);
         assert_eq!((s.dict.int(b"BitsPerComponent"), s.dict.name(b"Filter")), (Some(1), Some(&b"CCITTFaxDecode"[..])));
