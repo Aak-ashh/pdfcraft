@@ -104,7 +104,10 @@ fn decode_and_clear(doc: &Document, s: &Stream, ctm: &Matrix, rects: &[[f64; 4]]
     data.truncate(bytes);
     // Image masks: a sample of 0 paints unless /Decode is [1 0]; cleared samples must not paint.
     let clear_bit = if mask {
-        let inverted = s.dict.get(b"Decode").and_then(Object::as_array).and_then(|d| d.first()).and_then(Object::as_f64) == Some(1.0);
+        // The array, and its first number, given by reference too.
+        let decode = s.dict.get(b"Decode").map(|d| doc.resolve(d));
+        let first = decode.as_deref().and_then(Object::as_array).and_then(|d| d.first()).map(|v| doc.resolve(v));
+        let inverted = first.as_deref().and_then(Object::as_f64) == Some(1.0);
         !inverted
     } else {
         false

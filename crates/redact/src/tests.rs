@@ -579,7 +579,8 @@ fn an_image_whose_predictor_is_given_by_reference_has_the_covered_pixel_cleared(
 
 /// A CCITT fax image (a scan the optimizer or Create PDF stored as Group 4) has its covered
 /// pixels cleared in a copy, like any image PdfCraft can decode, instead of being removed whole:
-/// whether it sits behind another filter, with its parameters given by reference, or is a mask.
+/// whether it sits behind another filter, with its parameters given by reference, or is a mask,
+/// its decode array inverting it given directly, by reference or with its first number so.
 #[test]
 fn a_fax_image_has_its_covered_pixels_cleared_instead_of_being_removed() {
     // 16 × 2, all 1 bits (white), or all 0 bits (a mask painting everywhere); the left half of
@@ -599,6 +600,20 @@ fn a_fax_image_has_its_covered_pixels_cleared_instead_of_being_removed() {
         ),
         // A mask's 0 bits paint: cleared bits are set to 1, which paints nothing.
         (format!("{image} /ImageMask true /Filter /CCITTFaxDecode /DecodeParms {parms}"), painted, vec![], [0xFF, 0x00, 0x00, 0x00]),
+        // With /Decode [1 0] a mask's 1 bits paint, and cleared bits are 0.
+        (format!("{image} /ImageMask true /Decode [1 0] /Filter /CCITTFaxDecode /DecodeParms {parms}"), g4.clone(), vec![], [0x00, 0xFF, 0xFF, 0xFF]),
+        (
+            format!("{image} /ImageMask true /Decode 8 0 R /Filter /CCITTFaxDecode /DecodeParms {parms}"),
+            g4.clone(),
+            vec![b"[1 0]".to_vec()],
+            [0x00, 0xFF, 0xFF, 0xFF],
+        ),
+        (
+            format!("{image} /ImageMask true /Decode [8 0 R 0] /Filter /CCITTFaxDecode /DecodeParms {parms}"),
+            g4.clone(),
+            vec![b"1".to_vec()],
+            [0x00, 0xFF, 0xFF, 0xFF],
+        ),
     ] {
         let mut objs = vec![stream(&dict, data)];
         objs.extend(extra);
