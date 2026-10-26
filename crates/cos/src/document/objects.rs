@@ -160,9 +160,12 @@ impl Document {
 
     /// `s` with the `/DecodeParms` its filters use made direct, so [`Stream::decoded`] reads them:
     /// an indirect dictionary resolved, and of an array (itself perhaps indirect), the entries at
-    /// the filters' places (`/Crypt` counts, ISO 32000-2 §7.4.1) resolved, the rest dropped. `s`
-    /// itself when none of those is indirect, or when the chain is longer than any decoder takes
-    /// ([`pdfcraft_filters::MAX_CHAIN`]), so at most that many objects are copied.
+    /// the filters' places (`/Crypt` counts, ISO 32000-2 §7.4.1) resolved, the rest dropped. Of
+    /// each dictionary only the entries the decoders read are kept, numbers and flags given by
+    /// reference (`/Predictor 7 0 R`) resolved; `/JBIG2Globals` stays a reference. `s` itself
+    /// when none of those is indirect, or when the chain is longer than any decoder takes
+    /// ([`pdfcraft_filters::MAX_CHAIN`]). Only small values are copied, so a file can't have a
+    /// large object copied once for each key and filter.
     pub fn with_direct_parms<'s>(&self, s: &'s Stream) -> Cow<'s, Stream> {
         let Some(p) = s.dict.get(b"DecodeParms") else { return Cow::Borrowed(s) };
         let filters = match s.dict.get(b"Filter") {
@@ -173,22 +176,43 @@ impl Document {
         if filters > pdfcraft_filters::MAX_CHAIN {
             return Cow::Borrowed(s);
         }
-        let whole = matches!(p, Object::Ref(_));
-        let resolved = self.resolve(p);
-        let direct = match &*resolved {
-            Object::Array(a) => {
-                let used = a.get(..filters.min(a.len())).unwrap_or_default();
-                if !whole && !used.iter().any(|e| matches!(e, Object::Ref(_))) {
-                    return Cow::Borrowed(s);
+        let mut changed = matches!(p, Object::Ref(_));
+        // Its numbers and flags kept, resolved; anything else is no filter's parameters (null).
+        let one = |e: &Object, changed: &mut bool| -> Object {
+            *changed |= matches!(e, Object::Ref(_));
+            let Object::Dict(d) = &*self.held(e) else { return Object::Null };
+            let mut made = Dict::new();
+            for key in DECODE_PARMS_KEYS {
+                let Some(v) = d.get(key) else { continue };
+                *changed |= matches!(v, Object::Ref(_));
+                let v = self.held(v);
+                if matches!(*v, Object::Int(_) | Object::Real(_) | Object::Bool(_)) {
+                    made.set(key.to_vec(), (*v).clone());
                 }
-                Object::Array(used.iter().map(|e| (*self.resolve(e)).clone()).collect())
             }
-            other if whole => other.clone(),
-            _ => return Cow::Borrowed(s),
+            if let Some(g @ Object::Ref(_)) = d.get(b"JBIG2Globals") {
+                made.set(b"JBIG2Globals".to_vec(), g.clone());
+            }
+            Object::Dict(made)
         };
+        let made = match &*self.held(p) {
+            Object::Array(a) => Object::Array(a.get(..filters.min(a.len())).unwrap_or_default().iter().map(|e| one(e, &mut changed)).collect()),
+            _ => one(p, &mut changed),
+        };
+        if !changed {
+            return Cow::Borrowed(s);
+        }
         let mut s = s.clone();
-        s.dict.set(b"DecodeParms".to_vec(), direct);
+        s.dict.set(b"DecodeParms".to_vec(), made);
         Cow::Owned(s)
+    }
+
+    /// `o`, or the object it refers to, without copying either.
+    fn held<'o>(&self, o: &'o Object) -> Held<'o> {
+        match o {
+            Object::Ref(_) => Held::Resolved(self.resolve(o)),
+            o => Held::Direct(o),
+        }
     }
 
     /// Resolve and return a dictionary (a stream's dictionary counts).
@@ -601,5 +625,42 @@ impl Document {
     pub(super) fn root_is_catalog(&self) -> bool {
         let Some(r) = self.root() else { return false };
         matches!(self.try_get(r.num).as_deref(), Ok(Object::Dict(d)) if d.name(b"Type") == Some(b"Catalog") || d.contains(b"Pages"))
+    }
+}
+
+/// The `/DecodeParms` entries the decoders read (ISO 32000-2 Tables 8, 11 and 13: the Flate and
+/// LZW predictors, CCITT, DCT's colour transform): numbers and flags a file may give by
+/// reference, which [`Dict::int`] doesn't follow.
+const DECODE_PARMS_KEYS: [&[u8]; 13] = [
+    b"Predictor",
+    b"Colors",
+    b"BitsPerComponent",
+    b"Columns",
+    b"EarlyChange",
+    b"K",
+    b"Rows",
+    b"EndOfLine",
+    b"EncodedByteAlign",
+    b"EndOfBlock",
+    b"BlackIs1",
+    b"DamagedRowsBeforeError",
+    b"ColorTransform",
+];
+
+/// An object read in place, or the object a reference names as the document holds it: either way
+/// nothing is copied ([`Document::held`]).
+enum Held<'o> {
+    Direct(&'o Object),
+    Resolved(Arc<Object>),
+}
+
+impl std::ops::Deref for Held<'_> {
+    type Target = Object;
+
+    fn deref(&self) -> &Object {
+        match self {
+            Held::Direct(o) => o,
+            Held::Resolved(o) => o,
+        }
     }
 }

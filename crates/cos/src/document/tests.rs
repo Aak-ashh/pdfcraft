@@ -1,7 +1,7 @@
 use super::*;
 
-/// /DecodeParms given by reference, whole or as array entries, are read once made direct: here a
-/// Flate predictor, which the stream alone doesn't see. Only the entries the filters use are
+/// /DecodeParms given by reference, whole, as array entries or as the numbers inside, are read
+/// once made direct: here a Flate predictor, which the stream alone doesn't see. Only the entries the filters use are
 /// resolved, and nothing is for a chain longer than a decoder takes.
 #[test]
 fn decode_parms_given_by_reference_are_read_once_direct() {
@@ -25,6 +25,30 @@ fn decode_parms_given_by_reference_are_read_once_direct() {
         assert_ne!(s.decoded().unwrap(), rows, "{p:?} read as it is");
         assert_eq!(doc.with_direct_parms(&s).decoded().unwrap(), rows, "{p:?}");
     }
+    // A number inside given by reference, which `Dict::int` doesn't follow: in the dictionary
+    // itself, and in an array's entry.
+    let twelve = doc.add(Object::Int(12));
+    let mut inner = parms.clone();
+    inner.set(b"Predictor".to_vec(), Object::Ref(twelve));
+    for p in [Object::Dict(inner.clone()), Object::Array(vec![Object::Dict(inner)])] {
+        let s = stream(1, p.clone());
+        assert_ne!(s.decoded().unwrap(), rows, "{p:?} read as it is");
+        assert_eq!(doc.with_direct_parms(&s).decoded().unwrap(), rows, "{p:?}");
+    }
+    // Only numbers and flags are copied: a key naming a big array, or an entry that is no
+    // dictionary, is left out (a file could name one big object from every key and filter).
+    let big = doc.add(Object::Array(vec![Object::Int(1); 100_000]));
+    let mut hostile = Dict::new();
+    hostile.set(b"Predictor".to_vec(), Object::Ref(big));
+    hostile.set(b"Columns".to_vec(), Object::Ref(big));
+    hostile.set(b"Colors".to_vec(), Object::Ref(twelve));
+    let entry = doc.add(Object::Dict(hostile));
+    let two = stream(2, Object::Array(vec![Object::Ref(entry), Object::Ref(big)]));
+    let made = doc.with_direct_parms(&two);
+    let made = made.dict.get(b"DecodeParms").and_then(Object::as_array).unwrap();
+    let first = made[0].as_dict().unwrap();
+    assert_eq!((first.contains(b"Predictor"), first.contains(b"Columns"), first.int(b"Colors")), (false, false, Some(12)));
+    assert!(matches!(made[1], Object::Null), "{:?}", made[1]);
     let direct = stream(1, Object::Dict(parms));
     assert!(matches!(doc.with_direct_parms(&direct), Cow::Borrowed(_)), "nothing to resolve");
     assert_eq!(direct.decoded().unwrap(), rows);
