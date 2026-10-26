@@ -635,7 +635,7 @@ fn bilevel_grey(doc: &Document, s: &Stream, compression: MonoCompression) -> Opt
     let (w, h) = (usize::try_from(w).ok()?, usize::try_from(h).ok()?);
     // Through its parameters given by reference too: without a PNG predictor's tag bytes taken
     // off, rows of 0 and 255 would still pass below, each shifted by a byte.
-    let samples = doc.with_direct_parms(s).decoded().ok()?;
+    let samples = doc.with_direct_parms(s).decoded_within(allowance(w.checked_mul(h)?, u32::try_from(h).ok()?)?).ok()?;
     let samples = samples.get(..w.checked_mul(h)?)?;
     let stride = w.div_ceil(8);
     let mut packed = vec![0u8; stride.checked_mul(h)?];
@@ -686,16 +686,38 @@ pub(crate) fn run(
         let obj = doc.get(r);
         let Object::Stream(s) = &*obj else { continue };
         report.images += 1;
-        if let Some(new) = mono(doc, s, settings.mono).or_else(|| bilevel_grey(doc, s, settings.mono)) {
+        if let Some(new) = mono(doc, s, settings.mono) {
             report.image_bytes_before += s.raw.len();
             report.image_bytes_after += new.raw.len();
             report.images_recompressed += 1;
             doc.set(r, Object::Stream(new));
             continue;
         }
-        let Some(n) = s.dict.get(b"ColorSpace").and_then(|cs| components(doc, cs)) else { continue };
-        let st = if n == 1 { &settings.gray } else { &settings.color };
-        let Some((new, smask)) = process(doc, s, ppi, st, n) else { continue };
+        let packed = bilevel_grey(doc, s, settings.mono);
+        let n = s.dict.get(b"ColorSpace").and_then(|cs| components(doc, cs));
+        let processed = n.and_then(|n| process(doc, s, ppi, if n == 1 { &settings.gray } else { &settings.color }, n));
+        // An image packed from eight bits is lossless at one bit, but the grey settings can make it
+        // smaller still (a dithered scan, downsampled and JPEG-compressed): the smaller wins,
+        // counting a soft mask resampled with it.
+        let smask_len = |smask: Option<&(ObjRef, Stream)>| match smask {
+            Some((_, m)) => Some(m.raw.len()),
+            None => s.dict.reference(b"SMask").map(|m| match &*doc.get(m) {
+                Object::Stream(m) => m.raw.len(),
+                _ => 0,
+            }),
+        };
+        let total = |new: &Stream, smask: Option<&(ObjRef, Stream)>| Some(crate::stored_len(new)?.saturating_add(smask_len(smask).unwrap_or(0)));
+        let packed_wins = packed.as_ref().is_some_and(|p| {
+            processed.as_ref().is_none_or(|(new, smask)| total(p, None).zip(total(new, smask.as_ref())).is_some_and(|(a, b)| a <= b))
+        });
+        if let Some(new) = packed.filter(|_| packed_wins) {
+            report.image_bytes_before += s.raw.len();
+            report.image_bytes_after += new.raw.len();
+            report.images_recompressed += 1;
+            doc.set(r, Object::Stream(new));
+            continue;
+        }
+        let Some((new, smask)) = processed else { continue };
         let resized = new.dict.int(b"Width") != s.dict.int(b"Width") || new.dict.int(b"Height") != s.dict.int(b"Height");
         report.image_bytes_before += s.raw.len();
         report.image_bytes_after += new.raw.len();

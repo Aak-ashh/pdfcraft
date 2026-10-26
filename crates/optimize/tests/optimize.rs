@@ -548,9 +548,10 @@ fn images_whose_decode_parms_are_references_come_out_as_with_them_direct() {
 }
 
 /// An image whose data decodes far past what its samples can need (a decompression bomb) is left
-/// alone rather than decoded up to the 1 GiB limit: a 1-bit one that would become Group 4, and an
-/// eight-bit one that would be resampled, each with four megabytes of zeros after its samples. Stored
-/// as ASCIIHex text under Flate, broken into lines of 64 digits, their samples aren't a bomb.
+/// alone rather than decoded up to the 1 GiB limit: a 1-bit one that would become Group 4, an
+/// eight-bit one that would be resampled, and an eight-bit one of only black and white that would
+/// be packed to one bit, each with four megabytes of zeros after its samples. Stored as ASCIIHex
+/// text under Flate, broken into lines of 64 digits, their samples aren't a bomb.
 #[test]
 fn images_whose_data_decodes_far_past_their_samples_are_left_alone() {
     let (w, h) = (1200u32, 480u32);
@@ -562,13 +563,18 @@ fn images_whose_data_decodes_far_past_their_samples_are_left_alone() {
         let grey = |bits: i64| [("BitsPerComponent", bits.into()), ("ColorSpace", Object::name("DeviceGray"))];
         let one_bit = mono_image(&mut doc, w, h, &padded(&text), None, &grey(1));
         let eight_bit = mono_image(&mut doc, w, h, &padded(&shades), None, &grey(8));
+        let packed = mono_image(&mut doc, w, h, &padded(&self::eight_bit(&text, w, h)), None, &grey(8));
         // 300 × 120 pt is 288 ppi; 144 × 57.6 pt is 600 ppi.
-        page(&mut doc, &[("A", one_bit), ("B", eight_bit)], "q 300 0 0 120 20 600 cm /A Do Q q 144 0 0 57.6 20 400 cm /B Do Q");
-        let before = [one_bit, eight_bit].map(|r| stream(&doc, r).raw);
+        page(
+            &mut doc,
+            &[("A", one_bit), ("B", eight_bit), ("C", packed)],
+            "q 300 0 0 120 20 600 cm /A Do Q q 144 0 0 57.6 20 400 cm /B Do Q q 300 0 0 120 20 200 cm /C Do Q",
+        );
+        let before = [one_bit, eight_bit, packed].map(|r| stream(&doc, r).raw);
         let r = optimize(&mut doc, &Settings::default()).unwrap();
-        let after = [one_bit, eight_bit].map(|r| stream(&doc, r).raw);
+        let after = [one_bit, eight_bit, packed].map(|r| stream(&doc, r).raw);
         if padding == 0 {
-            assert_eq!((r.images_resampled, r.images_recompressed), (1, 1), "{r:?}");
+            assert_eq!((r.images_resampled, r.images_recompressed), (1, 2), "{r:?}");
         } else {
             assert_eq!((r.images_resampled, r.images_recompressed), (0, 0), "{r:?}");
             assert_eq!(after, before);
@@ -606,6 +612,63 @@ fn images_whose_data_decodes_far_past_their_samples_are_left_alone() {
 fn eight_bit(bits: &[u8], w: u32, h: u32) -> Vec<u8> {
     let stride = (w as usize).div_ceil(8);
     (0..h as usize).flat_map(|y| (0..w as usize).map(move |x| if bits[y * stride + x / 8] & (0x80 >> (x % 8)) != 0 { 255 } else { 0 })).collect()
+}
+
+/// Eight-bit samples of only 0 and 255, dithered (Floyd–Steinberg) from a smooth picture as a
+/// scanner's halftone mode gives them: no shade but black and white, in short runs.
+fn dithered(w: u32, h: u32) -> Vec<u8> {
+    let (w, h) = (w as usize, h as usize);
+    let mut level: Vec<f32> = (0..w * h).map(|i| 127.5 + 127.5 * ((i % w) as f32 / 37.0).sin() * ((i / w) as f32 / 53.0).cos()).collect();
+    let mut out = vec![0u8; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let v = if level[i] < 128.0 { 0.0 } else { 255.0 };
+            out[i] = v as u8;
+            let e = level[i] - v;
+            if x + 1 < w {
+                level[i + 1] += e * 7.0 / 16.0;
+            }
+            if y + 1 < h {
+                if x > 0 {
+                    level[i + w - 1] += e * 3.0 / 16.0;
+                }
+                level[i + w] += e * 5.0 / 16.0;
+                if x + 1 < w {
+                    level[i + w + 1] += e / 16.0;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A dithered scan stored as eight-bit grey of only black and white is smaller downsampled and
+/// JPEG-compressed by the grey settings than packed to one bit, which can't shrink its dots: the
+/// smaller wins, so Reduce File Size makes it no larger than with Monochrome Images on Retain.
+/// Clean text is still packed to one bit at the same resolution.
+#[test]
+fn eight_bit_black_and_white_takes_the_smaller_of_one_bit_and_the_grey_settings() {
+    let (w, h) = (1200u32, 1500u32);
+    for (what, samples) in [("dither", dithered(w, h)), ("text", eight_bit(&bilevel(w, h, false), w, h))] {
+        let build = || {
+            let mut doc = Document::new_empty();
+            let img = mono_image(&mut doc, w, h, &samples, None, &[("BitsPerComponent", 8.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+            // 288 × 360 pt is 300 ppi, above where the grey settings downsample.
+            page(&mut doc, &[("A", img)], "q 288 0 0 360 20 400 cm /A Do Q");
+            (doc, img)
+        };
+        let (mut doc, img) = build();
+        optimize(&mut doc, &Settings::default()).unwrap();
+        let (mut retained, _) = build();
+        optimize(&mut retained, &Settings { mono: MonoCompression::Retain, ..Settings::default() }).unwrap();
+        let (s, kept) = (stream(&doc, img), stream(&retained, img));
+        let bits = if what == "dither" { 8 } else { 1 };
+        assert_eq!(s.dict.int(b"BitsPerComponent"), Some(bits), "{what}: {} bytes, {} with Retain", s.raw.len(), kept.raw.len());
+        if what == "dither" {
+            assert!(s.raw.len() <= kept.raw.len(), "{what}: {} bytes, {} with Retain", s.raw.len(), kept.raw.len());
+        }
+    }
 }
 
 /// Eight-bit grey images of only black and white (as some scanners and converters write scans)
