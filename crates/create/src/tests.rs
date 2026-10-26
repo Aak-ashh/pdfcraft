@@ -1421,7 +1421,8 @@ fn images_whose_predictor_is_given_by_reference_export_as_their_picture() {
 /// a stencil `/Mask` of another. Their `/JBIG2Globals` are read, from a dictionary or the one in
 /// an array, so globals that can't be read skip the image rather than being ignored. Rows past the
 /// image's height are left out; a JBIG2 page of another width, or with fewer rows than the image,
-/// or data that isn't JBIG2, skips the image.
+/// or larger than an exported image may be (however small the image's `/Height`), or data that
+/// isn't JBIG2, skips the image.
 #[test]
 fn jbig2_images_export_as_their_picture() {
     let (w, h) = (203i64, 41i64);
@@ -1485,6 +1486,23 @@ fn jbig2_images_export_as_their_picture() {
     assert_eq!(exported_rgba(&page(w, h - 5, &jbig2, None, false)).1, picture(h - 5), "rows past the height");
     for (width, height, data) in [(w + 8, h, &jbig2[..]), (w - 1, h, &jbig2[..]), (w, h + 1, &jbig2[..]), (w, h, &b"not JBIG2"[..])] {
         assert!(skipped(&page(width, height, data, None, false)), "{width} × {height}, {} bytes", data.len());
+    }
+    // The same stream with its page information (the first segment's data, after its 11-byte
+    // header: width, then height) claiming a 20,000 × 10,000 page: 200 million pixels, over the
+    // export's 100 million, behind an image of 20,000 × 4. The decoder would decode the whole page
+    // (it takes pages of up to about 2^28 pixels), so it is refused first.
+    let mut large = jbig2.clone();
+    large[11..15].copy_from_slice(&20_000u32.to_be_bytes());
+    large[15..19].copy_from_slice(&10_000u32.to_be_bytes());
+    assert!(skipped(&page(20_000, 4, &large, None, false)), "a page over the export's size");
+    // A page of exactly the budget, 20,000 × 5,000, is decoded; one row more is refused.
+    for (rows, refused) in [(5_000u32, false), (5_001, true)] {
+        large[15..19].copy_from_slice(&rows.to_be_bytes());
+        let doc = page(20_000, 4, &large, None, false);
+        assert_eq!(skipped(&doc), refused, "a page of 20,000 × {rows}");
+        if !refused {
+            assert_eq!(exported_rgba(&doc).1.len(), 20_000 * 4 * 4);
+        }
     }
     // Damaged data never panics.
     for end in [0, 1, 10, 20, 30, jbig2.len() / 2] {

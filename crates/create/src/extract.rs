@@ -126,7 +126,9 @@ fn decode_parms(doc: &Document, s: &Stream) -> Dict {
 }
 
 /// [`decoded`] for a JBIG2 image. Its JBIG2 page has to be the image's width, which the caller
-/// checked against the export's size limit; rows past the image's height are dropped, and too few
+/// checked against the export's size limit, and within that limit itself: the decoder decodes the
+/// whole page, rows past the image's height too, so a small `/Height` over a far taller page
+/// would cost more than the limit allows. Rows past the image's height are dropped, and too few
 /// rows are refused by the caller. Globals that can't be read refuse the image, rather than
 /// decoding it without them.
 fn jbig2(doc: &Document, s: &Stream) -> Result<Vec<u8>, String> {
@@ -137,6 +139,9 @@ fn jbig2(doc: &Document, s: &Stream) -> Result<Vec<u8>, String> {
     let image = hayro_jbig2::Image::new_embedded(&s.raw, globals.as_deref()).map_err(|e| format!("the JBIG2 image can't be read: {e}"))?;
     if s.dict.int(b"Width") != Some(i64::from(image.width())) {
         return Err("the JBIG2 image's width isn't the image's width".into());
+    }
+    if u64::from(image.width()).saturating_mul(u64::from(image.height())) > MAX_PIXELS {
+        return Err(format!("the JBIG2 page, {} × {}, is too large to export", image.width(), image.height()));
     }
     let height = s.dict.int(b"Height").and_then(|h| usize::try_from(h).ok()).unwrap_or(0);
     let mut rows = Rows::new(image.width() as usize, height);
