@@ -200,6 +200,7 @@ pub struct RenderRequest {
 /// The tag bit of a print-preview raster. Such requests always render the document's true
 /// colours, ignoring `RenderConfig::reading_colors`: a preview's job is fidelity to the
 /// printout, and the print itself — imposed from the document — is never recoloured.
+/// Installed-font fallback is also disabled, matching the output's font policy.
 pub const PRINT_TAG: u64 = 1 << 60;
 
 /// The reading colours a request renders with: print previews ([`PRINT_TAG`]) ignore the
@@ -337,6 +338,23 @@ fn render_page<'a>(
     config: &RenderConfig,
     req: RenderRequest,
 ) -> Result<Output, (String, bool)> {
+    // Print previews share the viewer pool, but must use the output font policy. Keep the
+    // caller's cancellation/warning hooks, layers and annotation settings. A fresh cache is
+    // essential: hayro keys cached fonts by PDF dictionary, not by the font resolver, so the
+    // viewer cache could supply an installed face even after changing the resolver (and a
+    // cached missing font from print preview could blank the viewer on switching back).
+    let print_settings;
+    let print_cache;
+    let (settings, cache) = if config.system_fonts && req.tag & PRINT_TAG != 0 {
+        print_settings = InterpreterSettings {
+            font_resolver: RenderConfig { system_fonts: false, ..config.clone() }.settings().font_resolver,
+            ..settings.clone()
+        };
+        print_cache = RenderCache::new();
+        (&print_settings, &print_cache)
+    } else {
+        (settings, cache)
+    };
     let reading = request_reading(config, &req);
     if req.kind == RequestKind::Text {
         return match catch_unwind(AssertUnwindSafe(|| crate::text::extract_page(pdf, req.page, settings))) {
@@ -7905,6 +7923,66 @@ trailer << /Root 1 0 R >>
                 let text = renderer.render(RenderRequest { page: 0, kind: RequestKind::Text, ..Default::default() });
                 assert!(text.error.is_none(), "{base_font}: {:?}", text.error);
                 assert_eq!(text.text.unwrap().plain_text().trim(), "中文", "the fallback preserves GBK text mapping");
+            }
+        }
+    }
+
+    /// Print preview must match output even after the same worker cached an installed face.
+    /// Switching back to the viewer must not retain the print resolver's missing-font result.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn print_preview_excludes_installed_fonts_without_poisoning_viewer_cache() {
+        use hayro::hayro_interpret::font::FallbackFontQuery;
+        use hayro::hayro_interpret::hayro_cmap::CharacterCollection;
+        let query = FontQuery::Fallback(FallbackFontQuery {
+            post_script_name: Some("SimSun".into()),
+            character_collection: Some(CharacterCollection { family: CidFamily::AdobeGB1, supplement: 2 }),
+            ..Default::default()
+        });
+        if super::system_fallback(&query).is_none() {
+            eprintln!("no installed GB1 face (or PDFCRAFT_SYSTEM_FONTS=0): skipped");
+            return;
+        }
+        let content = "BT /F1 40 Tf 5 15 Td <D6D0CEC4> Tj ET";
+        let bytes = Arc::new(format!(
+            "%PDF-1.7\n\
+             1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 120 60] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n\
+             4 0 obj << /Length {} >> stream\n{content}\nendstream endobj\n\
+             5 0 obj << /Type /Font /Subtype /Type0 /BaseFont /SimSun /Encoding /GBK-EUC-H /DescendantFonts [6 0 R] >> endobj\n\
+             6 0 obj << /Type /Font /Subtype /CIDFontType2 /BaseFont /SimSun /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 2 >> /FontDescriptor 7 0 R /DW 1000 >> endobj\n\
+             7 0 obj << /Type /FontDescriptor /FontName /SimSun /Flags 6 /FontBBox [0 -141 1000 859] /ItalicAngle 0 /Ascent 859 /Descent -141 /CapHeight 700 /StemV 80 >> endobj\n\
+             trailer << /Root 1 0 R >>\n%%EOF", content.len()
+        ).into_bytes());
+        let config = RenderConfig::default().on_screen();
+        let mut inline = PageRenderer::new(bytes.clone(), config.clone());
+        let mut output = PageRenderer::new(bytes.clone(), RenderConfig::default());
+        let pool = RenderPool::new(bytes, 1, config);
+        for tile in [None, Some(Tile { x: 0, y: 0, w: 120, h: 60 })] {
+            // Cover both directions with a warm worker cache, including other caller tag bits.
+            for tag in [PRINT_TAG | 1, 2, PRINT_TAG | 3, 4] {
+                let req = RenderRequest { page: 0, scale: 1.0, tile, tag, ..Default::default() };
+                let truth = output.render(req);
+                assert!(truth.error.is_none(), "{:?}", truth.error);
+                pool.set_queue(vec![req]);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                let worker = loop {
+                    if let Some(page) = pool.try_recv() {
+                        break page;
+                    }
+                    assert!(std::time::Instant::now() < deadline, "print-preview worker timed out");
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                };
+                for page in [inline.render(req), worker] {
+                    assert!(page.error.is_none(), "{:?}", page.error);
+                    if tag & PRINT_TAG != 0 {
+                        assert_eq!(page.rgba, truth.rgba, "print preview must match output, tile={tile:?}");
+                    } else {
+                        let ink = page.rgba.as_chunks::<4>().0.iter().filter(|c| c[0] < 128).count();
+                        assert!(ink > 300, "viewer still draws installed Chinese glyphs: {ink}");
+                    }
+                }
             }
         }
     }
