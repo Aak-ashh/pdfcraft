@@ -1666,9 +1666,9 @@ fn ccitt_fax_images_export_as_their_picture() {
 
 /// Group 3 data: rows of run lengths, white first, coded one-dimensionally (ITU-T T.4), from the
 /// few codes these runs need. Each row starts with an end-of-line code with `eol`, then with
-/// `tag` a 1 bit (the next row one-dimensional, as `/K` above 0 has it). With `align` each row
-/// starts on a byte, its end-of-line code too.
-fn group_3(rows: &[&[u32]], eol: bool, tag: bool, align: bool) -> Vec<u8> {
+/// `tag` a 1 bit (the next row one-dimensional, as `/K` above 0 has it). Fill bits (0s) go where
+/// `fill` says.
+fn group_3(rows: &[&[u32]], eol: bool, tag: bool, fill: Fill) -> Vec<u8> {
     let code = |white: bool, run: u32| match (white, run) {
         (true, 16) => "101010",
         (true, 32) => "00011011",
@@ -1678,7 +1678,9 @@ fn group_3(rows: &[&[u32]], eol: bool, tag: bool, align: bool) -> Vec<u8> {
     };
     let mut bits = String::new();
     for row in rows {
-        while align && !bits.len().is_multiple_of(8) {
+        // The end-of-line code is 12 bits.
+        let ends_code = if fill == Fill::CodeEnd && eol { 12 } else { 0 };
+        while fill != Fill::None && !(bits.len() + ends_code).is_multiple_of(8) {
             bits.push('0');
         }
         if eol {
@@ -1690,6 +1692,15 @@ fn group_3(rows: &[&[u32]], eol: bool, tag: bool, align: bool) -> Vec<u8> {
         row.iter().enumerate().for_each(|(i, run)| bits.push_str(code(i % 2 == 0, *run)));
     }
     bits.as_bytes().chunks(8).map(|c| c.iter().enumerate().fold(0u8, |b, (i, d)| b | (u8::from(*d == b'1') << (7 - i)))).collect()
+}
+
+/// Where [`group_3`] puts fill bits: none; so each row, its end-of-line code first, starts on a
+/// byte; or so each end-of-line code ends on one (T.4's fill, as TIFF writes it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fill {
+    None,
+    RowStart,
+    CodeEnd,
 }
 
 /// What Export ▸ Images claims for CCITT and for parameters given by reference, each checked
@@ -1742,16 +1753,35 @@ fn group_3_ccitt_masks_and_parameters_by_reference_export_as_their_picture() {
 
     // One-dimensional (/K 0) plain, with end-of-line codes, with each row on a byte, and with
     // both; mixed (/K 1, each row tagged one-dimensional) with end-of-line codes and without.
-    for (k, eol, align) in [(0, false, false), (0, true, false), (0, false, true), (0, true, true), (1, true, false), (1, false, false)] {
+    // Byte-aligned with end-of-line codes either way: each code starting on a byte, or ending on
+    // one (T.4's fill, as TIFF writes it). /EncodedByteAlign is given by reference once, and so is
+    // a /BlackIs1 that inverts the picture.
+    let inverted: Vec<bool> = picture.iter().map(|white| !white).collect();
+    for (k, eol, fill, align_by_reference, black_is_1) in [
+        (0, false, Fill::None, false, false),
+        (0, true, Fill::None, false, false),
+        (0, false, Fill::RowStart, true, false),
+        (0, true, Fill::RowStart, false, false),
+        (0, true, Fill::CodeEnd, false, false),
+        (1, true, Fill::None, false, false),
+        (1, false, Fill::None, false, false),
+        (1, true, Fill::CodeEnd, false, false),
+        (0, false, Fill::None, false, true),
+    ] {
         let mut d = image(&[&grey(1)[..], &fax(k)].concat());
+        let align = Object::Bool(fill != Fill::None);
+        let align = if align_by_reference { Object::Ref(doc.add(align)) } else { align };
+        let inverts = Object::Ref(doc.add(Object::Bool(black_is_1)));
         if let Some(Object::Dict(parms)) = d.get_mut(b"DecodeParms") {
             parms.set(b"EndOfLine".to_vec(), Object::Bool(eol));
-            parms.set(b"EncodedByteAlign".to_vec(), Object::Bool(align));
+            parms.set(b"EncodedByteAlign".to_vec(), align);
+            parms.set(b"BlackIs1".to_vec(), inverts);
         }
-        doc.set(r, Object::Stream(Stream::from_raw(d, group_3(&rows, eol, k > 0, align))));
+        doc.set(r, Object::Stream(Stream::from_raw(d, group_3(&rows, eol, k > 0, fill))));
+        let case = format!("/K {k}, EndOfLine {eol}, fill {fill:?}, BlackIs1 {black_is_1}");
         let out = extract_images(&doc, &[0], 0);
-        assert!(out.skipped.is_empty(), "/K {k}, EndOfLine {eol}, EncodedByteAlign {align}: {:?}", out.skipped);
-        assert_eq!(exported_white(&out.images[0].data), picture, "/K {k}, EndOfLine {eol}, EncodedByteAlign {align}");
+        assert!(out.skipped.is_empty(), "{case}: {:?}", out.skipped);
+        assert_eq!(exported_white(&out.images[0].data), if black_is_1 { inverted.clone() } else { picture.clone() }, "{case}");
     }
 
     // A grey picture under the same bits as a soft mask, then as a stencil mask: CCITT against Flate.

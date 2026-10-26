@@ -196,25 +196,37 @@ fn ccitt(doc: &Document, s: &Stream, data: &[u8], p: Dict) -> Result<Vec<u8>, St
     // As many rows as the image has, whatever /Rows says: one below /Height would cut the picture
     // short, and rows past /Height aren't drawn.
     let rows = s.dict.int(b"Height").and_then(|h| u32::try_from(h).ok()).unwrap_or(0);
-    let settings = hayro_ccitt::DecodeSettings {
-        columns,
-        rows,
-        end_of_block: flag(b"EndOfBlock", true),
-        end_of_line: flag(b"EndOfLine", false),
-        rows_are_byte_aligned: flag(b"EncodedByteAlign", false),
-        encoding: match k {
-            ..0 => hayro_ccitt::EncodingMode::Group4,
-            0 => hayro_ccitt::EncodingMode::Group3_1D,
-            k => hayro_ccitt::EncodingMode::Group3_2D { k: u32::try_from(k).unwrap_or(u32::MAX) },
-        },
-        invert_black: false,
-    };
     let stride = (columns as usize).div_ceil(8);
-    let mut out =
-        Rows { out: Vec::new(), row: vec![0; stride], x: 0, columns: columns as usize, rows: rows as usize, black_is_1: flag(b"BlackIs1", false) };
-    // Rows decoded before damaged data are kept; too few rows are refused by the caller.
-    let _ = hayro_ccitt::decode(data, &mut out, &mut hayro_ccitt::DecoderContext::new(settings));
-    Ok(out.out)
+    let decode = |aligned: bool| {
+        let settings = hayro_ccitt::DecodeSettings {
+            columns,
+            rows,
+            end_of_block: flag(b"EndOfBlock", true),
+            end_of_line: flag(b"EndOfLine", false),
+            rows_are_byte_aligned: aligned,
+            encoding: match k {
+                ..0 => hayro_ccitt::EncodingMode::Group4,
+                0 => hayro_ccitt::EncodingMode::Group3_1D,
+                k => hayro_ccitt::EncodingMode::Group3_2D { k: u32::try_from(k).unwrap_or(u32::MAX) },
+            },
+            invert_black: false,
+        };
+        let mut out = Rows {
+            out: Vec::new(),
+            row: vec![0; stride],
+            x: 0,
+            columns: columns as usize,
+            rows: rows as usize,
+            black_is_1: flag(b"BlackIs1", false),
+        };
+        // Rows decoded before damaged data are kept; too few rows are refused by the caller.
+        let _ = hayro_ccitt::decode(data, &mut out, &mut hayro_ccitt::DecoderContext::new(settings));
+        out.out
+    };
+    // Byte-aligned rows with end-of-line codes may have the fill end each code on a byte (T.4's
+    // fill, as TIFF writes it) rather than start it on one; read unaligned, the codes mark the rows
+    // either way. Codes laid out so under `/EndOfLine false` are misread.
+    Ok(decode(flag(b"EncodedByteAlign", false) && !flag(b"EndOfLine", false)))
 }
 
 /// The file for one image: its JPEG data as is, or a PNG. An image with transparency (a soft
