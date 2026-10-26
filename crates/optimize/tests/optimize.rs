@@ -649,6 +649,31 @@ fn black_and_white_images_become_jbig2() {
     assert!(render(&jbig2) == before, "the page looks the same");
 }
 
+/// A catalog `/Version` given by reference is read through it: a PDF 1.3 file whose catalog says
+/// 1.7 by reference keeps 1.7 when its images become JBIG2, rather than being lowered to 1.4; one
+/// whose catalog says 1.3 by reference gets 1.4.
+#[test]
+fn a_catalog_version_given_by_reference_is_read() {
+    for (catalog, after) in [("1.7", "1.7"), ("1.3", "1.4")] {
+        let mut doc = Document::new_empty();
+        let (w, h) = (1200, 480);
+        let text = bilevel(w, h, false);
+        let im = mono_image(&mut doc, w, h, &text, None, &[("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+        page(&mut doc, &[("Im", im)], "q 300 0 0 120 20 660 cm /Im Do Q");
+        let version = doc.add(Object::name(catalog));
+        let root = doc.root().unwrap();
+        doc.update_dict(root, |c| c.set(b"Version".to_vec(), Object::Ref(version))).unwrap();
+        let mut bytes = write_full(&doc, &SaveOptions { object_streams: false, ..SaveOptions::default() }).unwrap();
+        bytes[..8].copy_from_slice(b"%PDF-1.3");
+        let mut doc = Document::open(Arc::new(bytes)).unwrap();
+        let r = optimize(&mut doc, &Settings { mono: MonoCompression::Jbig2, ..Settings::default() }).unwrap();
+        assert_eq!(r.images_recompressed, 1);
+        let root = doc.root().unwrap();
+        let v = doc.get(root).as_dict().and_then(|c| c.get(b"Version").cloned()).unwrap();
+        assert_eq!(doc.resolve(&v).as_name(), Some(after.as_bytes()), "catalog {catalog} by reference");
+    }
+}
+
 #[test]
 fn settings_choose_what_happens() {
     let mut doc = Document::new_empty();

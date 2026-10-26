@@ -674,12 +674,13 @@ pub(crate) fn run(
 }
 
 /// JBIG2Decode is PDF 1.4: a document whose header says less, and whose catalog doesn't say 1.4
-/// or more already, gets `/Version /1.4` in its catalog (ISO 32000-2 §7.7.2). A full save with
-/// object streams writes a 1.5 header anyway.
+/// or more already (directly or by reference), gets `/Version /1.4` in its catalog (ISO 32000-2
+/// §7.7.2). A full save with object streams writes a 1.5 header anyway.
 fn at_least_pdf_1_4(doc: &mut Document) -> Result<(), OptimizeError> {
     let below = |v: &[u8]| v.len() < 3 || v < &b"1.4"[..];
     let Some(root) = doc.root() else { return Ok(()) };
-    let catalog = doc.get(root).as_dict().and_then(|c| c.name(b"Version").map(<[u8]>::to_vec));
+    let version = doc.get(root).as_dict().and_then(|c| c.get(b"Version").cloned());
+    let catalog = version.and_then(|v| doc.resolve(&v).as_name().map(<[u8]>::to_vec));
     if below(doc.version().as_bytes()) && catalog.as_deref().is_none_or(below) {
         doc.update_dict(root, |c| c.set(b"Version".to_vec(), Object::name("1.4")))?;
     }
