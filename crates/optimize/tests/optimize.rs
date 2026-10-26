@@ -535,13 +535,14 @@ fn images_whose_decode_parms_are_references_come_out_as_with_them_direct() {
 
 /// An image whose data decodes far past what its samples can need (a decompression bomb) is left
 /// alone rather than decoded up to the 1 GiB limit: a 1-bit one that would become Group 4, and an
-/// eight-bit one that would be resampled, each with a megabyte of zeros after its samples.
+/// eight-bit one that would be resampled, each with four megabytes of zeros after its samples. Stored
+/// as ASCIIHex text under Flate, broken into lines of 64 digits, their samples aren't a bomb.
 #[test]
 fn images_whose_data_decodes_far_past_their_samples_are_left_alone() {
     let (w, h) = (1200u32, 480u32);
     let text = bilevel(w, h, false);
     let shades: Vec<u8> = (0..w * h).map(|i| ((i % w) * 255 / w) as u8 ^ ((i / w) as u8 & 0x0F)).collect();
-    for padding in [0, 1 << 20] {
+    for padding in [0, 4 << 20] {
         let mut doc = Document::new_empty();
         let padded = |data: &[u8]| data.iter().copied().chain(std::iter::repeat_n(0, padding)).collect::<Vec<u8>>();
         let grey = |bits: i64| [("BitsPerComponent", bits.into()), ("ColorSpace", Object::name("DeviceGray"))];
@@ -559,6 +560,32 @@ fn images_whose_data_decodes_far_past_their_samples_are_left_alone() {
             assert_eq!(after, before);
         }
     }
+    let hex_lines = |data: &[u8]| {
+        let digits: Vec<u8> = data.iter().flat_map(|b| format!("{b:02X}").into_bytes()).collect();
+        let mut text: Vec<u8> = digits.chunks(64).flat_map(|line| line.iter().copied().chain(*b"\n")).collect();
+        text.push(b'>');
+        pdfcraft_filters::encode_flate(&text)
+    };
+    let mut doc = Document::new_empty();
+    let as_hex = |doc: &mut Document, data: &[u8], bits: i64, (w, h): (u32, u32)| {
+        let mut d = Dict::new();
+        d.set(b"Subtype".to_vec(), Object::name("Image"));
+        d.set(b"Width".to_vec(), Object::Int(w.into()));
+        d.set(b"Height".to_vec(), Object::Int(h.into()));
+        d.set(b"BitsPerComponent".to_vec(), Object::Int(bits));
+        d.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+        d.set(b"Filter".to_vec(), Object::Array(vec![Object::name("FlateDecode"), Object::name("ASCIIHexDecode")]));
+        doc.add(Object::Stream(Stream::from_raw(d, hex_lines(data))))
+    };
+    // Large enough that its hex text in lines is more than twice its samples and a byte a row
+    // plus 4 KiB: 2560 × 1200, drawn at 400 ppi.
+    let page_scan = bilevel(2560, 1200, false);
+    let one_bit = as_hex(&mut doc, &page_scan, 1, (2560, 1200));
+    let eight_bit = as_hex(&mut doc, &shades, 8, (w, h));
+    page(&mut doc, &[("A", one_bit), ("B", eight_bit)], "q 460.8 0 0 216 20 500 cm /A Do Q q 144 0 0 57.6 20 400 cm /B Do Q");
+    optimize(&mut doc, &Settings::default()).unwrap();
+    assert_eq!(stream(&doc, one_bit).dict.name(b"Filter"), Some(&b"CCITTFaxDecode"[..]), "1-bit hex text in lines: Group 4");
+    assert!(stream(&doc, eight_bit).dict.int(b"Width").is_some_and(|nw| nw < i64::from(w)), "8-bit hex text in lines: resampled");
 }
 
 #[test]
