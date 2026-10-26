@@ -257,7 +257,7 @@ Estimates unchanged.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-24 | minor | M11: Create PDF stores pictures of only black and white at one bit (Group 4 or Flate, whichever is smaller) instead of eight-bit grey; the optimizer packs eight-bit black-and-white grey images to one bit before Monochrome Images compresses them; Export ▸ Images decodes CCITT fax images. Estimates unchanged. |
+| 2026-10-24 | minor | M11: Create PDF stores pictures of only black and white at one bit (Group 4 or Flate, whichever is smaller) instead of eight-bit grey; the optimizer packs eight-bit black-and-white grey images to one bit before Monochrome Images compresses them, unless the grey settings make them smaller (a dithered scan); Export ▸ Images decodes CCITT fax images. Estimates unchanged. |
 | 2026-10-23 | minor | M11: black-and-white images (1-bit, and image masks) are stored losslessly as CCITT Group 4 when that is smaller: PDF Optimizer ▸ Images ▸ Monochrome Images (on by default, so Reduce File Size too), `doc_optimize` `mono`; `pdfcraft_filters::encode_g4`. JBIG2 and monochrome downsampling not yet. Estimates unchanged. |
 | 2026-10-27 | minor | M10: OCR stages SHA-256-verified ONNX models after the upstream RTEN URL brownout; discovery prefers a complete ONNX pair per directory, falls back to a complete RTEN pair, and never mixes formats or directories; language/web limits and estimates unchanged. |
 | 2026-10-24 | minor | M3, #3970 follow-up: the button release given back after a window move or resize goes before the pointer leaving, so hover doesn't stick. Estimates unchanged. |
