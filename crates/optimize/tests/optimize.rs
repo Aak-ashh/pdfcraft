@@ -674,6 +674,66 @@ fn a_catalog_version_given_by_reference_is_read() {
     }
 }
 
+/// Text as a renderer draws it at 300 dpi: lines 48 rows apart of a few letter shapes, each
+/// `#` a 3 × 3 block, three columns apart with a wider gap between words, every copy of a letter
+/// the same to the pixel.
+fn rendered_text(w: u32, h: u32) -> Vec<u8> {
+    const LETTERS: [&[&str]; 5] = [
+        &["##", "##", "##", "##", "##", "##", "##", "##", "##", "##"],
+        &["......", ".####.", "##..##", "##..##", "##..##", "##..##", ".####."],
+        &["##....", "##....", "##....", "#####.", "##..##", "##..##", "##..##", "#####."],
+        &["##..##", "##..##", "##..##", "##..##", ".#####"],
+        &["##", "##", "..", "##", "##", "##", "##", "##"],
+    ];
+    let stride = (w as usize).div_ceil(8);
+    let mut data = vec![0xFF; stride * h as usize];
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for baseline in (32..h as usize).step_by(48) {
+        let mut x = 8;
+        while x + 20 < w as usize {
+            let letter = LETTERS[(next() % 5) as usize];
+            for (dy, row) in letter.iter().enumerate() {
+                for (dx, c) in row.bytes().enumerate() {
+                    for (py, px) in (0..9).map(|k| (baseline + 1 + 3 * dy + k / 3 - 3 * letter.len(), x + 3 * dx + k % 3)) {
+                        if c == b'#' {
+                            data[py * stride + px / 8] &= !(0x80 >> (px % 8));
+                        }
+                    }
+                }
+            }
+            x += 3 * letter[0].len() + 3 + if next() % 5 == 0 { 12 } else { 0 };
+        }
+    }
+    data
+}
+
+/// Text whose letters repeat exactly, as rendered text does, becomes JBIG2 symbols: each letter
+/// stored once and its copies placed, several times smaller than JBIG2's generic coding of the
+/// same image, and the page looks the same.
+#[test]
+fn rendered_text_becomes_jbig2_symbols() {
+    let mut doc = Document::new_empty();
+    let (w, h) = (600, 480);
+    let text = rendered_text(w, h);
+    let im = mono_image(&mut doc, w, h, &text, None, &[("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+    // One image pixel a device pixel at scale 1, so a wrong pixel shows.
+    page(&mut doc, &[("Im", im)], "q 600 0 0 480 6 300 cm /Im Do Q");
+    let before = render(&doc);
+    let r = optimize(&mut doc, &Settings { mono: MonoCompression::Jbig2, ..Settings::default() }).unwrap();
+    assert_eq!(r.images_recompressed, 1);
+    let s = stream(&doc, im);
+    assert_eq!(s.dict.name(b"Filter"), Some(&b"JBIG2Decode"[..]));
+    let generic = pdfcraft_filters::encode_jbig2_generic(&text, w, h).unwrap();
+    assert!(s.raw.len() * 2 < generic.len(), "symbols {} bytes, generic {}", s.raw.len(), generic.len());
+    assert!(render(&doc) == before, "the page looks the same");
+}
+
 #[test]
 fn settings_choose_what_happens() {
     let mut doc = Document::new_empty();

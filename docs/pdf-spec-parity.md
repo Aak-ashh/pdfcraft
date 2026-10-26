@@ -1,6 +1,6 @@
 # PDF specification and standards parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (§7.4: lossless JBIG2 encoding in the Optimizer; JBIG2 images export; earlier, §7.4: CCITT Group 4 encoding in the Optimizer) · **Target:** Adobe Acrobat Pro (Acrobat DC, continuous track 26.002.21931, macOS)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-26 · **Change:** minor (§7.4: JBIG2 symbol coding in the Optimizer; earlier, lossless JBIG2 encoding, JBIG2 images export and CCITT Group 4 encoding) · **Target:** Adobe Acrobat Pro (Acrobat DC, continuous track 26.002.21931, macOS)
 
 How much of ISO 32000-2 (PDF 2.0) and the PDF subset standards PdfCraft implements, set against
 what Acrobat Pro implements. This is PdfCraft's equivalent of a "geometry" or "codec" checklist:
@@ -21,7 +21,7 @@ are borrowed; PDF 2.0 additions and most subset standards are missing. **150–2
 |---|---|---|---|---|
 | §7.2–7.5 | Syntax, objects, file structure, xref tables and streams, object streams, hybrid files, incremental updates | full | **own**, tolerant, repairs damaged files | `crates/cos`; corpus 958 files; fuzzed nightly |
 | §7.4 | Stream filters: Flate, LZW, ASCII85, ASCIIHex, RunLength, predictors | full | **own** | `crates/filters` |
-| §7.4 | Image filters: DCT, JPX, JBIG2, CCITTFax | full | **borrowed** (decode); CCITT Group 4 encoding; **own** JBIG2 encoding | `core.image-filters` partial; own codecs M1.1/M1.2; the Optimizer encodes CCITT Group 4 (`pdfcraft_filters::encode_g4`) and lossless JBIG2 (a generic region; no symbol coding), `optimize.mono-compression` |
+| §7.4 | Image filters: DCT, JPX, JBIG2, CCITTFax | full | **borrowed** (decode); CCITT Group 4 encoding; **own** JBIG2 encoding | `core.image-filters` partial; own codecs M1.1/M1.2; the Optimizer encodes CCITT Group 4 (`pdfcraft_filters::encode_g4`) and lossless JBIG2 (a generic region, or symbols for exact copies; no refinement, `/JBIG2Globals` or lossy coding), `optimize.mono-compression` |
 | §7.5.8 | Linearization | R W | R only | `core.linearization` planned |
 | §7.6.4 | Standard security handler R2–R6 (RC4 40/128, AES-128, AES-256), crypt filters, `/EncryptMetadata`, SASLprep | full | **own**, read and write | `crates/crypt`; written files open in Acrobat DC since #836 (#774: Acrobat needs the catalog outside object streams) |
 | §7.6.5 | Public-key security handler | full | none | `core.open-public-key`, `protect.certificate-encryption` planned |
@@ -130,6 +130,7 @@ are borrowed; PDF 2.0 additions and most subset standards are missing. **150–2
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-26 | minor | §7.4: lossless JBIG2 symbol coding (symbol dictionaries and text regions, own, from the JBIG2 draft standard) in the Optimizer, used when smaller than the generic region |
 | 2026-10-26 | minor | §7.4: lossless JBIG2 generic-region encoding (own, from the JBIG2 draft standard) in the Optimizer; Export ▸ Images decodes JBIG2 |
 | 2026-10-26 | minor | §7.4: CCITT Group 4 encoding (`fax`) in the Optimizer |
 | 2026-10-14 | minor | §12.4.4: `/Trans` and `/Dur` read into `DocInfo::transitions` and reported by `doc_info` |

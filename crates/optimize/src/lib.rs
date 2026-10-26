@@ -124,8 +124,9 @@ pub enum Compression {
 pub enum MonoCompression {
     /// CCITT Group 4 (lossless), when smaller than the image as it is.
     CcittG4,
-    /// JBIG2, lossless (a generic region), when smaller than the image as it is. JBIG2Decode is
-    /// PDF 1.4: an older document gets `/Version /1.4` in its catalog.
+    /// JBIG2, lossless (a generic region, or symbols when the image's marks repeat), when smaller
+    /// than the image as it is. JBIG2Decode is PDF 1.4: an older document gets `/Version /1.4` in
+    /// its catalog.
     Jbig2,
     /// Keep each image's own compression.
     Retain,

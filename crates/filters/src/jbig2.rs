@@ -1,8 +1,10 @@
-//! JBIG2 generic region encoding (ITU-T T.88 | ISO/IEC 14492), for `JBIG2Decode`
-//! (ISO 32000-2 §7.4.7): lossless, template 0 with its nominal adaptive pixels, typical prediction
-//! on, MQ arithmetic coding ([`crate::mq`]). Written from the standard's 6.2.5 (coding a generic
-//! region), 7.2 (segment headers), 7.4.1, 7.4.6 and 7.4.8 (the segments) and D.3 (the embedded
-//! organisation PDF uses).
+//! JBIG2 encoding (ITU-T T.88 | ISO/IEC 14492), for `JBIG2Decode` (ISO 32000-2 §7.4.7), lossless:
+//! a generic region, template 0 with its nominal adaptive pixels, typical prediction on, MQ
+//! arithmetic coding ([`crate::mq`]); or the image's marks as symbols ([`symbols`]). Written from
+//! the standard's 6.2.5 (coding a generic region), 7.2 (segment headers), 7.4.1, 7.4.6 and 7.4.8
+//! (the segments) and D.3 (the embedded organisation PDF uses).
+
+mod symbols;
 
 use crate::FilterError;
 use crate::mq::{Context, MqEncoder};
@@ -41,6 +43,23 @@ const SLTP: [u8; 16] = [1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1];
 /// Columns of padding either side of a row, so every template pixel of a row's pixels is in it.
 const PAD: usize = 4;
 
+/// `rows` rows of `columns` 1-bit PDF samples as lossless JBIG2, the smaller of two codings:
+/// [`encode_jbig2_generic`]'s, or one that stores each distinct mark of the image once, as a
+/// symbol, and places its copies (see [`symbols`]). Either way the stream is in the embedded
+/// organisation and decodes to the same bits without `/JBIG2Globals`.
+///
+/// Errors: as [`encode_jbig2_generic`].
+pub fn encode_jbig2(data: &[u8], columns: u32, rows: u32) -> Result<Vec<u8>, FilterError> {
+    let generic = encode_jbig2_generic(data, columns, rows)?;
+    // `encode_jbig2_generic` checked that the rows are there.
+    let stride = (columns as usize).div_ceil(8);
+    let samples = usize::try_from(rows).ok().and_then(|r| r.checked_mul(stride)).and_then(|n| data.get(..n));
+    Ok(match samples.and_then(|s| symbols::encode(s, columns, rows)) {
+        Some(coded) if coded.len() < generic.len() => coded,
+        _ => generic,
+    })
+}
+
 /// `rows` rows of `columns` 1-bit PDF samples (most significant bit first, each row starting on
 /// a new byte), as a JBIG2 stream in the embedded organisation: a page information segment and an
 /// immediate lossless generic region segment, which `JBIG2Decode` decodes to the same bits
@@ -62,69 +81,104 @@ pub fn encode_jbig2_generic(data: &[u8], columns: u32, rows: u32) -> Result<Vec<
         filter: "JBIG2Decode",
         detail: format!("{} bytes for {rows} rows of {columns} samples", data.len()),
     })?;
-    let region = generic_region(samples, width, stride);
+    let mut contexts: Vec<Context> = vec![0; 1 << 16];
+    let mut mq = MqEncoder::new();
+    let height = samples.len() / stride;
+    code_generic(&mut mq, &mut contexts, width, height, true, |y, row| {
+        let packed = samples.get(y * stride..).unwrap_or_default();
+        for (x, pixel) in row.iter_mut().enumerate() {
+            let sample = packed.get(x / 8).is_some_and(|b| b & (0x80 >> (x % 8)) != 0);
+            *pixel = u8::from(!sample);
+        }
+    });
+    let region = mq.finish();
     let mut out = Vec::with_capacity(region.len() + 64);
-    // Page information (7.4.8): the region's size, resolution unknown, eventually lossless,
-    // default pixel 0 (white), OR combination, not striped.
+    segment(&mut out, 0, 48, &[], false, &page_information(columns, rows));
+    segment(&mut out, 1, 39, &[], false, &generic_region(columns, rows, 0, 0, &region));
+    Ok(out)
+}
+
+/// A page information segment's data (7.4.8): the page's size, resolution unknown, eventually
+/// lossless, default pixel 0 (white), OR combination, not striped.
+fn page_information(columns: u32, rows: u32) -> Vec<u8> {
     let mut page = Vec::with_capacity(19);
     page.extend_from_slice(&columns.to_be_bytes());
     page.extend_from_slice(&rows.to_be_bytes());
     page.extend_from_slice(&[0; 8]);
     page.push(0x01);
     page.extend_from_slice(&[0, 0]);
-    segment(&mut out, 0, 48, &page);
-    // Immediate lossless generic region (7.4.6): region information (7.4.1) at (0, 0) with OR,
-    // flags (MMR 0, template 0, TPGDON 1), the AT pixels at their nominal places, then the data.
-    let mut generic = Vec::with_capacity(26 + region.len());
-    generic.extend_from_slice(&columns.to_be_bytes());
-    generic.extend_from_slice(&rows.to_be_bytes());
-    generic.extend_from_slice(&[0; 8]);
-    generic.push(0);
-    generic.push(0x08);
-    for (x, y) in &TEMPLATE[12..] {
-        generic.push(*x as i8 as u8);
-        generic.push(*y as i8 as u8);
-    }
-    generic.extend_from_slice(&region);
-    segment(&mut out, 1, 39, &generic);
-    Ok(out)
+    page
 }
 
-/// A segment (7.2): its header (number, type, no referred-to segments, page 1, data length), then
-/// its data.
-fn segment(out: &mut Vec<u8>, number: u32, kind: u8, data: &[u8]) {
+/// A region segment information field (7.4.1): a `width` × `height` region at (`x`, `y`) on the
+/// page, combined with it by OR.
+fn region_information(out: &mut Vec<u8>, width: u32, height: u32, x: u32, y: u32) {
+    for v in [width, height, x, y] {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    out.push(0);
+}
+
+/// An immediate lossless generic region segment's data (7.4.6): its region information, flags
+/// (MMR 0, template 0, TPGDON 1), the AT pixels at their nominal places, then `coded`.
+fn generic_region(width: u32, height: u32, x: u32, y: u32, coded: &[u8]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(26 + coded.len());
+    region_information(&mut data, width, height, x, y);
+    data.push(0x08);
+    at_pixels(&mut data);
+    data.extend_from_slice(coded);
+    data
+}
+
+/// Template 0's four AT pixels at their nominal places, as AT flags (7.4.6.3, 7.4.2.1.2).
+fn at_pixels(out: &mut Vec<u8>) {
+    for (x, y) in &TEMPLATE[12..] {
+        out.push(*x as i8 as u8);
+        out.push(*y as i8 as u8);
+    }
+}
+
+/// A segment (7.2): its header (number, type, the segments it refers to, page 1, data length),
+/// then its data. `retained`: a later segment refers to this one. Segment numbers here are below
+/// 256, so each referred-to one takes a byte (7.2.5); a segment refers to at most four, so their
+/// count and retain bits take one byte too (7.2.4), and the retain bits of the referred-to ones
+/// are 0: nothing after this segment refers to them.
+fn segment(out: &mut Vec<u8>, number: u32, kind: u8, refers_to: &[u8], retained: bool, data: &[u8]) {
     out.extend_from_slice(&number.to_be_bytes());
     out.push(kind);
-    out.push(0);
+    let count = refers_to.len().min(4);
+    out.push((count as u8) << 5 | u8::from(retained));
+    out.extend_from_slice(refers_to.get(..count).unwrap_or_default());
     out.push(1);
     // A segment's data never comes near 4 GiB here: a row is at most 1 MiB wide.
     out.extend_from_slice(&u32::try_from(data.len()).unwrap_or(u32::MAX).to_be_bytes());
     out.extend_from_slice(data);
 }
 
-/// The arithmetic-coded data of a generic region (6.2.5.7) with template 0, the nominal AT pixels
-/// and typical prediction.
-fn generic_region(samples: &[u8], width: usize, stride: usize) -> Vec<u8> {
-    let mut contexts: Vec<Context> = vec![0; 1 << 16];
-    let mut mq = MqEncoder::new();
+/// Codes a `width` × `height` bitmap as a generic region (6.2.5.7) with template 0 and the nominal
+/// AT pixels, its decisions in `contexts` (2^16 of them), with typical prediction when `typical`
+/// (TPGDON). `fill(y, row)` sets row `y`'s `width` pixels, 1 for black. Pixels outside the bitmap
+/// count as 0 (white), as the decoder takes them.
+fn code_generic(mq: &mut MqEncoder, contexts: &mut [Context], width: usize, height: usize, typical: bool, mut fill: impl FnMut(usize, &mut [u8])) {
     let sltp = SLTP.iter().enumerate().fold(0usize, |cx, (k, v)| cx | usize::from(*v) << k);
     // The two rows above the current one and the current one, as JBIG2 pixels (1 black), padded.
     let blank = vec![0u8; width + 2 * PAD];
     let (mut above2, mut above1) = (blank.clone(), blank.clone());
     let mut row = blank;
     let mut ltp = false;
-    for packed in samples.chunks_exact(stride) {
-        for (x, pixel) in row.iter_mut().skip(PAD).take(width).enumerate() {
-            let sample = packed.get(x / 8).is_some_and(|b| b & (0x80 >> (x % 8)) != 0);
-            *pixel = u8::from(!sample);
+    for y in 0..height {
+        if let Some(pixels) = row.get_mut(PAD..PAD + width) {
+            fill(y, pixels);
         }
-        // Typical prediction (6.2.5.5): a row the same as the one above is coded as one decision.
-        let typical = row == above1;
-        if let Some(cx) = contexts.get_mut(sltp) {
-            mq.encode(cx, typical != ltp);
+        if typical {
+            // Typical prediction (6.2.5.5): a row the same as the one above is coded as one decision.
+            let same = row == above1;
+            if let Some(cx) = contexts.get_mut(sltp) {
+                mq.encode(cx, same != ltp);
+            }
+            ltp = same;
         }
-        ltp = typical;
-        if !typical {
+        if !ltp {
             for x in 0..width {
                 let at = |dx: i32, dy: i32| {
                     let line = match dy {
@@ -144,7 +198,6 @@ fn generic_region(samples: &[u8], width: usize, stride: usize) -> Vec<u8> {
         std::mem::swap(&mut above2, &mut above1);
         std::mem::swap(&mut above1, &mut row);
     }
-    mq.finish()
 }
 
 #[cfg(test)]
@@ -153,7 +206,7 @@ mod tests {
 
     /// The rows an independent decoder (`hayro-jbig2`) reads from `data`, as PDF samples: true
     /// for white (a JBIG2 0).
-    fn decode(data: &[u8]) -> Vec<Vec<bool>> {
+    pub(super) fn decode(data: &[u8]) -> Vec<Vec<bool>> {
         struct Rows(Vec<Vec<bool>>, Vec<bool>, usize);
         impl hayro_jbig2::Decoder for Rows {
             fn push_pixel(&mut self, black: bool) {
@@ -175,7 +228,7 @@ mod tests {
     }
 
     /// The rows of packed samples `data`, true for a 1 bit.
-    fn unpack(data: &[u8], columns: u32, rows: u32) -> Vec<Vec<bool>> {
+    pub(super) fn unpack(data: &[u8], columns: u32, rows: u32) -> Vec<Vec<bool>> {
         let stride = (columns as usize).div_ceil(8);
         (0..rows as usize).map(|y| (0..columns as usize).map(|x| data[y * stride + x / 8] & (0x80 >> (x % 8)) != 0).collect()).collect()
     }
@@ -242,7 +295,7 @@ mod tests {
     }
 
     /// Packed samples from JBIG2 pixels (1 black): a 0 sample for each 1.
-    fn samples(pixels: &[Vec<u8>]) -> Vec<u8> {
+    pub(super) fn samples(pixels: &[Vec<u8>]) -> Vec<u8> {
         let width = pixels.first().map_or(0, Vec::len);
         let stride = width.div_ceil(8);
         let mut data = vec![0xFF; stride * pixels.len()];

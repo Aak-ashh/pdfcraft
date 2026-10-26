@@ -596,9 +596,10 @@ fn mono(doc: &Document, s: &Stream, compression: MonoCompression) -> Option<Stre
         new.remove(k);
     }
     let data = if compression == MonoCompression::Jbig2 {
-        // One embedded JBIG2 stream with its own page; no /JBIG2Globals.
+        // One embedded JBIG2 stream with its own page (and symbol dictionary, when the image's
+        // marks repeat); no /JBIG2Globals.
         new.set(b"Filter".to_vec(), Object::name("JBIG2Decode"));
-        pdfcraft_filters::encode_jbig2_generic(&samples, w, h).ok()?
+        pdfcraft_filters::encode_jbig2(&samples, w, h).ok()?
     } else {
         let mut parms = Dict::new();
         parms.set(b"K".to_vec(), Object::Int(-1));
