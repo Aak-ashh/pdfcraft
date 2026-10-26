@@ -84,7 +84,9 @@ impl Default for CcittParams {
 /// Group 3 rows on bytes (`k` from 0, `encoded_byte_align`) are read by their end-of-line codes,
 /// whether the fill starts each code on a byte or ends it on one, when `data` starts with one (T.4
 /// sends one before the first row when it sends them at all), and on bytes otherwise, whatever
-/// `end_of_line` says. Group 4 is read as its parameters say.
+/// `end_of_line` says. Group 4 is read as its parameters say. Data with codes but none before the
+/// first row is read on bytes, as PdfCraft's renderer draws it; with `k` 0 and the fill ending each
+/// code on a byte, that may be other rows than were coded.
 ///
 /// Errors: `columns` that aren't from 1 to [`MAX_CCITT_COLUMNS`] ([`FilterError::Unsupported`]).
 pub fn decode_ccitt(data: &[u8], p: &CcittParams, max_rows: u32) -> Result<Vec<u8>, FilterError> {

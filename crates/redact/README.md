@@ -20,7 +20,9 @@ clear_marks(&mut doc, None)?;                        // remove marks without app
 - **images**: fully covered → removed; partly covered → a copy with the covered pixels cleared
   (8/16-bit and 1/2/4-bit images, image masks; Flate/LZW/RL/A85/AHx, and CCITT fax as the last
   filter, decoded through `Document::decoded_image_within`; `/DecodeParms` given by reference,
-  numbers inside included, count). Codecs redaction doesn't decode (DCT, JPX, JBIG2) are removed
+  numbers inside included, count; byte-aligned Group 3 with end-of-line codes but none before the
+  first row, not as T.4 sends them, is cleared as PdfCraft draws it, which at `/K 0` may be other
+  rows than were coded). Codecs redaction doesn't decode (DCT, JPX, JBIG2) are removed
   whole (fail-closed); inline images under an area are removed. Images with separate `/SMask`
   or `/Mask` data, and images whose data decodes to more than three times their declared raster
   and a byte per row, plus 4 KiB (ASCIIHex text broken into lines under Flate is a little over

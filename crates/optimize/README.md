@@ -41,7 +41,10 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   450 ppi, CCITT Group 4). Black-and-white images are a 1-bit image with one colour component
   (grey, indexed, a separation) or an image mask, stored with no filter, with general-purpose ones
   or with CCITT fax after any of those (decoded by `Document::decoded_image_within`, no further
-  than its rows can need), and an eight-bit grey image of
+  than its rows can need; byte-aligned Group 3 with end-of-line codes but none before the first
+  row, not as T.4 sends them, is read as PdfCraft draws it, which at `/K 0` may be other rows than
+  were coded, and an image resampled, or stored again as Group 4 from behind another filter,
+  keeps them), and an eight-bit grey image of
   only 0 and 255, packed to one bit (not an indexed image, whose samples are palette indices, nor
   one with a colour-key `/Mask`) unless the grey settings make it smaller still, its soft mask counted
   (resampled with it there, kept as it is here), as they can a dithered scan by downsampling it to
@@ -64,8 +67,8 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
     settings. Every change is kept only when it is smaller as stored.
   - Apart from the downsampling it is lossless: the samples keep their meaning, so the colour
     space, decode array and `/Mask` stay. Group 4 wins on scans, whose ragged edges defeat Flate;
-    on clean computer-drawn 1-bit art Flate can be smaller. Not yet: JBIG2, Group 3 to Group 4
-    without resampling, inline images, an image's own `/SMask` or `/Mask` image (only images drawn
+    on clean computer-drawn 1-bit art Flate can be smaller. Not yet: JBIG2, a lone Group 3 image to
+    Group 4 without resampling (one behind another filter is stored again as Group 4), inline images, an image's own `/SMask` or `/Mask` image (only images drawn
     on a page are visited), and Group 4 for rows wider than 32,767 samples.
 - **Discard objects:** thumbnails, alternate images, document tags, print settings.
 - **Clean up:** Flate for streams with no filter; for streams with an outer ASCII85 or ASCIIHex
