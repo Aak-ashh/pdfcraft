@@ -1495,6 +1495,12 @@ fn jbig2_images_export_as_their_picture() {
     large[11..15].copy_from_slice(&20_000u32.to_be_bytes());
     large[15..19].copy_from_slice(&10_000u32.to_be_bytes());
     assert!(skipped(&page(20_000, 4, &large, None, false)), "a page over the export's size");
+    // Refused the same ways as a stencil /Mask, it is left out: the image exports opaque.
+    for (width, height, mask) in [(w + 8, h, &jbig2), (20_000, 4, &large)] {
+        let rgba = exported_rgba(&page(width, height, mask, None, true)).1;
+        assert_eq!(rgba.len() as i64, width * height * 4, "a {width}-wide mask");
+        assert!(alphas(&rgba).iter().all(|a| *a == 255), "a refused {width}-wide mask is left out");
+    }
     // A page of exactly the budget, 20,000 × 5,000, is decoded; one row more is refused.
     for (rows, refused) in [(5_000u32, false), (5_001, true)] {
         large[15..19].copy_from_slice(&rows.to_be_bytes());

@@ -44,10 +44,10 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   on clean computer-drawn 1-bit art Flate can be smaller, and the image then stays. Not yet:
   JBIG2 symbol coding (lossy or lossless), monochrome downsampling, inline images, soft masks and
   `/Mask` images, and Group 4 for rows wider than 32,767 samples (JBIG2 takes rows of up to
-  1,048,576). Redaction doesn't decode Group 4 yet: a mark over part of an image stored this way
-  removes the whole image (nothing leaks). Nor does anything that exports an image: Export ▸
-  Images and Save Image As refuse it, Copy Image fails, and Word, PowerPoint and HTML export leave
-  the picture out.
+  1,048,576). Redaction doesn't decode JBIG2 or Group 4 yet: a mark over part of such an image
+  removes the whole image (nothing leaks). Export reads JBIG2, but nothing that exports an image
+  reads Group 4 yet: Export ▸ Images and Save Image As refuse it, Copy Image fails, and Word,
+  PowerPoint and HTML export leave the picture out.
 - **Discard objects:** thumbnails, alternate images, document tags, print settings.
 - **Clean up:** Flate for streams with no filter; for streams with an outer ASCII85 or ASCIIHex
   layer, that layer is removed when the result is smaller (the inner filters keep their encoded
