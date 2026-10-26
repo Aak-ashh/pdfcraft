@@ -40,10 +40,12 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   or lossless JBIG2 (`encode_jbig2`; a document below PDF 1.4 gets `/Version /1.4` in
   its catalog) when that is smaller as stored. JBIG2 stores each distinct mark once, as a
   symbol, when the image's marks repeat exactly, as rendered text's do: on six pages of
-  300 dpi text that came to 28% of a generic region's size and 17% of Group 4's. On scans, whose copies of a letter are seldom identical, it is a generic region,
-  about a third smaller than Group 4. It is lossless: the samples decode to the same bits, so the colour
-  space, decode array and masks stay. Group 4 wins on scans, whose ragged edges defeat Flate;
-  on clean computer-drawn 1-bit art Flate can be smaller, and the image then stays. Not yet:
+  300 dpi text that came to 28% of a generic region's size and 17% of Group 4's. On scans,
+  whose copies of a letter are seldom identical, it is nearly always a generic region: 27–33%
+  smaller than Group 4 on the same pages with scan-like noise added. It is lossless: the
+  samples decode to the same bits, so the colour space, decode array and masks stay. Group 4
+  wins on scans, whose ragged edges defeat Flate; on clean computer-drawn 1-bit art Flate can
+  be smaller, and the image then stays. Not yet:
   JBIG2 refinement coding (lossless gains on scans), a symbol dictionary shared between images
   (`/JBIG2Globals`), lossy JBIG2, monochrome downsampling, inline images, soft masks and
   `/Mask` images, and Group 4 for rows wider than 32,767 samples (JBIG2 takes rows of up to

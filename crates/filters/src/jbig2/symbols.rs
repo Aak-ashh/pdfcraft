@@ -655,9 +655,97 @@ mod tests {
         let big = bits(Some(4436));
         assert_eq!((big.len(), &big[..6]), (6 + 32, &[0, 1, 1, 1, 1, 1][..]));
         assert!(big[6..].iter().all(|b| *b == 0));
-        // PREV keeps a leading 1 and the last eight decisions.
-        let contexts: Vec<usize> = decisions(Some(i32::MIN)).iter().map(|(cx, _)| *cx).collect();
-        assert!(contexts[..8].iter().all(|cx| *cx < 256) && contexts[8..].iter().all(|cx| (256..512).contains(cx)));
+        // PREV keeps a leading 1 and the last eight decisions, so it stays below 512, also when
+        // those eight are all 0 (PREV exactly 256), as in 4436's offset of 0.
+        for value in [Some(i32::MIN), Some(4436), Some(-4436), Some(4436 + 0x100), Some(i32::MAX), None] {
+            let contexts: Vec<usize> = decisions(value).iter().map(|(cx, _)| *cx).collect();
+            assert!(contexts.iter().take(8).all(|cx| *cx < 256) && contexts.iter().skip(8).all(|cx| (256..512).contains(cx)), "{value:?}");
+        }
+        assert!(decisions(Some(4436)).iter().any(|(cx, _)| *cx == 256));
+    }
+
+    /// Strips and first columns thousands of pixels apart need Annex A's 32-bit range: a mark at
+    /// the far right of a 12,000-pixel page, then one at the left below it (S back by 11,000), and
+    /// lines 5,000 rows apart. Each shape occurs twice, so both plans are made.
+    #[test]
+    fn coordinates_past_4435_round_trip() {
+        let shapes = glyphs(3, 4);
+        let mut picture = vec![vec![0u8; 12_000]; 40];
+        for (k, x) in [11_000, 0, 5_000, 11_980].into_iter().enumerate() {
+            draw(&mut picture, &shapes[k % 2], x, 2 + 9 * k as i64);
+        }
+        assert_eq!(every_plan_round_trips(&picture), 8);
+        let mut tall = vec![vec![0u8; 30]; 10_050];
+        for (k, y) in [0, 5_000, 10_030].into_iter().enumerate() {
+            draw(&mut tall, &shapes[k % 3], 3, y);
+            draw(&mut tall, &shapes[(k + 1) % 3], 15, y);
+        }
+        assert_eq!(every_plan_round_trips(&tall), 8);
+    }
+
+    /// The padding bits of a row whose width isn't a multiple of 8 are ignored whatever they are:
+    /// black (0) padding, as many scans have, neither joins the marks nor stops symbol coding.
+    #[test]
+    fn black_padding_bits_are_ignored() {
+        for columns in [13, 241, 901] {
+            let picture = text(columns, 120, &glyphs(12, 6), 8);
+            let mut data = samples(&picture);
+            let stride = columns.div_ceil(8);
+            for row in data.chunks_mut(stride) {
+                row[stride - 1] &= 0xFF << (8 * stride - columns);
+            }
+            let (c, r) = (columns as u32, 120);
+            let page = page(&data, c, r).unwrap();
+            assert!(page.marks.iter().all(|m| m.x1 as usize <= columns), "{columns} columns");
+            for copies in [1, 2] {
+                if let Some(coded) = plan(&page, c, r, copies, None) {
+                    assert_eq!(decode(&coded), unpack(&data, c, r), "{columns} columns");
+                }
+            }
+            if columns > 13 {
+                assert_eq!(segment_types(&encode_jbig2(&data, c, r).unwrap())[1], 0, "{columns} columns: symbol coded");
+            }
+        }
+    }
+
+    /// Pixels touching only at a corner are one mark (8-connected); side by side with a white
+    /// column between, two. A mark of 256 pixels a side is a symbol, one of 257 is left to the
+    /// generic region. The diagonal and the dot occur twice, so both plans are made.
+    #[test]
+    fn marks_join_at_corners_and_large_ones_are_left_out() {
+        let mut picture = vec![vec![0u8; 300]; 300];
+        for i in 0..6 {
+            picture[10 + i][10 + i] = 1;
+            picture[10 + i][100 + i] = 1;
+        }
+        picture[30][10] = 1;
+        picture[30][12] = 1;
+        picture[40][0..256].fill(1);
+        picture[60][0..257].fill(1);
+        for row in &mut picture[44..300] {
+            row[290] = 1;
+        }
+        let data = samples(&picture);
+        let page = page(&data, 300, 300).unwrap();
+        let boxes: Vec<(u32, u32, u32, u32)> = page.marks.iter().map(|m| (m.x0, m.y0, m.x1 - m.x0, m.y1 - m.y0)).collect();
+        assert_eq!(boxes, [(10, 10, 6, 6), (100, 10, 6, 6), (10, 30, 1, 1), (12, 30, 1, 1), (0, 40, 256, 1), (290, 44, 1, 256), (0, 60, 257, 1)]);
+        let large: Vec<(u32, u32)> = page.large.iter().map(|m| (page.marks[*m as usize].x0, page.marks[*m as usize].y0)).collect();
+        assert_eq!(large, [(0, 60)]);
+        assert_eq!(every_plan_round_trips(&picture), 8);
+    }
+
+    /// Past 2^20 black runs or 2^24 rows the image is left to generic coding; at 2^20 runs it is
+    /// still looked at.
+    #[test]
+    fn busy_or_tall_images_are_left_to_generic_coding() {
+        // 0x55: four black pixels a byte, each its own run, under the same ones on the next row.
+        let columns = 1 << 20;
+        let row = vec![0x55u8; columns / 8];
+        assert!(page(&row.repeat(2), columns as u32, 2).is_some(), "2^20 runs");
+        assert!(page(&row.repeat(3), columns as u32, 3).is_none(), "1.5 × 2^20 runs");
+        let tall = vec![0xFFu8; MAX_ROWS as usize + 1];
+        assert!(page(&tall, 1, MAX_ROWS + 1).is_none());
+        assert!(page(&tall, 1, MAX_ROWS).is_some());
     }
 
     /// A page of text whose letters repeat exactly, as rendered text does, keeps each letter once:
