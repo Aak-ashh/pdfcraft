@@ -801,7 +801,10 @@ pub(crate) fn process(doc: &mut Document, scope: &mut Scope<'_>, streams: &[Vec<
 fn process_from(doc: &mut Document, scope: &mut Scope<'_>, streams: &[Vec<u8>], resources: &Dict, mut gs: Gs) -> Output {
     let mut out = Output::default();
     let fallback = Rc::new(Metrics::fallback());
-    let mut stack: Vec<Gs> = Vec::new();
+    // With each saved state, the text and text line matrices: inside a text object `q`/`Q`
+    // save and restore them too (ISO 32000-2 §9.4.1 as corrected by the PDF Association's
+    // errata, issue 368), as the renderer does.
+    let mut stack: Vec<(Gs, Matrix, Matrix)> = Vec::new();
     let (mut tm, mut tlm) = (Matrix::IDENTITY, Matrix::IDENTITY);
     let fonts_res = res_dict(doc, resources, b"Font");
     let ext_gstates = res_dict(doc, resources, b"ExtGState");
@@ -901,10 +904,10 @@ fn process_from(doc: &mut Document, scope: &mut Scope<'_>, streams: &[Vec<u8>], 
                 clip = false;
             }
             match o {
-                b"q" => stack.push(gs.clone()),
+                b"q" => stack.push((gs.clone(), tm, tlm)),
                 b"Q" => {
-                    if let Some(g) = stack.pop() {
-                        gs = g;
+                    if let Some((g, m, lm)) = stack.pop() {
+                        (gs, tm, tlm) = (g, m, lm);
                     }
                 }
                 b"cm" => {
