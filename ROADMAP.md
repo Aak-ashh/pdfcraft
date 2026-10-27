@@ -1,15 +1,10 @@
 # PdfCraft roadmap
 
 > **Last reviewed:** 2026-10-27 · **Last updated:** 2026-10-27 · **Change:** patch (M2, PR #4172: integrate main 1dd2737b; preserve viewer-only CJK fallback and regression coverage across engine, renderer and Combine module splits; estimates unchanged)
-
 > **Last reviewed:** 2026-10-27 · **Last updated:** 2026-10-27 · **Change:** patch (M2, PR #4172: integrate main 9a9813bf and preserve viewer-only CJK fallback through the engine module split; estimates unchanged)
-
 > **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M2, PR #4172: document installed-font resolution helpers and regression contracts; behavior and estimates unchanged)
-
 > **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M2, PR #4172: print preview excludes installed CJK fonts and isolates its font cache from the viewer; estimates unchanged)
-
 > **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M2, PR #4172: reconcile current main while retaining display-only CJK fallback and upstream Japanese font selection; estimates unchanged)
-
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M2, PR #4172: extend on-screen CJK fallback to Combine thumbnails and figure previews; recognise FangSong and subset-prefixed Founder names; estimates unchanged)
 
 **Stage: alpha** · next: beta, ~25% (ready for real work 50% → 75%) and ~400–700 h away

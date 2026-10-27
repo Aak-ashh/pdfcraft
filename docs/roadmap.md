@@ -1,15 +1,10 @@
 # PdfCraft roadmap: milestones and what's next
 
 > **Last reviewed:** 2026-10-27 · **Last updated:** 2026-10-27 · **Change:** patch (M2, PR #4172: integrate main 1dd2737b; preserve viewer-only CJK fallback and regression coverage across engine, renderer and Combine module splits; estimates unchanged)
-
 > **Last reviewed:** 2026-10-27 · **Last updated:** 2026-10-27 · **Change:** patch (M2, PR #4172: integrate main 9a9813bf and migrate viewer-only CJK configuration to the split engine modules; estimates unchanged)
-
 > **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M2, PR #4172: document installed-font helpers and regression contracts; behavior and estimates unchanged)
-
 > **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M2, PR #4172: print-preview font policy matches output, with isolated caches and GBK switching regressions; estimates unchanged)
-
 > **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M2, PR #4172: reconcile current main and retain Japanese serif/weight selection alongside display-only CJK fallback; estimates unchanged)
-
 > **Last reviewed:** 2026-10-25 | **Last updated:** 2026-10-25 | **Change:** minor (M14 localization current state: Arabic logical catalog, explicit RTL label direction and mirrored stock chrome; native/browser RTL workflows unqualified. Native release Hans face via LXGW WenKai Lite; estimates unchanged)
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M7, #2636 partial: pasting added text boxes and images in the engine and through `content_copy`; estimates unchanged)
 > **Last reviewed:** 2026-10-23 · **Last updated:** 2026-10-23 · **Change:** minor (M11: image optimization accounts for page-local UserUnit; estimates unchanged)
