@@ -130,7 +130,7 @@ pub fn page_backdrops(doc: &Document, pages: &[usize]) -> Vec<Option<Backdrop>> 
 /// couldn't turn back on: a tagged copy is still in their content, with no background over it.
 /// They look the same on white paper.
 pub fn backdrops_left_off(doc: &Document) -> Vec<usize> {
-    let tag_of = |o: &Object| crate::stream_tag(doc, o);
+    let tag_of = |o: &Object| crate::place::stream_tag(doc, o);
     let copy = |o: &Object| doc.resolve(o).as_dict().is_some_and(|d| d.get(TAG).is_some());
     pdfcraft_model::pages(doc)
         .iter()
@@ -176,7 +176,7 @@ pub(crate) fn replace(doc: &mut Document, page: &pdfcraft_model::Page) -> Result
     let copy = doc.add(Object::Stream(Stream::flate(dict, bytes)));
     // Every slot that draws the original: a page may list the same stream twice, and a second
     // copy of the fill would cover the background again.
-    let mut list = crate::contents(doc, page)?;
+    let mut list = crate::place::contents(doc, page)?;
     let mut replaced = false;
     for entry in list.iter_mut().filter(|o| matches!(o, Object::Ref(r) if *r == original)) {
         *entry = Object::Ref(copy);
@@ -192,7 +192,7 @@ pub(crate) fn replace(doc: &mut Document, page: &pdfcraft_model::Page) -> Result
 /// safe; a copy listed in several slots is restored in each. Returns how many slots it restored.
 /// A copy it can't restore stays as it is, tag and all, so [`backdrops_left_off`] names its page.
 pub(crate) fn restore(doc: &mut Document, page: &pdfcraft_model::Page) -> Result<usize, EditError> {
-    let mut list = crate::contents(doc, page)?;
+    let mut list = crate::place::contents(doc, page)?;
     // Per copy: the stream that takes its place, or `None` when it stays.
     let mut done: Vec<(ObjRef, Option<ObjRef>)> = Vec::new();
     let mut restored = 0;
