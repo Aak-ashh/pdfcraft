@@ -187,7 +187,7 @@ pub(super) fn clash(name: &str, other: &str) -> Option<String> {
 }
 
 /// The array `key` of `holder` (`/Fields` of the form, `/Kids` of a field).
-fn list_of(doc: &Document, holder: ObjRef, key: &[u8]) -> Vec<Object> {
+pub(super) fn list_of(doc: &Document, holder: ObjRef, key: &[u8]) -> Vec<Object> {
     let d = doc.get(holder).as_dict().cloned().unwrap_or_default();
     d.get(key).map(|o| doc.resolve(o)).and_then(|o| o.as_array().cloned()).unwrap_or_default()
 }

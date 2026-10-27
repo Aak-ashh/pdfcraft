@@ -4636,6 +4636,20 @@ fn a_joining_radio_button_with_a_taken_export_value_takes_a_free_one() {
     assert!(normal.contains(b"Choice2") && !normal.contains(b"Choice1"));
 }
 
+/// A group whose `/Kids` is an indirect array keeps its own buttons when another joins it.
+#[test]
+fn a_group_with_indirect_kids_keeps_its_buttons_when_joined() {
+    let mut doc = two_radio_groups("Yes", "No");
+    let group = field(&fields(&doc), "Group1").obj;
+    let kids = doc.get(group).as_dict().unwrap().get(b"Kids").cloned().unwrap();
+    let held = doc.add(kids);
+    doc.update_dict(group, |d| d.set(b"Kids".to_vec(), Object::Ref(held))).unwrap();
+    rename_to(&mut doc, "Group2", "Group1").unwrap();
+    let doc = reopen(&doc);
+    let all = fields(&doc);
+    assert_eq!(field(&all, "Group1").widgets.iter().filter_map(|w| w.on_state.clone()).collect::<Vec<_>>(), ["Yes", "No"]);
+}
+
 /// Buttons of the joining group that share an export value (a button repeated on another page,
 /// on together) still share it after the join, under one fresh name.
 #[test]

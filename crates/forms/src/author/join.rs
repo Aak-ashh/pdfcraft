@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::lifecycle::{drop_from_calculation_order, split_merged};
-use super::tree::detach;
+use super::tree::{detach, list_of};
 use super::*;
 
 /// The keys a field that is also its own widget sheds when it becomes only a widget. `/AA`
@@ -94,11 +94,10 @@ pub(super) fn join_radio_group(doc: &mut Document, f: &Field, target: &Field) ->
         doc.set(w.obj, Object::Dict(d));
         kids.push(Object::Ref(w.obj));
     }
-    doc.update_dict(target.obj, |d| {
-        let mut list = d.get(b"Kids").and_then(|k| k.as_array().cloned()).unwrap_or_default();
-        list.extend(kids);
-        d.set(b"Kids".to_vec(), Object::Array(list));
-    })?;
+    // `/Kids` may be an indirect array: read through it so the group's own buttons stay.
+    let mut list = list_of(doc, target.obj, b"Kids");
+    list.extend(kids);
+    doc.update_dict(target.obj, |d| d.set(b"Kids".to_vec(), Object::Array(list)))?;
     Ok(())
 }
 
