@@ -1,5 +1,7 @@
 # PdfCraft roadmap
 
+> **Last reviewed:** 2026-10-27 · **Last updated:** 2026-10-27 · **Change:** patch (M2, PR #4172: integrate main 1dd2737b; preserve viewer-only CJK fallback and regression coverage across engine, renderer and Combine module splits; estimates unchanged)
+
 > **Last reviewed:** 2026-10-27 · **Last updated:** 2026-10-27 · **Change:** patch (M2, PR #4172: integrate main 9a9813bf and preserve viewer-only CJK fallback through the engine module split; estimates unchanged)
 
 > **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M2, PR #4172: document installed-font resolution helpers and regression contracts; behavior and estimates unchanged)
@@ -208,6 +210,8 @@ Ranked; detail and the full milestone table in [docs/roadmap.md](docs/roadmap.md
 | 8 | 1.0 polish: performance, right-to-left, missing languages, keyboard-only (M14) | 55–95 |
 
 ## Progress log
+
+- **2026-10-27 (M2, PR #4172 module-split conflicts):** Integrated main 1dd2737b, retaining viewer-only CJK fallback in split session modules and Combine thumbnail workers, and moving renderer regressions to the new test module. Validation: 798 scoped tests passed (371 engine, 412 renderer, 15 Combine; two existing engine tests ignored); scoped all-target Clippy with -D warnings, formatting, layers, assets, parity and renderer/engine WASM checks passed. Estimates unchanged.
 
 - **2026-10-26 (M2, PR #4172):** Reconciled current main, preserving its Japanese serif/weight selection and both branches' progress records. Installed CJK viewer and preview fallback remains display-only; estimates unchanged.
 
