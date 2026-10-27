@@ -36,6 +36,13 @@ impl PdfCraftApp {
     /// largest is offered for level 1 when there is more than one (headings are larger than the
     /// text around them; a single style has no headings to tell apart).
     pub fn open_text_style_bookmarks(&mut self, id: DocId) {
+        // The style list includes samples copied from the document's text. Enforce the PDF's
+        // copy permission before extracting any of that text, not only when creating bookmarks.
+        let can_copy = self.session.get(id).is_some_and(|d| d.permissions().is_none_or(|p| p.copy()));
+        if !can_copy {
+            self.notify_tr("Copying text and images is not permitted");
+            return;
+        }
         let styles = self.session.get(id).map(|d| d.text_styles()).unwrap_or_default();
         let first = (styles.len() > 1).then_some(0);
         self.text_style_draft = TextStyleDraft { doc: Some(id), styles, levels: [first, None, None, None] };
