@@ -1,5 +1,7 @@
 # PdfCraft roadmap
 
+> **Last reviewed:** 2026-10-27 · **Last updated:** 2026-10-27 · **Change:** patch (M2, PR #4172: integrate main 9a9813bf and preserve viewer-only CJK fallback through the engine module split; estimates unchanged)
+
 > **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M2, PR #4172: document installed-font resolution helpers and regression contracts; behavior and estimates unchanged)
 
 > **Last reviewed:** 2026-10-26 · **Last updated:** 2026-10-26 · **Change:** patch (M2, PR #4172: print preview excludes installed CJK fonts and isolates its font cache from the viewer; estimates unchanged)
@@ -765,3 +767,5 @@ Newest first: the date, what moved, and the new overall estimate.
 - **2026-10-26 (M2, PR #4172 print-preview review):** Print-preview requests disable installed CJK fallback and use an isolated cache so preview font availability matches output. Viewer fallback survives switching in either direction. Synthetic GBK regressions cover inline and single-worker rendering, full pages and tiles; estimates unchanged.
 
 - **2026-10-26 (M2, PR #4172 documentation review):** Added function documentation for installed-font script selection, bounded candidate reads, platform paths, resolver precedence and regression contracts. No runtime behavior or estimate change.
+
+- **2026-10-27 (M2, PR #4172 conflict resolution):** Integrated main `9a9813bf` and its engine module split. Opening, layer changes and session renderer rebuilds retain display-only CJK fallback; output configuration and print-preview cache isolation are preserved. Validation passed: 16 scoped engine regressions, 412 renderer unit tests, 43 renderer integration tests (one existing corpus case ignored), 15 Combine tests, scoped Clippy, formatting, layers/assets/parity and renderer/engine WASM checks. Estimates unchanged.
