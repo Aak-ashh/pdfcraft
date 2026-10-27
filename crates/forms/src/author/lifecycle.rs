@@ -219,6 +219,15 @@ pub fn delete_widget(doc: &mut Document, name: &str, widget: usize) -> Result<()
     drop_from_calculation_order(doc, |r| r == w.obj)?;
     let mut d = doc.get(f.obj).as_dict().cloned().unwrap_or_default();
     let mut changed = false;
+    // The field's own `/Kids` is what made the widget its: `detach` follows the widget's
+    // `/Parent`, which a damaged file can leave out or point elsewhere, so the field would keep
+    // a widget no page shows.
+    if let Some(kids) = d.get(b"Kids").map(|o| doc.resolve(o)).and_then(|o| o.as_array().cloned())
+        && kids.iter().any(|k| k.as_ref() == Some(w.obj))
+    {
+        d.set(b"Kids".to_vec(), Object::Array(kids.into_iter().filter(|k| k.as_ref() != Some(w.obj)).collect()));
+        changed = true;
+    }
     if per_widget_opt
         && let Some(opt) = d.get(b"Opt").map(|o| doc.resolve(o)).and_then(|o| o.as_array().cloned())
         && opt.len() == f.widgets.len()

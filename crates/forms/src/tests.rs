@@ -4694,6 +4694,29 @@ fn deleting_one_copy_of_a_field_keeps_the_field_and_its_value() {
 }
 
 #[test]
+fn deleting_a_radio_button_without_its_parent_link_takes_it_out_of_the_group() {
+    // A damaged file: the group lists Medium in its /Kids, but Medium has no /Parent.
+    for parent in [None, Some(Object::Ref(ObjRef::new(9, 0)))] {
+        let mut doc = radio_group_form();
+        let medium = ObjRef::new(7, 0);
+        let mut w = doc.get(medium).as_dict().cloned().unwrap();
+        w.remove(b"Parent");
+        if let Some(p) = parent.clone() {
+            w.set(b"Parent".to_vec(), p);
+        }
+        doc.set(medium, Object::Dict(w));
+        delete_widget(&mut doc, "size", 1).unwrap();
+        let doc = reopen(&doc);
+        let all = fields(&doc);
+        assert_eq!(field(&all, "size").widgets.iter().map(|w| w.obj.num).collect::<Vec<_>>(), [6, 8], "/Parent {parent:?}");
+        let kids = doc.resolve(doc.get(ObjRef::new(5, 0)).as_dict().unwrap().get(b"Kids").unwrap()).as_array().cloned().unwrap();
+        assert!(!kids.iter().any(|k| k.as_ref() == Some(medium)), "/Parent {parent:?}: {kids:?}");
+        assert_eq!(field(&all, "name").widgets.len(), 2, "/Parent {parent:?}: the other field is untouched");
+        assert_eq!(annots(&doc), [6, 8, 10, 11]);
+    }
+}
+
+#[test]
 fn deleting_a_widget_that_is_not_there_changes_nothing() {
     let mut doc = radio_group_form();
     assert_eq!(delete_widget(&mut doc, "size", 3), Err(FormError::Invalid("size has no widget 4".into())));
