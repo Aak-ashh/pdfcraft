@@ -528,13 +528,23 @@ pub fn field_text_size(painter: &egui::Painter, f: &FormField, w: &FormWidget, t
             return pdfcraft_engine::field_comb_auto_text_size(height);
         }
         let font = |size: f64| egui::FontId::proportional(size as f32);
-        let line_width = |size: f64| f64::from(painter.layout_no_wrap(text.to_string(), font(size), Color32::BLACK).size().x);
+        let line_width = |size: f64| {
+            bounded_line_width(size, |at| painter.layout_no_wrap(text.to_string(), egui::FontId::proportional(at), Color32::BLACK).size().x)
+        };
         // Wrapped as the editor and the page preview wrap it.
         let wrap = width.max(1.0) as f32;
         let wrapped_height = |size: f64| f64::from(painter.layout(text.to_string(), font(size), Color32::BLACK, wrap).size().y);
         pdfcraft_engine::field_auto_text_size_by(width, height, f.has(field_flags::MULTILINE), line_width, wrapped_height)
     });
     size as f32
+}
+
+/// The width of a line at `size` points from `measure`, the width at a given size, called at no
+/// more than [`MAX_SCREEN_FONT`] and scaled: egui rasterizes every glyph it lays out, and a tall
+/// field's automatic size can be thousands of points.
+fn bounded_line_width(size: f64, measure: impl Fn(f32) -> f32) -> f64 {
+    let at = size.min(f64::from(MAX_SCREEN_FONT));
+    if at > 0.0 { f64::from(measure(at as f32)) * size / at } else { f64::from(measure(at as f32)) }
 }
 
 /// The largest font, in screen points, the on-page field editor draws with: a bound that keeps
@@ -959,4 +969,23 @@ pub fn field_screen_rect(view: &DocView, info: &DocInfo, f: &FormField, widget: 
     let page = w.page?;
     let xf = view.page_xform(page)?;
     Some(widget_rect(&xf, info, page, w.rect))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_SCREEN_FONT, bounded_line_width};
+    use std::cell::Cell;
+
+    #[test]
+    fn a_line_is_never_laid_out_above_the_screen_font_bound() {
+        let largest = Cell::new(0.0f32);
+        let measure = |at: f32| {
+            largest.set(largest.get().max(at));
+            at * 3.0
+        };
+        assert_eq!(bounded_line_width(12_522.0, measure), 12_522.0 * 3.0, "the width scales");
+        assert_eq!(largest.get(), MAX_SCREEN_FONT, "laid out at the bound");
+        assert_eq!(bounded_line_width(10.0, measure), 30.0, "below it, at the size itself");
+        assert_eq!(largest.get(), MAX_SCREEN_FONT);
+    }
 }
