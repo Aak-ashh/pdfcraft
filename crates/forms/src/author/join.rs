@@ -12,9 +12,6 @@ use super::*;
 /// stays: a widget's own triggers live there.
 const FIELD_ONLY_KEYS: [&[u8]; 15] = [b"T", b"FT", b"Kids", b"Ff", b"V", b"DV", b"Opt", b"TU", b"TM", b"MaxLen", b"Q", b"DS", b"RV", b"TI", b"I"];
 
-/// The most "ChoiceN" names tried for a renamed export value.
-const MAX_FRESH_STATES: usize = 10_000;
-
 /// Whether `field` holds `/Opt`, which its buttons' export values index (ISO 32000-2 §12.7.5.2).
 fn has_opt(doc: &Document, field: ObjRef) -> bool {
     doc.get(field).as_dict().is_some_and(|d| d.contains(b"Opt"))
@@ -42,29 +39,30 @@ pub(super) fn check_join(doc: &Document, f: &Field, target: &Field) -> Result<()
 /// selected value. `f` leaves the form; its own value and field-level properties go with it,
 /// and `target`'s stay. Call [`check_join`] first.
 pub(super) fn join_radio_group(doc: &mut Document, f: &Field, target: &Field) -> Result<(), FormError> {
+    let theirs: HashSet<String> = target.widgets.iter().filter_map(|w| w.on_state.clone()).collect();
+    let mut taken = theirs.clone();
+    taken.extend(f.widgets.iter().filter_map(|w| w.on_state.clone()));
+    // The group's value counts only when one of its buttons has it.
+    let selected = target.value.first().filter(|v| theirs.contains(*v)).cloned();
+    // Each clashing value of `f` gets one fresh name, shared by every button that had it. Of
+    // `taken.len() + 1` names at least one is free, so the search always ends in one.
+    let mut renamed: HashMap<String, String> = HashMap::new();
+    for old in f.widgets.iter().filter_map(|w| w.on_state.as_deref()).filter(|s| theirs.contains(*s)) {
+        if renamed.contains_key(old) {
+            continue;
+        }
+        let Some(fresh) = (1..=taken.len().saturating_add(1)).map(|i| format!("Choice{i}")).find(|c| !taken.contains(c)) else {
+            return invalid(format!("no free export value for {old}"));
+        };
+        taken.insert(fresh.clone());
+        renamed.insert(old.to_owned(), fresh);
+    }
     // A group that is its own one button gets a field with a separate widget first, so it can
     // hold more than one.
     if let [only] = target.widgets.as_slice()
         && only.obj == target.obj
     {
         split_merged(doc, target, only)?;
-    }
-    let theirs: HashSet<String> = target.widgets.iter().filter_map(|w| w.on_state.clone()).collect();
-    let mut taken = theirs.clone();
-    taken.extend(f.widgets.iter().filter_map(|w| w.on_state.clone()));
-    // The group's value counts only when one of its buttons has it.
-    let selected = target.value.first().filter(|v| theirs.contains(*v)).cloned();
-    // Each clashing value of `f` gets one fresh name, shared by every button that had it.
-    let mut renamed: HashMap<String, Option<String>> = HashMap::new();
-    for old in f.widgets.iter().filter_map(|w| w.on_state.as_deref()).filter(|s| theirs.contains(*s)) {
-        if renamed.contains_key(old) {
-            continue;
-        }
-        let fresh = (1..=MAX_FRESH_STATES).map(|i| format!("Choice{i}")).find(|c| !taken.contains(c));
-        if let Some(c) = &fresh {
-            taken.insert(c.clone());
-        }
-        renamed.insert(old.to_owned(), fresh);
     }
     detach(doc, f.obj)?;
     // `f` is no longer a field, even when it stays on as a widget.
@@ -79,7 +77,7 @@ pub(super) fn join_radio_group(doc: &mut Document, f: &Field, target: &Field) ->
         }
         let mut state = w.on_state.clone();
         if let Some(old) = w.on_state.as_deref()
-            && let Some(Some(fresh)) = renamed.get(old)
+            && let Some(fresh) = renamed.get(old)
             && rename_state(doc, &mut d, old, fresh)
         {
             state = Some(fresh.clone());

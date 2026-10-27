@@ -1527,6 +1527,9 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
         let form = |app: &PdfCraftApp| app.active_ids().and_then(|(_, id)| app.session.get(id)).map(|doc| doc.form.clone());
         // A rename also renames the field in the formulas that read it.
         let before = props.name.as_ref().and_then(|_| form(app));
+        // The widget being edited, by object: a radio button that joins a group by its new name
+        // is appended after the group's own buttons, so its index changes.
+        let widget = before.as_ref().and_then(|all| all.iter().find(|f| f.name == d.field)?.widgets.get(d.widget).map(|w| w.obj));
         if app.apply_edit(Edit::SetFieldProps { name: d.field.clone(), props: Box::new(props) })
             && let Some(i) = app.active
         {
@@ -1535,7 +1538,10 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
             let typed = d.name.trim();
             let prefix = d.field.rsplit_once('.').filter(|_| !typed.contains('.')).map(|(p, _)| format!("{p}.")).unwrap_or_default();
             let name = format!("{prefix}{typed}");
-            if let (Some(before), Some(after)) = (before, form(app)) {
+            let after = form(app);
+            let index =
+                widget.and_then(|obj| after.as_ref()?.iter().find(|f| f.name == name)?.widgets.iter().position(|w| w.obj == obj)).unwrap_or(d.widget);
+            if let (Some(before), Some(after)) = (before, after) {
                 let n = pdfcraft_engine::form_calculations_changed(&before, &after).iter().filter(|f| **f != name).count();
                 if n > 0 {
                     app.notify(crate::i18n::trn(
@@ -1546,7 +1552,7 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
                     ));
                 }
             }
-            app.views[i].prepare.selected = Some((name, d.widget));
+            app.views[i].prepare.selected = Some((name, index));
         }
     }
     if props_now && let Some(d) = app.comment_props.take() {

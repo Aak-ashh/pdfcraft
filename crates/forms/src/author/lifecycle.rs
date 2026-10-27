@@ -237,7 +237,23 @@ pub(super) fn drop_from_calculation_order(doc: &mut Document, gone: impl Fn(ObjR
 }
 
 /// Widget-only keys: they stay with each widget when a merged field is split.
-const WIDGET_KEYS: [&[u8]; 12] = [b"Type", b"Subtype", b"Rect", b"P", b"AP", b"AS", b"MK", b"F", b"BS", b"Border", b"H", b"StructParent"];
+const WIDGET_KEYS: [&[u8]; 13] = [b"Type", b"Subtype", b"Rect", b"P", b"AP", b"AS", b"MK", b"F", b"BS", b"Border", b"H", b"StructParent", b"A"];
+
+/// The `/AA` triggers of a widget annotation (ISO 32000-2 §12.6.3, Table 197). The rest (`K`,
+/// `F`, `V`, `C`, Table 199) belong to the field.
+const WIDGET_TRIGGERS: [&[u8]; 10] = [b"E", b"X", b"D", b"U", b"Fo", b"Bl", b"PO", b"PC", b"PV", b"PI"];
+
+/// Split additional-actions dictionary `aa` into the widget's triggers and the field's.
+/// An empty half is `None`.
+fn split_triggers(aa: &Dict) -> (Option<Dict>, Option<Dict>) {
+    let (mut widget, mut field) = (Dict::new(), Dict::new());
+    for (k, v) in aa.iter() {
+        let to = if WIDGET_TRIGGERS.contains(&k.as_slice()) { &mut widget } else { &mut field };
+        to.set(k.clone(), v.clone());
+    }
+    let some = |d: Dict| (!d.is_empty()).then_some(d);
+    (some(widget), some(field))
+}
 
 /// Duplicate a field onto other pages (Acrobat: right-click a field ▸ Duplicate): each page
 /// gets a widget at the same place, belonging to the same field, so they share one value.
@@ -303,11 +319,25 @@ pub(super) fn split_merged(doc: &mut Document, f: &Field, model: &Widget) -> Res
             kid.set(k.to_vec(), v.clone());
         }
     }
+    // The widget's own triggers go with it; the field's stay.
+    let aa = d.get(b"AA").and_then(|a| doc.resolve(a).as_dict().cloned());
+    let (widget_aa, field_aa) = aa.as_ref().map(split_triggers).unwrap_or_default();
+    if let Some(w) = widget_aa {
+        kid.set(b"AA".to_vec(), Object::Dict(w));
+    }
     kid.set(b"Parent".to_vec(), Object::Ref(f.obj));
     let kr = doc.add(Object::Dict(kid));
     doc.update_dict(f.obj, |d| {
         for k in WIDGET_KEYS {
             d.remove(k);
+        }
+        if aa.is_some() {
+            match field_aa {
+                Some(fa) => d.set(b"AA".to_vec(), Object::Dict(fa)),
+                None => {
+                    d.remove(b"AA");
+                }
+            }
         }
         d.set(b"Kids".to_vec(), Object::Array(vec![Object::Ref(kr)]));
     })?;
