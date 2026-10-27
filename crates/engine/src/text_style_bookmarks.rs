@@ -24,7 +24,7 @@ pub struct TextStyle {
 impl TextStyle {
     /// Whether `other` is this style. Sizes within a quarter point match, as the same heading
     /// size is often written with rounding differences (12 and 11.96).
-    fn matches(&self, other: &TextStyle) -> bool {
+    pub(crate) fn matches(&self, other: &TextStyle) -> bool {
         self.font == other.font && self.bold == other.bold && self.italic == other.italic && (self.size - other.size).abs() <= SIZE_TOLERANCE
     }
 }

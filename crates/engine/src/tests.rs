@@ -1927,6 +1927,24 @@ fn bookmarks_from_text_styles_nest_the_headings_and_undo() {
     assert!(s.get(id).unwrap().info.outline.is_empty());
 }
 
+/// CodeRabbit on #4560: a line goes to the first level whose style it is in, so the same style
+/// for two levels (or one within the size tolerance of the other) would leave the later level
+/// empty. Refused at the edit, for the dialog and automation alike; nothing changes.
+#[test]
+fn bookmarks_from_text_styles_refuse_one_style_for_two_levels() {
+    let mut s = Session::new();
+    let id = s.open("styled.pdf", None, Arc::new(styled_headings_fixture()), None).unwrap();
+    let styles = s.get(id).unwrap().text_styles();
+    let (chapter, section) = (styles[0].style.clone(), styles[1].style.clone());
+    let near = pdfcraft_engine_style(&section, section.size + 0.1);
+    for levels in [vec![chapter.clone(), chapter.clone()], vec![chapter.clone(), section.clone(), near]] {
+        let n = levels.len();
+        let err = s.apply(id, Edit::BookmarksFromTextStyles { levels }).unwrap_err();
+        assert!(err.to_string().contains(&format!("levels {} and {n} have the same text style", n - 1)), "{err}");
+        assert!(s.get(id).unwrap().info.outline.is_empty());
+    }
+}
+
 /// CodeRabbit on #4560: bookmark titles from text styles are the document's text, so a document
 /// that forbids copying lists no styles and refuses the edit, as it refuses other extraction.
 #[test]
