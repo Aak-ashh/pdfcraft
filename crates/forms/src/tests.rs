@@ -4636,6 +4636,34 @@ fn shrinking_a_lists_options_scrolls_a_widget_with_its_own_top_row() {
 }
 
 #[test]
+fn each_widget_with_its_own_top_row_scrolls_by_itself() {
+    // Widget 7 shows from the field's top row; widget 8 keeps its own /TI 4.
+    let objs = |v: &str| -> Vec<String> {
+        vec![
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+            "<< /Type /Page /Parent 2 0 R /Annots [7 0 R 8 0 R] >>".into(),
+            "<< /Fields [6 0 R] /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >>".into(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+            format!("<< /FT /Ch /T (pick) /Opt [(A) (B) (C) (D) (E) (F)] {v} /Kids [7 0 R 8 0 R] >>"),
+            "<< /Type /Annot /Subtype /Widget /Parent 6 0 R /Rect [50 700 250 740] /P 3 0 R >>".into(),
+            "<< /Type /Annot /Subtype /Widget /Parent 6 0 R /TI 4 /Rect [50 600 250 620] /P 3 0 R >>".into(),
+        ]
+    };
+    let (first, other) = (ObjRef::new(7, 0), ObjRef::new(8, 0));
+    // The options shrink: the first widget already shows A, the other's row 4 is gone.
+    let mut doc = document(&objs("/V (A) /I [0]"));
+    set_props(&mut doc, "pick", &FieldProps { options: Some(vec!["A".into(), "B".into()]), ..FieldProps::default() }).unwrap();
+    assert_eq!(top_row(&doc, first), None);
+    assert_eq!(top_row(&reopen(&doc), other), Some(0), "options: the other widget scrolls to A");
+    // A new value the first widget already shows, below the other's view.
+    let mut doc = document(&objs("/V (B) /I [1]"));
+    set_value(&mut doc, "pick", &FieldValue::Choice(vec!["A".into()])).unwrap();
+    assert_eq!(top_row(&doc, ObjRef::new(6, 0)), None, "the field's top row did not move");
+    assert_eq!(top_row(&reopen(&doc), other), Some(0), "value: the other widget scrolls to A");
+}
+
+#[test]
 fn sorting_a_combo_boxs_items_repoints_its_selected_index() {
     let mut doc = one_page();
     let combo = add_field(

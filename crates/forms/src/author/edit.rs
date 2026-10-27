@@ -188,7 +188,7 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
     if props.check_style.is_some() && !matches!(f.kind, FieldKind::CheckBox | FieldKind::Radio) {
         return invalid("only check boxes and radio buttons have a check style");
     }
-    let mut list_top = None;
+    let mut list_picked = None;
     doc.update_dict(f.obj, |d| {
         d.set(b"Ff".to_vec(), Object::Int(ff as i64));
         if let Some(t) = &props.tooltip {
@@ -242,8 +242,8 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
                 && old != new
             {
                 d.set(b"TI".to_vec(), Object::Int(i64::try_from(new).unwrap_or(0)));
-                list_top = Some(new);
             }
+            list_picked = Some((picked, exports.len()));
         }
         if let Some(q) = props.quadding {
             d.set(b"Q".to_vec(), Object::Int(q));
@@ -261,8 +261,8 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
             d.set(b"DA".to_vec(), PdfString::literal(new_da.clone().into_bytes()));
         }
     })?;
-    if let Some(top) = list_top {
-        crate::values::scroll_widgets(doc, &f, top)?;
+    if let Some((picked, count)) = list_picked {
+        crate::values::scroll_widgets(doc, &f, &picked, count)?;
     }
     if props.appearance.is_some() || (props.font_size.is_some() && props.look.is_none()) {
         let patch = &props.appearance.unwrap_or_default();

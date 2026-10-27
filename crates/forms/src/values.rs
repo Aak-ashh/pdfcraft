@@ -309,11 +309,7 @@ pub(crate) fn write_value(doc: &mut Document, f: &Field, value: &FieldValue, scr
                     d.set(b"TI".to_vec(), Object::Int(i64::try_from(new).unwrap_or(0)));
                 }
             })?;
-            if let Some((old, new)) = top
-                && old != new
-            {
-                scroll_widgets(doc, f, new)?;
-            }
+            scroll_widgets(doc, f, &picked, f.options.len())?;
             redraw(doc, f, &exports, scripts)
         }
         (FieldKind::PushButton, _) => invalid(format!("{:?} is a button; it has no value", f.name)),
@@ -326,18 +322,26 @@ pub(crate) fn write_value(doc: &mut Document, f: &Field, value: &FieldValue, scr
 /// its `count` options are among the rows it draws, as in other viewers: a pick below the last
 /// visible row would otherwise not show (#1524). `None` for any other field.
 pub(crate) fn list_scroll(f: &Field, picked: &[usize], count: usize) -> Option<(usize, usize)> {
-    let w = f.widgets.first().filter(|_| f.kind == FieldKind::List)?;
+    f.widgets.first().filter(|_| f.kind == FieldKind::List).and_then(|w| widget_scroll(w, picked, count))
+}
+
+/// A list box widget's first row before and after scrolling so `picked` shows.
+fn widget_scroll(w: &Widget, picked: &[usize], count: usize) -> Option<(usize, usize)> {
     w.list.map(|rows| {
         let height = if matches!(w.rotation, 90 | 270) { w.rect[2] - w.rect[0] } else { w.rect[3] - w.rect[1] };
         (rows.top, appearance::ListRows::top_showing(rows.top, picked, rows.visible(height), count))
     })
 }
 
-/// Give every widget of `f` with its own `/TI` (read before the field's) the first row `top`.
-pub(crate) fn scroll_widgets(doc: &mut Document, f: &Field, top: usize) -> Result<(), FormError> {
+/// Scroll every widget of `f` with its own `/TI` (read before the field's) by its own rows and
+/// size, so `picked` shows in each.
+pub(crate) fn scroll_widgets(doc: &mut Document, f: &Field, picked: &[usize], count: usize) -> Result<(), FormError> {
     for w in f.widgets.iter().filter(|w| w.obj != f.obj) {
-        if doc.get(w.obj).as_dict().is_some_and(|d| d.contains(b"TI")) {
-            doc.update_dict(w.obj, |d| d.set(b"TI".to_vec(), Object::Int(i64::try_from(top).unwrap_or(0))))?;
+        if doc.get(w.obj).as_dict().is_some_and(|d| d.contains(b"TI"))
+            && let Some((old, new)) = widget_scroll(w, picked, count)
+            && old != new
+        {
+            doc.update_dict(w.obj, |d| d.set(b"TI".to_vec(), Object::Int(i64::try_from(new).unwrap_or(0))))?;
         }
     }
     Ok(())
