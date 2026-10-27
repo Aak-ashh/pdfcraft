@@ -4727,7 +4727,7 @@ milestone = "M6"
 status = "shipped"
 commands = ["form.clear"]
 tools = ["form_reset"]
-evidence = ["crates/forms/src/tests.rs::reset_restores_defaults", "crates/ui-egui/tests/it/forms.rs::check_boxes_radios_and_choices"]
+evidence = ["crates/forms/src/tests.rs::reset_restores_defaults", "crates/ui-egui/tests/it/forms.rs::check_boxes_radios_and_choices", "crates/forms/src/tests.rs::clearing_a_kids_value_does_not_bring_back_its_parents"]
 notes = "back to /DV; undoable"
 
 [[feature]]

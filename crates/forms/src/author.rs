@@ -15,6 +15,8 @@ mod lifecycle;
 mod look;
 mod tree;
 
+pub(crate) use tree::ancestor_sets;
+
 pub use edit::set_props;
 pub use lifecycle::{add_field, delete_field, delete_field_object, duplicate_field};
 pub(crate) use look::button_appearance;

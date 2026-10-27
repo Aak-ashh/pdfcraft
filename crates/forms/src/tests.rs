@@ -4603,6 +4603,34 @@ fn clearing_a_kids_default_does_not_bring_back_its_parents() {
 }
 
 #[test]
+fn clearing_a_kids_value_does_not_bring_back_its_parents() {
+    // A text kid, then a list box kid, under a parent with both a value and a default.
+    for (ft, set) in [("/FT /Tx", FieldValue::Text("Oak".into())), ("/FT /Ch /Opt [(Main St) (Oak)]", FieldValue::Choice(vec!["Oak".into()]))] {
+        let mut doc = document(&[
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+            "<< /Type /Page /Parent 2 0 R /Annots [6 0 R] >>".into(),
+            "<< /Fields [5 0 R] /DA (/Helv 0 Tf 0 g) >>".into(),
+            format!("<< /T (address) {ft} /V (Main St) /DV (Main St) /Kids [6 0 R] >>"),
+            "<< /Type /Annot /Subtype /Widget /T (city) /Parent 5 0 R /Rect [10 10 110 60] /P 3 0 R >>".into(),
+        ]);
+        set_props(&mut doc, "address.city", &FieldProps { default_value: Some(None), ..FieldProps::default() }).unwrap();
+        set_value(&mut doc, "address.city", &set).unwrap();
+        assert_eq!(field(&fields(&doc), "address.city").value, ["Oak"], "{ft}");
+        reset(&mut doc, None).unwrap();
+        let doc = reopen(&doc);
+        let f = field(&fields(&doc), "address.city").clone();
+        assert!(f.value.iter().all(String::is_empty), "{ft}: reset leaves it empty, not the parent's: {:?}", f.value);
+        let mut doc = doc;
+        set_value(&mut doc, "address.city", &set).unwrap();
+        let clear = if ft.contains("Ch") { FieldValue::Choice(Vec::new()) } else { FieldValue::Text(String::new()) };
+        set_value(&mut doc, "address.city", &clear).unwrap();
+        let f = field(&fields(&reopen(&doc)), "address.city").clone();
+        assert!(f.value.iter().all(String::is_empty), "{ft}: clearing leaves it empty: {:?}", f.value);
+    }
+}
+
+#[test]
 fn clearing_a_buttons_default_under_a_parent_with_one_leaves_it_off() {
     // A check box, then a radio button (flags 49152, inherited from the parent).
     for flags in ["", "/Ff 49152"] {
