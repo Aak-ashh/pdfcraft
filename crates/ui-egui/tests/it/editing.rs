@@ -6742,7 +6742,13 @@ fn undo_from_the_menu_takes_back_typing_in_the_box() {
     h.key_press_modifiers(Modifiers::COMMAND, Key::End);
     h.event(egui::Event::Text(" more".into()));
     h.run_steps(2);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    assert!(h.state().views[0].line_editor.as_ref().unwrap().selection.is_some());
+    h.event(egui::Event::PointerMoved(egui::pos2(10.0, 10.0)));
+    h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("test-menu")));
     assert!(h.state_mut().execute("edit.undo"), "Undo is enabled for the box's typing");
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().selection, None, "menu history clears the old byte range before the next frame");
     h.run_steps(3);
     let s = h.state();
     let ed = s.views[0].line_editor.as_ref().expect("the box stays open");
@@ -6769,7 +6775,12 @@ fn redo_from_the_menu_is_enabled_for_the_boxs_own_typing() {
     h.run_steps(3);
     assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().text, original, "the typing is taken back");
     assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().can_redo(), None, "the document has nothing to redo");
+    // A range retained while the unfocused editor still showed its previous text.
+    h.state_mut().views[0].line_editor.as_mut().unwrap().selection = Some(0..1);
+    h.event(egui::Event::PointerMoved(egui::pos2(10.0, 10.0)));
+    h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("test-menu")));
     assert!(h.state_mut().execute("edit.redo"), "Redo is enabled for the box's own step");
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().selection, None, "menu history clears the old byte range before the next frame");
     h.run_steps(3);
     assert_eq!(h.state().views[0].line_editor.as_ref().expect("still open").text, typed, "Redo puts the typing back");
 }

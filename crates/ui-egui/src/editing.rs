@@ -220,6 +220,7 @@ impl PdfCraftApp {
             ed.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, true) else { return false };
             let before = std::mem::replace(&mut ed.text, text);
+            ed.selection = None;
             ed.follow_typed_rows(&ctx, &before);
             return true;
         }
@@ -227,6 +228,7 @@ impl PdfCraftApp {
             d.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, true) else { return false };
             let before = std::mem::replace(&mut d.text, text);
+            d.selection = None;
             crate::edit_text_ui::follow_typing(&ctx, crate::content_ui::input_id(), &before, &d.text, &mut [&mut d.style.aligns]);
             return true;
         }
@@ -253,6 +255,7 @@ impl PdfCraftApp {
             ed.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, false) else { return ed.has_unsaved_text() };
             let before = std::mem::replace(&mut ed.text, text);
+            ed.selection = None;
             ed.follow_typed_rows(&ctx, &before);
             return true;
         }
@@ -260,6 +263,7 @@ impl PdfCraftApp {
             d.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, false) else { return d.has_unapplied_typing() };
             let before = std::mem::replace(&mut d.text, text);
+            d.selection = None;
             crate::edit_text_ui::follow_typing(&ctx, crate::content_ui::input_id(), &before, &d.text, &mut [&mut d.style.aligns]);
             return true;
         }

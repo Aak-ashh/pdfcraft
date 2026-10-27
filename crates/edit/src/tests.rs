@@ -7259,6 +7259,50 @@ fn a_lone_row_of_two_styles_aligns_across_its_column() {
     assert!((title(&doc)[0] - centred[0]).abs() < 0.5, "centring again leaves it where it is: {:?} vs {centred:?}", title(&doc));
 }
 
+#[test]
+fn a_titles_column_ignores_distant_full_width_headers_and_footers() {
+    for (title_x, column_prefix) in [(95, "The first"), (365, "The second")] {
+        for mixed in [false, true] {
+            for title_y in [710, 580] {
+                let title = if mixed { "(Big ) Tj 1 0 0 rg (Title) Tj" } else { "(Title) Tj" };
+                let name = if mixed { "Big Title" } else { "Title" };
+                let mut doc = text_page(&format!(
+                    "BT /F1 10 Tf 12 TL 50 780 Td (A page-wide header extending well beyond either body column on this page and continuing all the way to the right margin.) Tj T* (A repeated page-wide heading across both columns and continuing to the right margin of the page.) Tj ET \
+                 BT /F1 18 Tf 1 0 0 1 {title_x} {title_y} Tm {title} ET \
+                 BT 0 g /F1 10 Tf 12 TL 50 660 Td (The first column runs to here.) Tj T* (A second row of it.) Tj ET \
+                 BT /F1 10 Tf 12 TL 320 660 Td (The second column runs to here.) Tj T* (Another row.) Tj ET \
+                 BT /F1 10 Tf 50 40 Td (A page-wide footer extending well beyond either body column on this page and continuing all the way to the right margin.) Tj ET"
+                ));
+                let rect = |doc: &Document, prefix: &str| {
+                    let blocks = text::text_blocks(doc, 0).unwrap();
+                    blocks.iter().find(|b| b.text.starts_with(prefix)).unwrap_or_else(|| panic!("missing {prefix:?} in {blocks:?}")).rect
+                };
+                let column = rect(&doc, column_prefix);
+                let header = rect(&doc, "A page-wide header");
+                let footer = rect(&doc, "A page-wide footer");
+                assert!(header[2] > column[2] + 20.0 && footer[2] > column[2] + 20.0);
+                for align in [added::Align::Center, added::Align::Center, added::Align::Right, added::Align::Left] {
+                    let blocks = text::text_blocks(&doc, 0).unwrap();
+                    let (index, block) = blocks.iter().enumerate().find(|(_, b)| b.text == name).unwrap();
+                    let style = text::BlockStyle { aligns: vec![Some(align)], ..Default::default() };
+                    text::rewrite_block(&mut doc, 0, index, Some(&block.editor_text), &style).unwrap();
+                    doc = reopen(&doc);
+                    let title = rect(&doc, name);
+                    let error = match align {
+                        added::Align::Center => ((title[0] + title[2]) - (column[0] + column[2])).abs() / 2.0,
+                        added::Align::Right => (title[2] - column[2]).abs(),
+                        _ => (title[0] - column[0]).abs(),
+                    };
+                    assert!(error < 1.0, "{align:?}, mixed={mixed}, title_y={title_y}: {title:?} must use {column:?}");
+                    assert_eq!(rect(&doc, "A page-wide header"), header);
+                    assert_eq!(rect(&doc, "A page-wide footer"), footer);
+                    assert_eq!(rect(&doc, column_prefix), column);
+                }
+            }
+        }
+    }
+}
+
 /// How each glyph-showing operator on page 0 is painted, read the way a renderer reads the page:
 /// its text, `Tr`, stroke colour operators, line width (from `w` or an ExtGState's `/LW`) and
 /// the ExtGStates selected before it, following `q`/`Q`.
