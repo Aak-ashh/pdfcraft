@@ -317,6 +317,24 @@ pub(super) fn inherited(doc: &Document, field: ObjRef) -> Dict {
     add
 }
 
+/// Whether an ancestor of `field` sets the inheritable `key`, which `field` would take on without
+/// its own entry.
+pub(super) fn ancestor_sets(doc: &Document, field: ObjRef, key: &[u8]) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let mut parent = doc.get(field).as_dict().and_then(|d| d.reference(b"Parent"));
+    while let Some(p) = parent {
+        if seen.len() > 64 || !seen.insert(p) {
+            return false;
+        }
+        let Some(d) = doc.get(p).as_dict().cloned() else { return false };
+        if d.contains(key) {
+            return true;
+        }
+        parent = d.reference(b"Parent");
+    }
+    false
+}
+
 /// Copy onto `field` what it inherits (`add`, from [`inherited`]), so it keeps it when it moves.
 pub(super) fn own_inherited(doc: &mut Document, field: ObjRef, add: &Dict) -> Result<(), FormError> {
     if add.iter().next().is_some() {

@@ -1,5 +1,5 @@
 use super::look::{BorderStyle, da_string, patch_da, patch_widget_look, redraw_widgets};
-use super::tree::{attach, check_place, child_named, clash, detach, ensure_form, inherited, name_parts, own_inherited};
+use super::tree::{ancestor_sets, attach, check_place, child_named, clash, detach, ensure_form, inherited, name_parts, own_inherited};
 use super::*;
 
 /// Swap width and height, keeping the center. `None` when that is not a usable widget.
@@ -173,6 +173,7 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
     if props.check_style.is_some() && !matches!(f.kind, FieldKind::CheckBox | FieldKind::Radio) {
         return invalid("only check boxes and radio buttons have a check style");
     }
+    let parent_default = ancestor_sets(doc, f.obj, b"DV");
     doc.update_dict(f.obj, |d| {
         d.set(b"Ff".to_vec(), Object::Int(ff as i64));
         if let Some(t) = &props.tooltip {
@@ -219,6 +220,12 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
             // Buttons name their default state; text and choices hold a string.
             Some(Some(v)) if matches!(f.kind, FieldKind::CheckBox | FieldKind::Radio) => d.set(b"DV".to_vec(), Object::Name(crate::name_bytes(v))),
             Some(Some(v)) => d.set(b"DV".to_vec(), PdfString::text(v)),
+            // `/DV` is inheritable: with an ancestor's in place, removing the field's own would
+            // bring that one back, so the field keeps an empty default of its own instead.
+            Some(None) if parent_default && matches!(f.kind, FieldKind::CheckBox | FieldKind::Radio) => {
+                d.set(b"DV".to_vec(), Object::Name(b"Off".to_vec()))
+            }
+            Some(None) if parent_default => d.set(b"DV".to_vec(), PdfString::text("")),
             Some(None) => {
                 d.remove(b"DV");
             }
