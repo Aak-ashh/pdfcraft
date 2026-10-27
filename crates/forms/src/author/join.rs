@@ -4,12 +4,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::lifecycle::{drop_from_calculation_order, split_merged};
+use super::lifecycle::{drop_from_calculation_order, split_merged, split_triggers};
 use super::tree::{detach, list_of};
 use super::*;
 
-/// The keys a field that is also its own widget sheds when it becomes only a widget. `/AA`
-/// stays: a widget's own triggers live there.
+/// The keys a field that is also its own widget sheds when it becomes only a widget. Its `/AA`
+/// keeps only the widget's own triggers.
 const FIELD_ONLY_KEYS: [&[u8]; 15] = [b"T", b"FT", b"Kids", b"Ff", b"V", b"DV", b"Opt", b"TU", b"TM", b"MaxLen", b"Q", b"DS", b"RV", b"TI", b"I"];
 
 /// Whether `field` holds `/Opt`, which its buttons' export values index (ISO 32000-2 §12.7.5.2).
@@ -73,6 +73,14 @@ pub(super) fn join_radio_group(doc: &mut Document, f: &Field, target: &Field) ->
         if w.obj == f.obj {
             for k in FIELD_ONLY_KEYS {
                 d.remove(k);
+            }
+            let aa = d.get(b"AA").and_then(|a| doc.resolve(a).as_dict().cloned());
+            match aa.as_ref().map(split_triggers) {
+                Some((Some(widget_aa), _)) => d.set(b"AA".to_vec(), Object::Dict(widget_aa)),
+                Some((None, _)) => {
+                    d.remove(b"AA");
+                }
+                None => {}
             }
         }
         let mut state = w.on_state.clone();

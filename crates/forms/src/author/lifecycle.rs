@@ -245,7 +245,7 @@ const WIDGET_TRIGGERS: [&[u8]; 10] = [b"E", b"X", b"D", b"U", b"Fo", b"Bl", b"PO
 
 /// Split additional-actions dictionary `aa` into the widget's triggers and the field's.
 /// An empty half is `None`.
-fn split_triggers(aa: &Dict) -> (Option<Dict>, Option<Dict>) {
+pub(super) fn split_triggers(aa: &Dict) -> (Option<Dict>, Option<Dict>) {
     let (mut widget, mut field) = (Dict::new(), Dict::new());
     for (k, v) in aa.iter() {
         let to = if WIDGET_TRIGGERS.contains(&k.as_slice()) { &mut widget } else { &mut field };

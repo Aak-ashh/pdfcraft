@@ -4772,6 +4772,43 @@ fn a_joined_merged_groups_button_keeps_its_actions() {
     assert!(widget_aa.contains(b"Fo") && !widget_aa.contains(b"V"));
 }
 
+/// A joining button that was its own field keeps its widget triggers and drops the field's.
+#[test]
+fn a_joining_merged_button_sheds_its_fields_triggers() {
+    let mut doc = merged_radios(&[("solo", "A", 50.0), ("other", "B", 80.0)]);
+    let other = field(&fields(&doc), "other").obj;
+    let js = |code: &str| {
+        let mut a = pdfcraft_cos::Dict::new();
+        a.set(b"S".to_vec(), Object::name("JavaScript"));
+        a.set(b"JS".to_vec(), pdfcraft_cos::PdfString::text(code));
+        Object::Dict(a)
+    };
+    let mut aa = pdfcraft_cos::Dict::new();
+    aa.set(b"U".to_vec(), js("up();"));
+    aa.set(b"V".to_vec(), js("validate();"));
+    aa.set(b"C".to_vec(), js("calc();"));
+    let aa = doc.add(Object::Dict(aa));
+    doc.update_dict(other, |d| d.set(b"AA".to_vec(), Object::Ref(aa))).unwrap();
+    rename_to(&mut doc, "other", "solo").unwrap();
+    let doc = reopen(&doc);
+    let group = field(&fields(&doc), "solo").clone();
+    let moved = group.widgets.iter().find(|w| w.on_state.as_deref() == Some("B")).unwrap();
+    let wd = doc.get(moved.obj).as_dict().unwrap().clone();
+    let widget_aa = doc.resolve(wd.get(b"AA").unwrap()).as_dict().unwrap().clone();
+    assert!(widget_aa.contains(b"U") && !widget_aa.contains(b"V") && !widget_aa.contains(b"C"), "only the widget's trigger stays");
+    let mut once = merged_radios(&[("solo", "A", 50.0), ("other", "B", 80.0)]);
+    let other = field(&fields(&once), "other").obj;
+    let mut aa = pdfcraft_cos::Dict::new();
+    aa.set(b"V".to_vec(), js("validate();"));
+    once.update_dict(other, |d| d.set(b"AA".to_vec(), Object::Dict(aa))).unwrap();
+    rename_to(&mut once, "other", "solo").unwrap();
+    let once = reopen(&once);
+    let group = field(&fields(&once), "solo").clone();
+    let moved = group.widgets.iter().find(|w| w.on_state.as_deref() == Some("B")).unwrap();
+    let wd = once.get(moved.obj).as_dict().unwrap().clone();
+    assert!(!wd.contains(b"AA"), "a widget left with no trigger has no /AA");
+}
+
 /// However many "ChoiceN" names a group already uses, a joining button with a clashing export
 /// value gets a free one, so the two buttons can still be chosen apart.
 #[test]
