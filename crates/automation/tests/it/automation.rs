@@ -5154,8 +5154,9 @@ fn every_calculation_op_can_be_read_and_given_back() {
 }
 
 /// form_set_props refuses a calculate or validate it would only partly apply (a key it doesn't
-/// know, a value of the wrong type, a notation beside op and fields) and changes nothing. A
-/// validate read back from form_fields, with null for the bound it doesn't have, is taken back.
+/// know, a value of the wrong type, a notation beside op and fields) as a bad argument, before
+/// the edit runs, and changes nothing. A validate read back from form_fields, with null for the
+/// bound it doesn't have, is taken back.
 #[test]
 fn calculate_and_validate_refuse_what_they_would_drop() {
     let dir = workdir("calcstrict");
@@ -5185,12 +5186,14 @@ fn calculate_and_validate_refuse_what_they_would_drop() {
         (json!({ "fields": ["a"] }), "needs op"),
         (json!({ "op": "sum", "feilds": ["a"] }), "unknown key \"feilds\""),
     ] {
+        // InvalidArgs, not Failed: an unstorable notation is refused by the tool itself, not
+        // only by the edit underneath it.
         let e = err(&mut a, "form_set_props", json!({ "doc": doc, "field": "total", "calculate": calculate }));
-        assert!(e.to_string().contains(says), "{calculate}: {e}");
+        assert!(matches!(e, ToolError::InvalidArgs(_)) && e.to_string().contains(says), "{calculate}: {e:?}");
     }
     for (validate, says) in [(json!({ "min": 0, "max": "100" }), "max must be a number"), (json!({ "min": 0, "mxa": 5 }), "unknown key \"mxa\"")] {
         let e = err(&mut a, "form_set_props", json!({ "doc": doc, "field": "total", "validate": validate }));
-        assert!(e.to_string().contains(says), "{validate}: {e}");
+        assert!(matches!(e, ToolError::InvalidArgs(_)) && e.to_string().contains(says), "{validate}: {e:?}");
     }
     let t = total(&mut a);
     assert_eq!((&t["calculate"], &t["validate"]), (&set, &json!({ "min": 0.0, "max": 10.0 })), "nothing changed");
