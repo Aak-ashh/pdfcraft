@@ -14,6 +14,24 @@ fn swapped_around_center(r: [f64; 4]) -> Option<[f64; 4]> {
     (out.iter().all(|v| v.is_finite()) && out[2] - out[0] >= MIN_FIELD_SIDE && out[3] - out[1] >= MIN_FIELD_SIDE).then_some(out)
 }
 
+/// Re-point a choice field's `/I` (and `/TI`), which are positions in `/Opt`, at the new list
+/// `exports` after `/Opt` was replaced (ISO 32000-2 §12.7.5.4): `/I` names the positions of the
+/// selected `values` still offered, and a `/TI` past the end is dropped.
+fn repoint_selection(d: &mut Dict, values: &[String], exports: &[String]) {
+    let mut indices: Vec<usize> = values.iter().filter_map(|v| exports.iter().position(|e| e == v)).collect();
+    indices.sort_unstable();
+    indices.dedup();
+    if indices.is_empty() {
+        d.remove(b"I");
+    } else {
+        d.set(b"I".to_vec(), Object::Array(indices.into_iter().map(|i| Object::Int(i64::try_from(i).unwrap_or(i64::MAX))).collect()));
+    }
+    let top = d.get(b"TI").and_then(Object::as_int);
+    if top.is_some_and(|t| usize::try_from(t).map_or(true, |t| t >= exports.len())) {
+        d.remove(b"TI");
+    }
+}
+
 /// Change a field's properties (General and Options tabs) and redraw it.
 pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<String, FormError> {
     if props.font_size.is_some_and(|size| !size.is_finite() || size < 0.0) {
@@ -190,8 +208,11 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
                 }
             }
         }
+        // The export values in `/Opt` order once it is rewritten, for re-pointing `/I`.
+        let mut new_exports: Option<Vec<String>> = None;
         if let Some(opts) = &props.options {
             d.set(b"Opt".to_vec(), Object::Array(opts.iter().map(|o| Object::String(PdfString::text(o))).collect()));
+            new_exports = Some(opts.clone());
         }
         // "Sort items": the list itself is kept in order (export values stay with their items).
         if ff & flags::SORT != 0 && matches!(f.kind, FieldKind::Combo | FieldKind::List) {
@@ -211,6 +232,12 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
                 })
                 .collect();
             d.set(b"Opt".to_vec(), Object::Array(opt));
+            new_exports = Some(items.into_iter().map(|(e, _)| e).collect());
+        }
+        if let Some(exports) = &new_exports
+            && matches!(f.kind, FieldKind::Combo | FieldKind::List)
+        {
+            repoint_selection(d, &f.value, exports);
         }
         if let Some(q) = props.quadding {
             d.set(b"Q".to_vec(), Object::Int(q));

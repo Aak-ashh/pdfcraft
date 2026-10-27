@@ -4577,3 +4577,55 @@ fn set_values_reads_the_form_once_not_per_value() {
     let reads = form_reads() - before;
     assert_eq!(reads, 3, "one to fill, one when f0 comes again, one to recalculate");
 }
+
+/// `/I` of field `name`: the selected positions in `/Opt`, or `None` when absent.
+fn selection_indices(doc: &Document, name: &str) -> Option<Vec<i64>> {
+    let f = field(&fields(doc), name).clone();
+    let d = doc.get(f.obj).as_dict().cloned().unwrap();
+    d.get(b"I").map(|i| doc.resolve(i).as_array().unwrap().iter().map(|o| o.as_int().unwrap()).collect())
+}
+
+#[test]
+fn changing_a_lists_options_repoints_its_selected_indices() {
+    let mut doc = one_page();
+    let list =
+        add_field(&mut doc, 0, [50.0, 600.0, 250.0, 680.0], &NewField::List { options: vec!["A".into(), "B".into(), "C".into()], multi: true }, None)
+            .unwrap();
+    set_value(&mut doc, &list, &FieldValue::Choice(vec!["C".into(), "B".into()])).unwrap();
+    assert_eq!(selection_indices(&doc, &list), Some(vec![1, 2]));
+    let f = field(&fields(&doc), &list).clone();
+    doc.update_dict(f.obj, |d| d.set(b"TI".to_vec(), Object::Int(2))).unwrap();
+    // Removing A moves B and C up one place.
+    let opts = |o: &[&str]| FieldProps { options: Some(o.iter().map(|s| s.to_string()).collect()), ..FieldProps::default() };
+    set_props(&mut doc, &list, &opts(&["B", "C", "D"])).unwrap();
+    assert_eq!(selection_indices(&doc, &list), Some(vec![0, 1]));
+    assert!(doc.get(f.obj).as_dict().unwrap().get(b"TI").is_some(), "row 2 still exists");
+    // Removing B leaves only C selected; the top row now points past the end.
+    set_props(&mut doc, &list, &opts(&["C"])).unwrap();
+    assert_eq!(selection_indices(&doc, &list), Some(vec![0]));
+    assert!(doc.get(f.obj).as_dict().unwrap().get(b"TI").is_none(), "a /TI past the list is dropped");
+    // No selected value is offered any more.
+    set_props(&mut doc, &list, &opts(&["X", "Y"])).unwrap();
+    assert_eq!(selection_indices(&doc, &list), None);
+    let doc = reopen(&doc);
+    assert_eq!(selection_indices(&doc, &list), None);
+}
+
+#[test]
+fn sorting_a_combo_boxs_items_repoints_its_selected_index() {
+    let mut doc = one_page();
+    let combo = add_field(
+        &mut doc,
+        0,
+        [50.0, 600.0, 250.0, 620.0],
+        &NewField::Combo { options: vec!["Pear".into(), "apple".into(), "Fig".into()], editable: false },
+        None,
+    )
+    .unwrap();
+    set_value(&mut doc, &combo, &FieldValue::Choice(vec!["Pear".into()])).unwrap();
+    assert_eq!(selection_indices(&doc, &combo), Some(vec![0]));
+    set_props(&mut doc, &combo, &FieldProps { flags: vec![(flags::SORT, true)], ..FieldProps::default() }).unwrap();
+    // apple, Fig, Pear: the selection follows Pear to the end.
+    assert_eq!(selection_indices(&doc, &combo), Some(vec![2]));
+    assert_eq!(field(&fields(&doc), &combo).value, vec!["Pear".to_string()]);
+}
