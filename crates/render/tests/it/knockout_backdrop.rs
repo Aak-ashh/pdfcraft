@@ -37,7 +37,8 @@ fn stream(dict: &str, content: &str) -> String {
 /// holding a non-isolated knockout group with a white Difference square from 80 to 120, and
 /// `/Img`, a white 1 x 1 image, `/Img2`, a blue 2 x 1 image whose soft mask is opaque on the
 /// left and transparent on the right, `/St`, a 2 x 1 stencil mask painting its left pixel, and
-/// the shading `/Sh0`, a mesh whose one triangle lies off the page.
+/// the shading `/Sh0`, a mesh whose one triangle lies off the page, and `/Sh1`, a red mesh
+/// triangle from (90, 90) to (110, 90) and (100, 110).
 /// Returns a lookup of the colour at PDF point (x, y).
 fn render(group: &str, content: &str) -> impl Fn(u32, u32) -> [u8; 3] {
     let gs = "/ExtGState << /D << /BM /Difference >> /H << /ca 0.5 >> /N << /BM /Normal >> >>";
@@ -48,7 +49,7 @@ fn render(group: &str, content: &str) -> impl Fn(u32, u32) -> [u8; 3] {
             .to_string(),
         stream("", "1 0 1 rg 0 0 200 200 re f /Fk Do"),
         stream(
-            &format!("/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency /CS /DeviceRGB {group} >> /Resources << {gs} /XObject << /W 6 0 R /Nest 7 0 R /Img 9 0 R /Img2 10 0 R /St 12 0 R >> /Shading << /Sh0 13 0 R >> >>"),
+            &format!("/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency /CS /DeviceRGB {group} >> /Resources << {gs} /XObject << /W 6 0 R /Nest 7 0 R /Img 9 0 R /Img2 10 0 R /St 12 0 R >> /Shading << /Sh0 13 0 R /Sh1 14 0 R >> >>"),
             content,
         ),
         stream("/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency >>", "1 1 1 rg 40 40 120 120 re f"),
@@ -67,6 +68,10 @@ fn render(group: &str, content: &str) -> impl Fn(u32, u32) -> [u8; 3] {
         stream(
             "/ShadingType 4 /ColorSpace /DeviceRGB /BitsPerCoordinate 8 /BitsPerComponent 8 /BitsPerFlag 8 /Decode [300 310 300 310 0 1 0 1 0 1] /Filter /ASCIIHexDecode",
             "000000FF0000 00FF00FF0000 0000FFFF0000>",
+        ),
+        stream(
+            "/ShadingType 4 /ColorSpace /DeviceRGB /BitsPerCoordinate 8 /BitsPerComponent 8 /BitsPerFlag 8 /Decode [0 255 0 255 0 1 0 1 0 1] /Filter /ASCIIHexDecode",
+            "005A5AFF0000 006E5AFF0000 00646EFF0000>",
         ),
     ];
     let mut renderer = PageRenderer::new(Arc::new(pdf(&objects)), RenderConfig::default());
@@ -166,4 +171,20 @@ fn a_stencil_replaces_what_is_under_it_in_every_pass() {
 fn a_shading_that_paints_nothing_clears_nothing_in_another_pass() {
     let mesh = render(NON_ISOLATED, "0 0 1 rg 20 20 160 160 re f /D gs /Sh0 sh");
     check(&mesh, 100, 100, [0, 0, 255], "blue under an off-page Difference mesh");
+}
+
+/// A shading replaces only what is under the part it paints: a small mesh triangle over a
+/// square leaves the rest of the square, in its own pass, in another pass and in an isolated
+/// knockout group.
+#[test]
+fn a_small_mesh_replaces_only_what_is_under_its_triangle() {
+    let square = "0 0 1 rg 20 20 160 160 re f";
+    for (group, mode) in [(NON_ISOLATED, ""), (NON_ISOLATED, "/D gs"), ("/K true", "")] {
+        let content = format!("{square} {mode} /Sh1 sh");
+        let mesh = render(group, &content);
+        check(&mesh, 40, 40, [0, 0, 255], &format!("{group} {mode}: square beside the triangle"));
+        if mode.is_empty() {
+            check(&mesh, 100, 97, [255, 0, 0], &format!("{group}: triangle"));
+        }
+    }
 }
