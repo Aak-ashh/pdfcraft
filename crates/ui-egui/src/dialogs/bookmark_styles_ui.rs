@@ -93,7 +93,7 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> bool
             ui.add_enabled_ui(open, |ui| {
                 let Some(slot) = d.levels.get_mut(level) else { return };
                 let shown = slot.and_then(|i| d.styles.get(i)).map_or_else(|| none.to_string(), style_label);
-                egui::ComboBox::from_id_salt(("text_style_level", level))
+                craft_ui::ComboBox::from_id_salt(("text_style_level", level))
                     .selected_text(shown)
                     .width(460.0)
                     .show_ui(ui, |ui| {
