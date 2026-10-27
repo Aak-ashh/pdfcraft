@@ -4636,6 +4636,32 @@ fn a_joining_radio_button_with_a_taken_export_value_takes_a_free_one() {
     assert!(normal.contains(b"Choice2") && !normal.contains(b"Choice1"));
 }
 
+/// Buttons of the joining group that share an export value (a button repeated on another page,
+/// on together) still share it after the join, under one fresh name.
+#[test]
+fn joining_radio_buttons_that_share_a_value_keep_sharing_it() {
+    let mut doc = two_radio_groups("Choice1", "Choice1");
+    let pages = doc.get(doc.root().unwrap()).as_dict().unwrap().reference(b"Pages").unwrap();
+    let mut p = pdfcraft_cos::Dict::new();
+    p.set(b"Type".to_vec(), Object::name("Page"));
+    p.set(b"Parent".to_vec(), Object::Ref(pages));
+    p.set(b"MediaBox".to_vec(), Object::Array(vec![0.into(), 0.into(), 600.into(), 800.into()]));
+    let r = doc.add(Object::Dict(p));
+    doc.update_dict(pages, |d| {
+        let mut kids = d.get(b"Kids").unwrap().as_array().unwrap().clone();
+        kids.push(Object::Ref(r));
+        d.set(b"Count".to_vec(), Object::Int(kids.len() as i64));
+        d.set(b"Kids".to_vec(), Object::Array(kids));
+    })
+    .unwrap();
+    assert_eq!(duplicate_field(&mut doc, "Group2", &[1]).unwrap(), 1);
+    rename_to(&mut doc, "Group2", "Group1").unwrap();
+    let doc = reopen(&doc);
+    let all = fields(&doc);
+    let group = field(&all, "Group1");
+    assert_eq!(group.widgets.iter().filter_map(|w| w.on_state.clone()).collect::<Vec<_>>(), ["Choice1", "Choice2", "Choice2"]);
+}
+
 /// A radio field that is its own (only) widget, as other writers make one-button groups, can
 /// both join a group and be joined.
 #[test]

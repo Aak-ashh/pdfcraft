@@ -2,7 +2,7 @@
 //! (#4949): radio buttons are one group when they are widgets of one field (ISO 32000-2
 //! §12.7.5.2.4), and a button's export value is the name of its "on" appearance state.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::lifecycle::{drop_from_calculation_order, split_merged};
 use super::tree::detach;
@@ -15,7 +15,7 @@ const FIELD_ONLY_KEYS: [&[u8]; 15] = [b"T", b"FT", b"Kids", b"Ff", b"V", b"DV", 
 /// The most "ChoiceN" names tried for a renamed export value.
 const MAX_FRESH_STATES: usize = 10_000;
 
-/// Whether `field` holds `/Opt`, which its buttons' export values index (ISO 32000-2 Table 230).
+/// Whether `field` holds `/Opt`, which its buttons' export values index (ISO 32000-2 §12.7.5.2).
 fn has_opt(doc: &Document, field: ObjRef) -> bool {
     doc.get(field).as_dict().is_some_and(|d| d.contains(b"Opt"))
 }
@@ -38,7 +38,7 @@ pub(super) fn check_join(doc: &Document, f: &Field, target: &Field) -> Result<()
 
 /// Move every button of radio field `f` into radio field `target`. Each keeps its export value
 /// unless a button of `target` already has it; then it takes the first free "ChoiceN", as a
-/// button added to a group does. A moved button shows selected only if it is `target`'s
+/// button added to a group does, and buttons of `f` that shared a value still share the new one. A moved button shows selected only if it is `target`'s
 /// selected value. `f` leaves the form; its own value and field-level properties go with it,
 /// and `target`'s stay. Call [`check_join`] first.
 pub(super) fn join_radio_group(doc: &mut Document, f: &Field, target: &Field) -> Result<(), FormError> {
@@ -49,11 +49,26 @@ pub(super) fn join_radio_group(doc: &mut Document, f: &Field, target: &Field) ->
     {
         split_merged(doc, target, only)?;
     }
-    let mut taken: HashSet<String> = target.widgets.iter().filter_map(|w| w.on_state.clone()).collect();
-    let selected = target.value.first().cloned();
+    let theirs: HashSet<String> = target.widgets.iter().filter_map(|w| w.on_state.clone()).collect();
+    let mut taken = theirs.clone();
+    taken.extend(f.widgets.iter().filter_map(|w| w.on_state.clone()));
+    // The group's value counts only when one of its buttons has it.
+    let selected = target.value.first().filter(|v| theirs.contains(*v)).cloned();
+    // Each clashing value of `f` gets one fresh name, shared by every button that had it.
+    let mut renamed: HashMap<String, Option<String>> = HashMap::new();
+    for old in f.widgets.iter().filter_map(|w| w.on_state.as_deref()).filter(|s| theirs.contains(*s)) {
+        if renamed.contains_key(old) {
+            continue;
+        }
+        let fresh = (1..=MAX_FRESH_STATES).map(|i| format!("Choice{i}")).find(|c| !taken.contains(c));
+        if let Some(c) = &fresh {
+            taken.insert(c.clone());
+        }
+        renamed.insert(old.to_owned(), fresh);
+    }
     detach(doc, f.obj)?;
-    let moved: HashSet<ObjRef> = f.widgets.iter().map(|w| w.obj).collect();
-    drop_from_calculation_order(doc, |r| r == f.obj && !moved.contains(&r))?;
+    // `f` is no longer a field, even when it stays on as a widget.
+    drop_from_calculation_order(doc, |r| r == f.obj)?;
     let mut kids = Vec::with_capacity(f.widgets.len());
     for w in &f.widgets {
         let mut d = doc.get(w.obj).as_dict().cloned().unwrap_or_default();
@@ -63,16 +78,11 @@ pub(super) fn join_radio_group(doc: &mut Document, f: &Field, target: &Field) ->
             }
         }
         let mut state = w.on_state.clone();
-        if let Some(old) = w.on_state.as_deref().filter(|s| taken.contains(*s)) {
-            let fresh = (1..=MAX_FRESH_STATES).map(|i| format!("Choice{i}")).find(|c| !taken.contains(c));
-            if let Some(fresh) = fresh
-                && rename_state(doc, &mut d, old, &fresh)
-            {
-                state = Some(fresh);
-            }
-        }
-        if let Some(s) = &state {
-            taken.insert(s.clone());
+        if let Some(old) = w.on_state.as_deref()
+            && let Some(Some(fresh)) = renamed.get(old)
+            && rename_state(doc, &mut d, old, fresh)
+        {
+            state = Some(fresh.clone());
         }
         let on = state.is_some() && state == selected;
         let shown = match (&state, on) {
