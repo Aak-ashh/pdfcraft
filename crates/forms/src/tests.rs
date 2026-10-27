@@ -4577,3 +4577,127 @@ fn set_values_reads_the_form_once_not_per_value() {
     let reads = form_reads() - before;
     assert_eq!(reads, 3, "one to fill, one when f0 comes again, one to recalculate");
 }
+
+/// Two new radio groups on one page, "Group1" (export `a`) and "Group2" (export `b`).
+fn two_radio_groups(a: &str, b: &str) -> Document {
+    let mut doc = one_page();
+    let radio = |export: &str| NewField::Radio { group: None, export: export.into() };
+    assert_eq!(add_field(&mut doc, 0, [50.0, 600.0, 64.0, 614.0], &radio(a), None).unwrap(), "Group1");
+    assert_eq!(add_field(&mut doc, 0, [80.0, 600.0, 94.0, 614.0], &radio(b), None).unwrap(), "Group2");
+    doc
+}
+
+fn rename_to(doc: &mut Document, from: &str, to: &str) -> Result<String, FormError> {
+    set_props(doc, from, &FieldProps { name: Some(to.into()), ..FieldProps::default() })
+}
+
+fn page_widgets(doc: &Document) -> Vec<ObjRef> {
+    let page = page_refs(doc)[0];
+    let annots = doc.get(page).as_dict().unwrap().get(b"Annots").cloned().unwrap();
+    doc.resolve(&annots).as_array().unwrap().iter().filter_map(|o| o.as_ref()).collect()
+}
+
+/// #4949: a radio button given its group's name is one of the group's buttons, so the group can
+/// be built up by naming buttons alike, as in Acrobat.
+#[test]
+fn a_radio_button_renamed_to_a_groups_name_joins_the_group() {
+    let mut doc = two_radio_groups("Yes", "No");
+    set_value(&mut doc, "Group1", &FieldValue::Radio(Some("Yes".into()))).unwrap();
+    let before = page_widgets(&doc);
+    assert_eq!(rename_to(&mut doc, "Group2", "Group1").unwrap(), "Group1");
+    assert_eq!(page_widgets(&doc), before, "the buttons stay on the page where they were");
+    let mut doc = reopen(&doc);
+    let all = fields(&doc);
+    assert_eq!(all.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["Group1"]);
+    let group = field(&all, "Group1");
+    assert_eq!(group.widgets.iter().filter_map(|w| w.on_state.clone()).collect::<Vec<_>>(), ["Yes", "No"]);
+    assert_eq!(group.value, ["Yes"], "the group keeps its value");
+    assert_eq!(group.widgets.iter().map(|w| w.state.clone()).collect::<Vec<_>>(), [Some("Yes".into()), Some("Off".into())]);
+    assert_eq!(page_widgets(&doc), group.widgets.iter().map(|w| w.obj).collect::<Vec<_>>());
+    // Choosing the moved button turns the other off: they are one group.
+    set_value(&mut doc, "Group1", &FieldValue::Radio(Some("No".into()))).unwrap();
+    let group = field(&fields(&doc), "Group1").clone();
+    assert_eq!(group.widgets.iter().map(|w| w.state.clone()).collect::<Vec<_>>(), [Some("Off".into()), Some("No".into())]);
+}
+
+/// A joining button whose export value a button of the group already has takes the next free
+/// "ChoiceN", in its appearance states too, so the two can be chosen apart.
+#[test]
+fn a_joining_radio_button_with_a_taken_export_value_takes_a_free_one() {
+    let mut doc = two_radio_groups("Choice1", "Choice1");
+    rename_to(&mut doc, "Group2", "Group1").unwrap();
+    let doc = reopen(&doc);
+    let all = fields(&doc);
+    let group = field(&all, "Group1");
+    assert_eq!(group.widgets.iter().filter_map(|w| w.on_state.clone()).collect::<Vec<_>>(), ["Choice1", "Choice2"]);
+    let moved = doc.get(group.widgets[1].obj).as_dict().unwrap().clone();
+    let normal = doc.resolve(moved.get(b"AP").unwrap()).as_dict().unwrap().get(b"N").cloned().unwrap();
+    let normal = doc.resolve(&normal).as_dict().unwrap().clone();
+    assert!(normal.contains(b"Choice2") && !normal.contains(b"Choice1"));
+}
+
+/// A radio field that is its own (only) widget, as other writers make one-button groups, can
+/// both join a group and be joined.
+#[test]
+fn radio_fields_that_are_their_own_widget_join_and_are_joined() {
+    let mut doc = one_page();
+    let page = page_refs(&doc)[0];
+    let af = crate::author::ensure_form(&mut doc).unwrap();
+    let mut made = Vec::new();
+    for (name, state, x) in [("solo", "A", 50.0), ("other", "B", 80.0)] {
+        let look = doc.add(Object::Stream(pdfcraft_cos::Stream::from_raw(pdfcraft_cos::Dict::new(), b"0 g".to_vec())));
+        let mut n = pdfcraft_cos::Dict::new();
+        n.set(state.as_bytes().to_vec(), Object::Ref(look));
+        n.set(b"Off".to_vec(), Object::Ref(look));
+        let mut ap = pdfcraft_cos::Dict::new();
+        ap.set(b"N".to_vec(), Object::Dict(n));
+        let mut d = pdfcraft_cos::Dict::new();
+        d.set(b"Type".to_vec(), Object::name("Annot"));
+        d.set(b"Subtype".to_vec(), Object::name("Widget"));
+        d.set(b"FT".to_vec(), Object::name("Btn"));
+        d.set(b"Ff".to_vec(), Object::Int(i64::from(flags::RADIO)));
+        d.set(b"T".to_vec(), pdfcraft_cos::PdfString::text(name));
+        d.set(b"Rect".to_vec(), Object::Array(vec![x.into(), 600.into(), (x + 14.0).into(), 614.into()]));
+        d.set(b"P".to_vec(), Object::Ref(page));
+        d.set(b"AP".to_vec(), Object::Dict(ap));
+        d.set(b"AS".to_vec(), Object::name("Off"));
+        let r = doc.add(Object::Dict(d));
+        doc.update_dict(af, |a| {
+            let mut list = a.get(b"Fields").and_then(|l| l.as_array().cloned()).unwrap_or_default();
+            list.push(Object::Ref(r));
+            a.set(b"Fields".to_vec(), Object::Array(list));
+        })
+        .unwrap();
+        made.push(r);
+    }
+    doc.update_dict(page, |p| p.set(b"Annots".to_vec(), Object::Array(made.iter().map(|r| Object::Ref(*r)).collect()))).unwrap();
+    assert_eq!(rename_to(&mut doc, "other", "solo").unwrap(), "solo");
+    let doc = reopen(&doc);
+    let all = fields(&doc);
+    assert_eq!(all.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["solo"]);
+    let group = field(&all, "solo");
+    assert_eq!(group.widgets.iter().filter_map(|w| w.on_state.clone()).collect::<Vec<_>>(), ["A", "B"]);
+    // The joined field's widget became a kid; the moved one shed its field entries.
+    let kids: Vec<ObjRef> = group.widgets.iter().map(|w| w.obj).collect();
+    assert!(!kids.contains(&group.obj));
+    let moved = doc.get(group.widgets[1].obj).as_dict().unwrap().clone();
+    assert!(!moved.contains(b"T") && !moved.contains(b"FT") && moved.reference(b"Parent") == Some(group.obj));
+    let mut on_page = page_widgets(&doc);
+    on_page.sort();
+    let mut kids = kids;
+    kids.sort();
+    assert_eq!(on_page, kids, "the page lists the widgets, not the field");
+}
+
+/// Only a radio button joins by name: other clashes are refused as before, and a locked group
+/// isn't changed.
+#[test]
+fn joining_by_name_is_only_for_radio_buttons_and_unlocked_groups() {
+    let mut doc = two_radio_groups("Yes", "No");
+    add_field(&mut doc, 0, [50.0, 700.0, 250.0, 720.0], &NewField::Text { multiline: false }, Some("note")).unwrap();
+    assert!(rename_to(&mut doc, "note", "Group1").is_err(), "a text field doesn't join a radio group");
+    assert!(rename_to(&mut doc, "Group2", "note").is_err(), "a radio button doesn't join a text field");
+    set_props(&mut doc, "Group1", &FieldProps { locked: Some(true), ..FieldProps::default() }).unwrap();
+    assert!(rename_to(&mut doc, "Group2", "Group1").is_err(), "a locked group");
+    assert_eq!(fields(&doc).len(), 3);
+}

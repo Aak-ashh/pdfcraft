@@ -4847,8 +4847,8 @@ milestone = "M6"
 status = "shipped"
 commands = ["form.add.radio"]
 tools = ["form_add_field"]
-evidence = ["crates/forms/src/tests.rs::every_field_type_can_be_added_named_and_drawn", "crates/automation/tests/it/automation.rs::preparing_a_form_through_tools"]
-notes = "new group Group1… or join the selected group with the next ChoiceN"
+evidence = ["crates/forms/src/tests.rs::every_field_type_can_be_added_named_and_drawn", "crates/automation/tests/it/automation.rs::preparing_a_form_through_tools", "crates/forms/src/tests.rs::a_radio_button_renamed_to_a_groups_name_joins_the_group", "crates/forms/src/tests.rs::a_joining_radio_button_with_a_taken_export_value_takes_a_free_one", "crates/forms/src/tests.rs::radio_fields_that_are_their_own_widget_join_and_are_joined", "crates/automation/tests/it/automation.rs::renaming_a_radio_button_to_a_groups_name_joins_the_group_through_tools"]
+notes = "new group Group1… or join the selected group with the next ChoiceN; renaming a radio button (Properties or form_set_props) to another radio group's name moves its buttons into that group (#4949), a clashing export value becoming the next free ChoiceN; refused when either group lists its values in /Opt; a button's export value is not yet editable in Properties"
 
 [[feature]]
 id = "form.check-box-style"

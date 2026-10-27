@@ -215,7 +215,7 @@ fn delete_found_field(doc: &mut Document, f: Field) -> Result<(), FormError> {
 
 /// Remove the `/CO` entries `gone` matches, whether the form and the array are held directly or
 /// by reference.
-fn drop_from_calculation_order(doc: &mut Document, gone: impl Fn(ObjRef) -> bool) -> Result<(), FormError> {
+pub(super) fn drop_from_calculation_order(doc: &mut Document, gone: impl Fn(ObjRef) -> bool) -> Result<(), FormError> {
     let Some(root) = doc.root() else { return Ok(()) };
     let Some(af_obj) = doc.get(root).as_dict().and_then(|d| d.get(b"AcroForm").cloned()) else { return Ok(()) };
     let Some(mut af) = doc.resolve(&af_obj).as_dict().cloned() else { return Ok(()) };
@@ -258,40 +258,7 @@ pub fn duplicate_field(doc: &mut Document, name: &str, pages: &[usize]) -> Resul
         return Ok(0);
     }
     // A merged field/widget becomes a field with one widget kid.
-    let mut model_ref = model.obj;
-    if model.obj == f.obj {
-        let d = doc.get(f.obj).as_dict().cloned().unwrap_or_default();
-        let mut kid = Dict::new();
-        for k in WIDGET_KEYS {
-            if let Some(v) = d.get(k) {
-                kid.set(k.to_vec(), v.clone());
-            }
-        }
-        kid.set(b"Parent".to_vec(), Object::Ref(f.obj));
-        let kr = doc.add(Object::Dict(kid));
-        doc.update_dict(f.obj, |d| {
-            for k in WIDGET_KEYS {
-                d.remove(k);
-            }
-            d.set(b"Kids".to_vec(), Object::Array(vec![Object::Ref(kr)]));
-        })?;
-        // The page lists the widget now, not the field.
-        if let Some(p) = model.page {
-            let pr = refs[p];
-            let annots = doc.get(pr).as_dict().and_then(|d| d.get(b"Annots").cloned());
-            let swap =
-                |a: Vec<Object>| -> Vec<Object> { a.into_iter().map(|o| if o.as_ref() == Some(f.obj) { Object::Ref(kr) } else { o }).collect() };
-            match annots {
-                Some(Object::Ref(ar)) => {
-                    let a = doc.get(ar).as_array().cloned().unwrap_or_default();
-                    doc.set(ar, Object::Array(swap(a)));
-                }
-                Some(Object::Array(a)) => doc.update_dict(pr, |d| d.set(b"Annots".to_vec(), Object::Array(swap(a))))?,
-                _ => {}
-            }
-        }
-        model_ref = kr;
-    }
+    let model_ref = if model.obj == f.obj { split_merged(doc, &f, &model)? } else { model.obj };
     let template = doc.get(model_ref).as_dict().cloned().unwrap_or_default();
     let mut added = Vec::new();
     for p in &targets {
@@ -323,4 +290,39 @@ pub fn duplicate_field(doc: &mut Document, name: &str, pages: &[usize]) -> Resul
     })?;
     redraw_field(doc, name)?;
     Ok(added.len())
+}
+
+/// Split field `f`, which is also its only widget `model`, into a field and one widget kid that
+/// takes the widget's keys and its place in the page's `/Annots`. Returns the kid.
+pub(super) fn split_merged(doc: &mut Document, f: &Field, model: &Widget) -> Result<ObjRef, FormError> {
+    let refs = page_refs(doc);
+    let d = doc.get(f.obj).as_dict().cloned().unwrap_or_default();
+    let mut kid = Dict::new();
+    for k in WIDGET_KEYS {
+        if let Some(v) = d.get(k) {
+            kid.set(k.to_vec(), v.clone());
+        }
+    }
+    kid.set(b"Parent".to_vec(), Object::Ref(f.obj));
+    let kr = doc.add(Object::Dict(kid));
+    doc.update_dict(f.obj, |d| {
+        for k in WIDGET_KEYS {
+            d.remove(k);
+        }
+        d.set(b"Kids".to_vec(), Object::Array(vec![Object::Ref(kr)]));
+    })?;
+    // The page lists the widget now, not the field.
+    if let Some(&pr) = model.page.and_then(|p| refs.get(p)) {
+        let annots = doc.get(pr).as_dict().and_then(|d| d.get(b"Annots").cloned());
+        let swap = |a: Vec<Object>| -> Vec<Object> { a.into_iter().map(|o| if o.as_ref() == Some(f.obj) { Object::Ref(kr) } else { o }).collect() };
+        match annots {
+            Some(Object::Ref(ar)) => {
+                let a = doc.get(ar).as_array().cloned().unwrap_or_default();
+                doc.set(ar, Object::Array(swap(a)));
+            }
+            Some(Object::Array(a)) => doc.update_dict(pr, |d| d.set(b"Annots".to_vec(), Object::Array(swap(a))))?,
+            _ => {}
+        }
+    }
+    Ok(kr)
 }

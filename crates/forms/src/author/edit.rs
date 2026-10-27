@@ -1,3 +1,4 @@
+use super::join::{check_join, join_radio_group};
 use super::look::{BorderStyle, da_string, patch_da, patch_widget_look, redraw_widgets};
 use super::tree::{attach, check_place, child_named, clash, detach, ensure_form, inherited, name_parts, own_inherited};
 use super::*;
@@ -71,6 +72,9 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
         crate::set_field_actions(doc, name, acts)?;
     }
     let mut new_name = name.to_string();
+    // A radio button renamed to another radio group's name joins that group (#4949). The other
+    // properties are written first, to this field, and its buttons then move.
+    let mut join = None;
     if let Some(n) = props.name.as_deref().map(str::trim).filter(|n| *n != f.name) {
         // A full name under the same parents only renames the field's own part (the editor
         // shows nested fields by their full name): it isn't moved, so it keeps its place and
@@ -79,7 +83,16 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
             (Some((parents, own)), Some((current, _))) if parents == current => own,
             _ => n,
         };
-        if n.contains('.') {
+        let full = match f.name.rsplit_once('.') {
+            Some((parents, _)) if !n.contains('.') => format!("{parents}.{n}"),
+            _ => n.to_string(),
+        };
+        let group = all.iter().find(|x| x.obj != f.obj && x.kind == FieldKind::Radio && x.name == full);
+        if let Some(group) = group.filter(|_| f.kind == FieldKind::Radio) {
+            check_join(doc, &f, group)?;
+            join = Some(group.clone());
+            new_name = full;
+        } else if n.contains('.') {
             // A full name: the field moves under the parent fields it names (#2696).
             let parts = name_parts(n)?;
             if let Some(why) = all.iter().filter(|x| x.obj != f.obj).find_map(|x| clash(n, &x.name)) {
@@ -385,7 +398,13 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
     }
     // A label-only edit must not replace another widget's custom appearances.
     let only = props.caption.as_ref().filter(|_| *props == (FieldProps { caption: props.caption.clone(), ..Default::default() })).map(|(wi, _)| *wi);
-    redraw_widgets(doc, &new_name, only)?;
+    if let Some(group) = &join {
+        redraw_widgets(doc, name, only)?;
+        join_radio_group(doc, &f, group)?;
+        redraw_field(doc, &new_name)?;
+    } else {
+        redraw_widgets(doc, &new_name, only)?;
+    }
     if props.calculate.is_some() {
         crate::recalculate(doc)?;
     }

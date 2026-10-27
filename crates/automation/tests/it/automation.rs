@@ -4005,6 +4005,29 @@ fn preparing_a_form_through_tools() {
 }
 
 #[test]
+fn renaming_a_radio_button_to_a_groups_name_joins_the_group_through_tools() {
+    // #4949: two buttons placed separately are two groups; naming one after the other makes
+    // them one group, and a clashing export value is renamed instead of shared.
+    let dir = workdir("radio-join");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    ok(&mut a, "form_add_field", json!({ "doc": doc, "page": 1, "type": "radio", "rect": [20, 100, 34, 114], "group": "size", "export": "S" }));
+    ok(&mut a, "form_add_field", json!({ "doc": doc, "page": 1, "type": "radio", "rect": [40, 100, 54, 114], "group": "other", "export": "S" }));
+    ok(&mut a, "form_fill", json!({ "doc": doc, "values": { "size": "S" } }));
+    let r = ok(&mut a, "form_set_props", json!({ "doc": doc, "field": "other", "name": "size" }));
+    assert_eq!(r["field"], "size");
+    ok(&mut a, "doc_save", json!({ "doc": doc, "path": "joined.pdf" }));
+    let doc = ok(&mut a, "doc_open", json!({ "path": "joined.pdf" }))["doc"].as_u64().unwrap();
+    let fields = ok(&mut a, "form_fields", json!({ "doc": doc }));
+    let f = fields["fields"].as_array().unwrap();
+    assert_eq!(f.iter().map(|f| f["name"].as_str().unwrap()).collect::<Vec<_>>(), ["size"], "one group");
+    assert_eq!(f[0]["options"], json!(["S", "Choice1"]), "the joining button takes a free export value");
+    assert_eq!(f[0]["value"], "S", "the group keeps its selection");
+    ok(&mut a, "form_fill", json!({ "doc": doc, "values": { "size": "Choice1" } }));
+    assert_eq!(ok(&mut a, "form_fields", json!({ "doc": doc }))["fields"][0]["value"], "Choice1");
+}
+
+#[test]
 fn rotating_a_field_through_tools() {
     let dir = workdir("rotate-field");
     let mut a = auto(&dir);
