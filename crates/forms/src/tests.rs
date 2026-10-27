@@ -4599,16 +4599,40 @@ fn changing_a_lists_options_repoints_its_selected_indices() {
     let opts = |o: &[&str]| FieldProps { options: Some(o.iter().map(|s| s.to_string()).collect()), ..FieldProps::default() };
     set_props(&mut doc, &list, &opts(&["B", "C", "D"])).unwrap();
     assert_eq!(selection_indices(&doc, &list), Some(vec![0, 1]));
-    assert!(doc.get(f.obj).as_dict().unwrap().get(b"TI").is_some(), "row 2 still exists");
-    // Removing B leaves only C selected; the top row now points past the end.
+    // Removing B leaves only C selected; the top row would point past the end.
     set_props(&mut doc, &list, &opts(&["C"])).unwrap();
     assert_eq!(selection_indices(&doc, &list), Some(vec![0]));
-    assert!(doc.get(f.obj).as_dict().unwrap().get(b"TI").is_none(), "a /TI past the list is dropped");
+    assert_eq!(top_row(&doc, f.obj), Some(0), "the list scrolls back to its only row");
     // No selected value is offered any more.
     set_props(&mut doc, &list, &opts(&["X", "Y"])).unwrap();
     assert_eq!(selection_indices(&doc, &list), None);
     let doc = reopen(&doc);
     assert_eq!(selection_indices(&doc, &list), None);
+}
+
+fn top_row(doc: &Document, obj: ObjRef) -> Option<i64> {
+    doc.get(obj).as_dict().and_then(|d| d.get(b"TI")).and_then(|o| o.as_int())
+}
+
+#[test]
+fn shrinking_a_lists_options_scrolls_a_widget_with_its_own_top_row() {
+    let objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [7 0 R] >>".into(),
+        "<< /Fields [6 0 R] /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >>".into(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+        "<< /FT /Ch /T (pick) /Opt [(A) (B) (C) (D) (E) (F)] /V (F) /I [5] /Kids [7 0 R] >>".into(),
+        "<< /Type /Annot /Subtype /Widget /Parent 6 0 R /TI 5 /Rect [50 700 250 720] /P 3 0 R >>".into(),
+    ];
+    let mut doc = document(&objs);
+    let widget = ObjRef::new(7, 0);
+    set_props(&mut doc, "pick", &FieldProps { options: Some(vec!["F".into(), "A".into()]), ..FieldProps::default() }).unwrap();
+    assert_eq!(selection_indices(&doc, "pick"), Some(vec![0]));
+    // The widget's own /TI is read before the field's; row 5 no longer exists.
+    assert_eq!(top_row(&doc, widget), Some(0), "the widget scrolls to F, now row 0");
+    let doc = reopen(&doc);
+    assert_eq!(top_row(&doc, widget), Some(0));
 }
 
 #[test]

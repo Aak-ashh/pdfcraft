@@ -14,22 +14,19 @@ fn swapped_around_center(r: [f64; 4]) -> Option<[f64; 4]> {
     (out.iter().all(|v| v.is_finite()) && out[2] - out[0] >= MIN_FIELD_SIDE && out[3] - out[1] >= MIN_FIELD_SIDE).then_some(out)
 }
 
-/// Re-point a choice field's `/I` (and `/TI`), which are positions in `/Opt`, at the new list
-/// `exports` after `/Opt` was replaced (ISO 32000-2 §12.7.5.4): `/I` names the positions of the
-/// selected `values` still offered, and a `/TI` past the end is dropped.
-fn repoint_selection(d: &mut Dict, values: &[String], exports: &[String]) {
+/// Re-point a choice field's `/I`, positions in `/Opt`, at the new list `exports` after `/Opt` was
+/// replaced (ISO 32000-2 §12.7.5.4): the positions of the selected `values` still offered, by
+/// `set_value`'s rule. Returns them.
+fn repoint_selection(d: &mut Dict, values: &[String], exports: &[String]) -> Vec<usize> {
     let mut indices: Vec<usize> = values.iter().filter_map(|v| exports.iter().position(|e| e == v)).collect();
     indices.sort_unstable();
     indices.dedup();
     if indices.is_empty() {
         d.remove(b"I");
     } else {
-        d.set(b"I".to_vec(), Object::Array(indices.into_iter().map(|i| Object::Int(i64::try_from(i).unwrap_or(i64::MAX))).collect()));
+        d.set(b"I".to_vec(), Object::Array(indices.iter().map(|&i| Object::Int(i64::try_from(i).unwrap_or(i64::MAX))).collect()));
     }
-    let top = d.get(b"TI").and_then(Object::as_int);
-    if top.is_some_and(|t| usize::try_from(t).map_or(true, |t| t >= exports.len())) {
-        d.remove(b"TI");
-    }
+    indices
 }
 
 /// Change a field's properties (General and Options tabs) and redraw it.
@@ -191,6 +188,7 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
     if props.check_style.is_some() && !matches!(f.kind, FieldKind::CheckBox | FieldKind::Radio) {
         return invalid("only check boxes and radio buttons have a check style");
     }
+    let mut list_top = None;
     doc.update_dict(f.obj, |d| {
         d.set(b"Ff".to_vec(), Object::Int(ff as i64));
         if let Some(t) = &props.tooltip {
@@ -237,7 +235,15 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
         if let Some(exports) = &new_exports
             && matches!(f.kind, FieldKind::Combo | FieldKind::List)
         {
-            repoint_selection(d, &f.value, exports);
+            let picked = repoint_selection(d, &f.value, exports);
+            // A list box scrolls, as for a new value, so its first row is still an option and
+            // the selection is in view.
+            if let Some((old, new)) = crate::values::list_scroll(&f, &picked, exports.len())
+                && old != new
+            {
+                d.set(b"TI".to_vec(), Object::Int(i64::try_from(new).unwrap_or(0)));
+                list_top = Some(new);
+            }
         }
         if let Some(q) = props.quadding {
             d.set(b"Q".to_vec(), Object::Int(q));
@@ -255,6 +261,9 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
             d.set(b"DA".to_vec(), PdfString::literal(new_da.clone().into_bytes()));
         }
     })?;
+    if let Some(top) = list_top {
+        crate::values::scroll_widgets(doc, &f, top)?;
+    }
     if props.appearance.is_some() || (props.font_size.is_some() && props.look.is_none()) {
         let patch = &props.appearance.unwrap_or_default();
         for w in &f.widgets {
