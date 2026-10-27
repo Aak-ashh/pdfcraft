@@ -235,15 +235,7 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
         if let Some(exports) = &new_exports
             && matches!(f.kind, FieldKind::Combo | FieldKind::List)
         {
-            let picked = repoint_selection(d, &f.value, exports);
-            // A list box scrolls, as for a new value, so its first row is still an option and
-            // the selection is in view.
-            if let Some((old, new)) = crate::values::list_scroll(&f, &picked, exports.len())
-                && old != new
-            {
-                d.set(b"TI".to_vec(), Object::Int(i64::try_from(new).unwrap_or(0)));
-            }
-            list_picked = Some((picked, exports.len()));
+            list_picked = Some((repoint_selection(d, &f.value, exports), exports.len()));
         }
         if let Some(q) = props.quadding {
             d.set(b"Q".to_vec(), Object::Int(q));
@@ -261,9 +253,6 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
             d.set(b"DA".to_vec(), PdfString::literal(new_da.clone().into_bytes()));
         }
     })?;
-    if let Some((picked, count)) = list_picked {
-        crate::values::scroll_widgets(doc, &f, &picked, count)?;
-    }
     if props.appearance.is_some() || (props.font_size.is_some() && props.look.is_none()) {
         let patch = &props.appearance.unwrap_or_default();
         for w in &f.widgets {
@@ -421,6 +410,18 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
     }
     // A label-only edit must not replace another widget's custom appearances.
     let only = props.caption.as_ref().filter(|_| *props == (FieldProps { caption: props.caption.clone(), ..Default::default() })).map(|(wi, _)| *wi);
+    // A list box scrolls, as for a new value, so its first row is still an option and the
+    // selection is in view. Its rows are measured with the edited font size and rectangle.
+    if let Some((picked, count)) = list_picked
+        && let Some(g) = fields(doc).into_iter().find(|g| g.obj == f.obj)
+    {
+        if let Some((old, new)) = crate::values::list_scroll(&g, &picked, count)
+            && old != new
+        {
+            doc.update_dict(f.obj, |d| d.set(b"TI".to_vec(), Object::Int(i64::try_from(new).unwrap_or(0))))?;
+        }
+        crate::values::scroll_widgets(doc, &g, &picked, count)?;
+    }
     redraw_widgets(doc, &new_name, only)?;
     if props.calculate.is_some() {
         crate::recalculate(doc)?;

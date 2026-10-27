@@ -4663,6 +4663,28 @@ fn each_widget_with_its_own_top_row_scrolls_by_itself() {
     assert_eq!(top_row(&reopen(&doc), other), Some(0), "value: the other widget scrolls to A");
 }
 
+/// A list box's top row is chosen with the font size set in the same edit: at the larger size
+/// fewer rows fit, so it scrolls further to keep the selection in view.
+#[test]
+fn a_list_boxs_top_row_follows_a_font_size_changed_with_its_items() {
+    let mut doc = document(&[
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [6 0 R] >>".into(),
+        "<< /Fields [6 0 R] /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >>".into(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+        "<< /FT /Ch /T (pick) /Opt [(A) (B) (C) (D) (E)] /V (C) /I [2] /Type /Annot /Subtype /Widget /Rect [50 700 250 740] /P 3 0 R >>".into(),
+    ]);
+    let items = ["Z", "A", "B", "C", "D"].map(String::from).to_vec();
+    set_props(&mut doc, "pick", &FieldProps { options: Some(items), font_size: Some(20.0), ..FieldProps::default() }).unwrap();
+    let doc = reopen(&doc);
+    let g = field(&fields(&doc), "pick").clone();
+    let w = &g.widgets[0];
+    let rows = w.list.unwrap();
+    let shown = rows.top..rows.top + rows.visible(w.rect[3] - w.rect[1]);
+    assert!(shown.contains(&3), "C is row 3; rows {shown:?} show");
+}
+
 #[test]
 fn sorting_a_combo_boxs_items_repoints_its_selected_index() {
     let mut doc = one_page();
