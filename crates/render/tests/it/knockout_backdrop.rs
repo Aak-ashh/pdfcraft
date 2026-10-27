@@ -35,7 +35,9 @@ fn stream(dict: &str, content: &str) -> String {
 /// content `content`. Its resources have `/D` (`/BM /Difference`), `/N` (`/BM /Normal`), `/H`
 /// (`/ca 0.5`), `/W`, a white square from 40 to 160 in a group of its own, `/Nest`, a group
 /// holding a non-isolated knockout group with a white Difference square from 80 to 120, and
-/// `/Img`, a white 1 x 1 image.
+/// `/Img`, a white 1 x 1 image, `/Img2`, a blue 2 x 1 image whose soft mask is opaque on the
+/// left and transparent on the right, `/St`, a 2 x 1 stencil mask painting its left pixel, and
+/// the shading `/Sh0`, a mesh whose one triangle lies off the page.
 /// Returns a lookup of the colour at PDF point (x, y).
 fn render(group: &str, content: &str) -> impl Fn(u32, u32) -> [u8; 3] {
     let gs = "/ExtGState << /D << /BM /Difference >> /H << /ca 0.5 >> /N << /BM /Normal >> >>";
@@ -46,7 +48,7 @@ fn render(group: &str, content: &str) -> impl Fn(u32, u32) -> [u8; 3] {
             .to_string(),
         stream("", "1 0 1 rg 0 0 200 200 re f /Fk Do"),
         stream(
-            &format!("/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency /CS /DeviceRGB {group} >> /Resources << {gs} /XObject << /W 6 0 R /Nest 7 0 R /Img 9 0 R >> >>"),
+            &format!("/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency /CS /DeviceRGB {group} >> /Resources << {gs} /XObject << /W 6 0 R /Nest 7 0 R /Img 9 0 R /Img2 10 0 R /St 12 0 R >> /Shading << /Sh0 13 0 R >> >>"),
             content,
         ),
         stream("/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency >>", "1 1 1 rg 40 40 120 120 re f"),
@@ -56,6 +58,16 @@ fn render(group: &str, content: &str) -> impl Fn(u32, u32) -> [u8; 3] {
             "/D gs 1 1 1 rg 80 80 40 40 re f",
         ),
         stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode", "FFFFFF>"),
+        stream(
+            "/Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 11 0 R /Filter /ASCIIHexDecode",
+            "0000FF0000FF>",
+        ),
+        stream("/Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode", "FF00>"),
+        stream("/Type /XObject /Subtype /Image /Width 2 /Height 1 /ImageMask true /BitsPerComponent 1 /Filter /ASCIIHexDecode", "40>"),
+        stream(
+            "/ShadingType 4 /ColorSpace /DeviceRGB /BitsPerCoordinate 8 /BitsPerComponent 8 /BitsPerFlag 8 /Decode [300 310 300 310 0 1 0 1 0 1] /Filter /ASCIIHexDecode",
+            "000000FF0000 00FF00FF0000 0000FFFF0000>",
+        ),
     ];
     let mut renderer = PageRenderer::new(Arc::new(pdf(&objects)), RenderConfig::default());
     let page = renderer.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0, preview: false });
@@ -130,4 +142,28 @@ fn a_knockout_group_inside_an_element_keeps_the_outer_groups_passes() {
     let nested = render(NON_ISOLATED, "/D gs 1 1 1 rg 10 10 50 50 re f /N gs /Nest Do /D gs 1 1 1 rg 140 140 50 50 re f");
     check(&nested, 30, 30, GREEN, "Difference square before the nested groups");
     check(&nested, 165, 165, GREEN, "Difference square after the nested groups");
+}
+
+/// A masked image (or, below, a stencil) in another pass than its own replaces what is under its mask
+/// there too: a blue image over a white Difference square stays blue where its mask is opaque,
+/// and leaves the square to blend with the page where it is transparent (review of #4886's fix).
+#[test]
+fn a_masked_image_replaces_what_is_under_its_mask_in_every_pass() {
+    let masked = render(NON_ISOLATED, "/D gs 1 1 1 rg 40 40 120 120 re f /N gs q 120 0 0 120 40 40 cm /Img2 Do Q");
+    check(&masked, 60, 100, [0, 0, 255], "image over the square, mask opaque");
+    check(&masked, 140, 100, GREEN, "square under the transparent half of the mask");
+}
+
+#[test]
+fn a_stencil_replaces_what_is_under_it_in_every_pass() {
+    let stencil = render(NON_ISOLATED, "/D gs 1 1 1 rg 40 40 120 120 re f /N gs 0 0 1 rg q 120 0 0 120 40 40 cm /St Do Q");
+    check(&stencil, 60, 100, [0, 0, 255], "stencil over the square");
+    check(&stencil, 140, 100, GREEN, "square beside the stencil");
+}
+
+/// A shading that paints nothing (a mesh off the page) replaces nothing in another pass either.
+#[test]
+fn a_shading_that_paints_nothing_clears_nothing_in_another_pass() {
+    let mesh = render(NON_ISOLATED, "0 0 1 rg 20 20 160 160 re f /D gs /Sh0 sh");
+    check(&mesh, 100, 100, [0, 0, 255], "blue under an off-page Difference mesh");
 }
