@@ -4746,3 +4746,21 @@ fn sorting_a_combo_boxs_items_repoints_its_selected_index() {
     assert_eq!(selection_indices(&doc, &combo), Some(vec![2]));
     assert_eq!(field(&fields(&doc), &combo).value, vec!["Pear".to_string()]);
 }
+
+#[test]
+fn sorting_keeps_which_of_two_items_with_one_export_value_is_selected() {
+    let mut doc = one_page();
+    let list = add_field(&mut doc, 0, [50.0, 600.0, 250.0, 680.0], &NewField::List { options: vec!["a".into()], multi: false }, None).unwrap();
+    let f = field(&fields(&doc), &list).clone();
+    let item = |e: &str, shown: &str| Object::Array(vec![Object::String(PdfString::text(e)), Object::String(PdfString::text(shown))]);
+    // Zeta and Alpha both export "x"; `/I` says Zeta is the one selected.
+    doc.update_dict(f.obj, |d| {
+        d.set(b"Opt".to_vec(), Object::Array(vec![item("x", "Zeta"), item("x", "Alpha"), item("y", "Mid")]));
+        d.set(b"V".to_vec(), PdfString::text("x"));
+        d.set(b"I".to_vec(), Object::Array(vec![Object::Int(0)]));
+    })
+    .unwrap();
+    set_props(&mut doc, &list, &FieldProps { flags: vec![(flags::SORT, true)], ..FieldProps::default() }).unwrap();
+    // Alpha, Mid, Zeta: the selection follows Zeta, not the first item exporting "x".
+    assert_eq!(selection_indices(&doc, &list), Some(vec![2]));
+}

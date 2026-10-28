@@ -15,10 +15,17 @@ fn swapped_around_center(r: [f64; 4]) -> Option<[f64; 4]> {
 }
 
 /// Re-point a choice field's `/I`, positions in `/Opt`, at the new list `exports` after `/Opt` was
-/// replaced (ISO 32000-2 §12.7.5.4): the positions of the selected `values` still offered, by
-/// `set_value`'s rule. Returns them.
-fn repoint_selection(d: &mut Dict, values: &[String], exports: &[String]) -> Vec<usize> {
-    let mut indices: Vec<usize> = values.iter().filter_map(|v| exports.iter().position(|e| e == v)).collect();
+/// replaced (ISO 32000-2 §12.7.5.4): the positions of the selected `values` still offered. `kept`
+/// are the old `/I` positions carried into the new list, which tell apart options sharing an
+/// export value; a selected value none of them covers takes its first position, by `set_value`'s
+/// rule. Returns them.
+fn repoint_selection(d: &mut Dict, values: &[String], exports: &[String], kept: &[usize]) -> Vec<usize> {
+    let mut indices: Vec<usize> = kept.iter().copied().filter(|&i| exports.get(i).is_some_and(|e| values.contains(e))).collect();
+    for v in values {
+        if !indices.iter().any(|&i| exports.get(i) == Some(v)) {
+            indices.extend(exports.iter().position(|e| e == v));
+        }
+    }
     indices.sort_unstable();
     indices.dedup();
     if indices.is_empty() {
@@ -27,6 +34,46 @@ fn repoint_selection(d: &mut Dict, values: &[String], exports: &[String]) -> Vec
         d.set(b"I".to_vec(), Object::Array(indices.iter().map(|&i| Object::Int(i64::try_from(i).unwrap_or(i64::MAX))).collect()));
     }
     indices
+}
+
+/// The positions in `/Opt` that a choice field's `/I` holds, those below `count`.
+fn selected_indices(doc: &Document, field: ObjRef, count: usize) -> Vec<usize> {
+    let Some(i) = doc.get(field).as_dict().and_then(|d| d.get(b"I").cloned()) else {
+        return Vec::new();
+    };
+    let positions = doc.resolve(&i);
+    positions.as_array().map(|a| a.iter().filter_map(|o| usize::try_from(o.as_int()?).ok()).filter(|&n| n < count).collect()).unwrap_or_default()
+}
+
+/// The items (export value, display text) "Sort items" orders: the new `props.options`, or else
+/// the field's own, whose selection, `/I` included, moves with them.
+fn items_to_sort(doc: &Document, f: &Field, props: &FieldProps) -> (Vec<(String, String)>, Vec<usize>) {
+    match &props.options {
+        Some(o) => (o.iter().map(|x| (x.clone(), x.clone())).collect(), Vec::new()),
+        None => (f.options.clone(), selected_indices(doc, f.obj, f.options.len())),
+    }
+}
+
+/// Sort a choice field's items (export value, display text) by display text, ignoring case, and
+/// write them as `/Opt`; export values stay with their items. Returns the export values in their
+/// new order and the `old` positions carried through the sort.
+fn write_sorted_opt(d: &mut Dict, items: &[(String, String)], old: &[usize]) -> (Vec<String>, Vec<usize>) {
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|&i| items.get(i).map(|(_, display)| display.to_lowercase()));
+    let sorted: Vec<&(String, String)> = order.iter().filter_map(|&i| items.get(i)).collect();
+    let opt = sorted
+        .iter()
+        .map(|(e, disp)| {
+            if e == disp {
+                Object::String(PdfString::text(disp))
+            } else {
+                Object::Array(vec![Object::String(PdfString::text(e)), Object::String(PdfString::text(disp))])
+            }
+        })
+        .collect();
+    d.set(b"Opt".to_vec(), Object::Array(opt));
+    let carried = old.iter().filter_map(|o| order.iter().position(|i| i == o)).collect();
+    (sorted.into_iter().map(|(e, _)| e.clone()).collect(), carried)
 }
 
 /// Change a field's properties (General and Options tabs) and redraw it.
@@ -137,6 +184,7 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
         return invalid("only check boxes and radio buttons have a check style");
     }
     let mut list_picked = None;
+    let (sort_items, old_selection) = items_to_sort(doc, &f, props);
     doc.update_dict(f.obj, |d| {
         d.set(b"Ff".to_vec(), Object::Int(ff as i64));
         if let Some(t) = &props.tooltip {
@@ -156,34 +204,21 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
         }
         // The export values in `/Opt` order once it is rewritten, for re-pointing `/I`.
         let mut new_exports: Option<Vec<String>> = None;
+        let mut kept = Vec::new();
         if let Some(opts) = &props.options {
             d.set(b"Opt".to_vec(), Object::Array(opts.iter().map(|o| Object::String(PdfString::text(o))).collect()));
             new_exports = Some(opts.clone());
         }
         // "Sort items": the list itself is kept in order (export values stay with their items).
         if ff & flags::SORT != 0 && matches!(f.kind, FieldKind::Combo | FieldKind::List) {
-            let mut items: Vec<(String, String)> = match &props.options {
-                Some(o) => o.iter().map(|x| (x.clone(), x.clone())).collect(),
-                None => f.options.clone(),
-            };
-            items.sort_by_key(|(_, display)| display.to_lowercase());
-            let opt = items
-                .iter()
-                .map(|(e, disp)| {
-                    if e == disp {
-                        Object::String(PdfString::text(disp))
-                    } else {
-                        Object::Array(vec![Object::String(PdfString::text(e)), Object::String(PdfString::text(disp))])
-                    }
-                })
-                .collect();
-            d.set(b"Opt".to_vec(), Object::Array(opt));
-            new_exports = Some(items.into_iter().map(|(e, _)| e).collect());
+            let (exports, carried) = write_sorted_opt(d, &sort_items, &old_selection);
+            new_exports = Some(exports);
+            kept = carried;
         }
         if let Some(exports) = &new_exports
             && matches!(f.kind, FieldKind::Combo | FieldKind::List)
         {
-            list_picked = Some((repoint_selection(d, &f.value, exports), exports.len()));
+            list_picked = Some((repoint_selection(d, &f.value, exports, &kept), exports.len()));
         }
         if let Some(q) = props.quadding {
             d.set(b"Q".to_vec(), Object::Int(q));
