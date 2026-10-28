@@ -2719,6 +2719,55 @@ fn a_moved_comment_is_drawn_where_it_goes_before_release() {
     }
 }
 
+/// Fill & Sign's typed text (a Typewriter FreeText) is drawn where it goes while it is dragged
+/// too, not only its frame (#4619).
+#[test]
+fn moved_fill_and_sign_text_is_drawn_where_it_goes_before_release() {
+    let _gpu = crate::gpu();
+    let mut h = harness(|_| {});
+    h.state_mut().execute("sign.fill.text");
+    click_pt(&mut h, (40.0, 150.0));
+    h.event(egui::Event::Text("WWWWWW".into()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let a = comments(&h).into_iter().find(|a| a.contents.as_deref() == Some("WWWWWW")).expect("the typed text");
+    assert!(a.fill_sign && a.subtype == "FreeText", "{a:?}");
+    h.state_mut().quick_tool = QuickTool::Select;
+    h.state_mut().views[0].comments.selected = None;
+    crate::support::settle(&mut h);
+    let (x, y) = ((a.rect[0] + a.rect[2]) / 2.0, (a.rect[1] + a.rect[3]) / 2.0);
+    let (dx, dy) = (120.0, -60.0);
+    let (from, to) = (at(&h, x, y), at(&h, x + dx, y + dy));
+    // Ink in the left of the box where it goes, inside its frame and away from the pointer, which
+    // is drawn over the page.
+    let goes = egui::Rect::from_two_pos(at(&h, a.rect[0] + dx, a.rect[1] + dy), at(&h, a.rect[2] + dx, a.rect[3] + dy)).shrink(3.0);
+    let inked = |pixels: &image::RgbaImage| {
+        (goes.left() as u32..(to.x - 12.0) as u32)
+            .any(|px| (goes.top() as u32..goes.bottom() as u32).any(|py| pixels.get_pixel(px, py).0[..3].iter().all(|c| *c < 100)))
+    };
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    for k in 1..=4 {
+        h.hover_at(from + (to - from) * (k as f32 / 4.0));
+        h.run_steps(1);
+    }
+    let mut shown = false;
+    for _ in 0..100 {
+        h.run_steps(2);
+        if inked(&h.render().unwrap()) {
+            shown = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(shown, "the typed text is drawn under the pointer before release");
+    h.drop_at(to);
+    h.run_steps(3);
+}
+
 /// A comment kept upright on a turned page (NoRotate on a /Rotate 90 page) is drawn where it goes
 /// while it is dragged too: its layer is cut from the box it is drawn in, not from its /Rect.
 #[test]
