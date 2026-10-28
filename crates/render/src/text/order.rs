@@ -1,5 +1,5 @@
+use super::TextGlyph;
 use super::layout::is_rtl;
-use super::*;
 
 /// Glyphs `start..end` of the glyph list [`arrange`] lays out, drawn one after another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
