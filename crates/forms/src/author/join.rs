@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::lifecycle::{drop_from_calculation_order, split_merged, split_triggers};
 use super::tree::{detach, list_of};
-use super::*;
+use super::{Dict, Document, Field, FormError, ObjRef, Object, invalid};
 
 /// The keys a field that is also its own widget sheds when it becomes only a widget. Its `/AA`
 /// keeps only the widget's own triggers.
