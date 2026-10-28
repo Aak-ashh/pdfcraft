@@ -23,8 +23,10 @@ fn open_type(cff: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A page showing "AgW" at 60 pt in a serif `Type1` font whose `FontFile3` is `program`.
-fn page(program: &[u8], subtype: &str) -> Vec<u8> {
+/// A page showing "AgW" at 60 pt in a serif `Type1` font whose `FontFile3` is `program` of
+/// `subtype`, or which embeds no program when `None`.
+fn page(program: Option<(&[u8], &str)>) -> Vec<u8> {
+    let file = if program.is_some() { " /FontFile3 7 0 R" } else { "" };
     let body = "BT /F1 60 Tf 10 30 Td (AgW) Tj ET";
     let mut objects: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
@@ -32,12 +34,14 @@ fn page(program: &[u8], subtype: &str) -> Vec<u8> {
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 120] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_vec(),
         format!("<< /Length {} >>\nstream\n{body}\nendstream", body.len()).into_bytes(),
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Synthetic-Semibold /Encoding /WinAnsiEncoding /FirstChar 65 /LastChar 103 /Widths [600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600 600] /FontDescriptor 6 0 R >>".to_vec(),
-        b"<< /Type /FontDescriptor /FontName /Synthetic-Semibold /Flags 34 /FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 120 /FontFile3 7 0 R >>".to_vec(),
+        format!("<< /Type /FontDescriptor /FontName /Synthetic-Semibold /Flags 34 /FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 120{file} >>").into_bytes(),
     ];
-    let mut stream = format!("<< /Subtype /{subtype} /Length {} >>\nstream\n", program.len()).into_bytes();
-    stream.extend_from_slice(program);
-    stream.extend_from_slice(b"\nendstream");
-    objects.push(stream);
+    if let Some((program, subtype)) = program {
+        let mut stream = format!("<< /Subtype /{subtype} /Length {} >>\nstream\n", program.len()).into_bytes();
+        stream.extend_from_slice(program);
+        stream.extend_from_slice(b"\nendstream");
+        objects.push(stream);
+    }
 
     let mut bytes = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
@@ -69,17 +73,20 @@ fn inked(rgba: &[u8]) -> usize {
 
 #[test]
 fn an_open_type_wrapped_cff_program_draws_like_the_bare_program() {
-    let bare = pixels(page(CFF, "Type1C"));
+    let bare = pixels(page(Some((CFF, "Type1C"))));
     assert!(inked(&bare) > 200, "the bare CFF program drew no text");
-    let wrapped = pixels(page(&open_type(CFF), "OpenType"));
+    let wrapped = pixels(page(Some((&open_type(CFF), "OpenType"))));
     assert!(wrapped == bare, "the OpenType-wrapped program drew a different face: the font fell back");
 }
 
-/// A wrapper with no `CFF ` table still draws, with the stand-in, rather than failing the page.
+/// A wrapper with no `CFF ` table still draws, with the stand-in a font without a program
+/// gets, rather than failing the page or reading the program anyway.
 #[test]
 fn a_wrapper_without_a_cff_table_falls_back() {
     let mut broken = open_type(CFF);
     broken.get_mut(12..16).unwrap().copy_from_slice(b"glyf");
-    let rgba = pixels(page(&broken, "OpenType"));
+    let rgba = pixels(page(Some((&broken, "OpenType"))));
     assert!(inked(&rgba) > 200, "the stand-in drew no text");
+    assert!(rgba == pixels(page(None)), "the broken wrapper drew another face than the stand-in");
+    assert!(rgba != pixels(page(Some((CFF, "Type1C")))), "the broken wrapper drew the embedded program");
 }
