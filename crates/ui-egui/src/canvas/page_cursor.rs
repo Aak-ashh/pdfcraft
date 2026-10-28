@@ -6,10 +6,10 @@
 //! showed over every tool though only the Select tool follows links, and the I-beam of the text
 //! under a comment hid that a drag there moves the comment. `canvas::document_area` sets the
 //! cursor once, from the claim on the highest layer the active tool reaches. The tip beside it is
-//! that claim's own (a link's target, so only where a press follows the link), or else what lies
-//! under the pointer says (a comment, or a signature's validation badge), with any tool, as
-//! Acrobat shows a comment's tooltip. A test in `page_pointer/tests.rs` keeps page modules from
-//! setting the cursor.
+//! that claim's own (a link's target, so only where a press acts on the link: the Select tool
+//! follows it, the Link tool edits it), or else what lies under the pointer says (a comment, or a
+//! signature's validation badge), with any tool, as Acrobat shows a comment's tooltip. A test in
+//! `page_pointer/tests.rs` keeps page modules from setting the cursor.
 
 use egui::CursorIcon;
 
