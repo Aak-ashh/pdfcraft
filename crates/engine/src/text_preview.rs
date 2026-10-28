@@ -27,6 +27,12 @@ impl TextEditPreview {
 pub struct UnmarkedPages {
     bytes: Arc<Vec<u8>>,
     config: RenderConfig,
+    /// Parsed on the first [`Self::render_page`], once (a copy that can't be parsed isn't tried
+    /// again), and kept: parsing costs about as much as reading the document.
+    parsed: Option<PageRenderer>,
+    /// How many times it was parsed.
+    #[cfg(test)]
+    builds: u64,
 }
 
 impl UnmarkedPages {
@@ -34,8 +40,38 @@ impl UnmarkedPages {
         RenderPool::new(self.bytes.clone(), 1, self.config.clone())
     }
 
-    pub fn render_page(&self, page: usize, scale: f32) -> Result<RenderedPage, String> {
-        render_one(&self.bytes, &self.config, page, scale)
+    /// `page` at `scale`, on this thread.
+    pub fn render_page(&mut self, page: usize, scale: f32) -> Result<RenderedPage, String> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err("preview scale must be finite and positive".into());
+        }
+        if self.parsed.is_none() {
+            self.parsed = Some(PageRenderer::new(self.bytes.clone(), self.config.clone()));
+            #[cfg(test)]
+            {
+                self.builds += 1;
+            }
+        }
+        let Some(renderer) = self.parsed.as_mut() else { return Err("the document could not be parsed".into()) };
+        let out = guard(|| renderer.render(RenderRequest { page, scale, ..Default::default() }));
+        let out = match out {
+            Ok(out) => out,
+            Err(e) => {
+                // A panic may have left it half-way: parse afresh next time.
+                self.parsed = None;
+                return Err(e);
+            }
+        };
+        if let Some(e) = &out.error {
+            return Err(e.clone());
+        }
+        Ok(out)
+    }
+
+    /// How many times [`Self::render_page`] has parsed the document.
+    #[cfg(test)]
+    pub(crate) fn parser_builds(&self) -> u64 {
+        self.builds
     }
 }
 
@@ -129,7 +165,13 @@ impl Document {
                 return Ok(None);
             }
             let bytes = Arc::new(pdfcraft_cos::write_incremental(&cos, &pdfcraft_cos::SaveOptions::default()).map_err(|e| e.to_string())?);
-            Ok(Some(UnmarkedPages { bytes, config: self.config.clone() }))
+            Ok(Some(UnmarkedPages {
+                bytes,
+                config: self.config.clone(),
+                parsed: None,
+                #[cfg(test)]
+                builds: 0,
+            }))
         })?
     }
 

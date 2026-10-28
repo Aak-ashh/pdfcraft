@@ -3023,7 +3023,7 @@ fn update_previews_on_the_page_without_the_marks_it_replaces() {
     let dark = |p: &pdfcraft_render::RenderedPage| p.rgba.as_chunks::<4>().0.iter().filter(|[r, g, b, _]| *r < 100 && *g < 100 && *b < 100).count();
     assert_eq!(pixel(&s, id, 0, 5, 5)[..3], [255, 255, 0], "the page has the yellow background");
 
-    let unmarked = doc.without_marks(MarkKind::Background).unwrap().expect("the pages have a background");
+    let mut unmarked = doc.without_marks(MarkKind::Background).unwrap().expect("the pages have a background");
     let page = unmarked.render_page(0, 1.0).unwrap();
     assert_eq!(px(&page, 5, 5), [255, 255, 255], "without the background the page is white");
     assert!(reds(&page) > 50, "the watermark stays");
@@ -3034,6 +3034,7 @@ fn update_previews_on_the_page_without_the_marks_it_replaces() {
     assert_eq!(px(&page, 5, 5), [255, 255, 0], "the background stays");
 
     assert_eq!(px(&unmarked.render_page(1, 1.0).unwrap(), 5, 5), [255, 255, 255], "made once, for every page: page 2 is white too");
+    assert_eq!(unmarked.parser_builds(), 1, "parsed once for both pages");
     assert!(doc.without_marks(MarkKind::HeaderFooter).unwrap().is_none(), "the document has no header");
     assert!(unmarked.render_page(9, 1.0).is_err(), "no page 10");
     let doc = s.get(id).unwrap();

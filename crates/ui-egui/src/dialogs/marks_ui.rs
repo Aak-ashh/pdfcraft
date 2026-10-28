@@ -190,7 +190,8 @@ fn behind(color: [f64; 3], opacity: f64) -> Color32 {
 /// would tint the old one. The document without them is made once per dialog (it costs about a
 /// save). The page shown is drawn from it straight away, at the preview's small size, so neither
 /// a blank sheet nor the old marks show while it renders; the pages a step goes to next render
-/// ahead, off the UI thread, so stepping rarely waits.
+/// ahead, off the UI thread (not on the web, where the pool renders on it), so stepping rarely
+/// waits.
 #[derive(Default)]
 pub(crate) struct UnmarkedPage {
     /// The document, its edit generation and the kind of mark taken away.
@@ -200,7 +201,8 @@ pub(crate) struct UnmarkedPage {
     /// The pages rendered, with the scale (×1000) they were rendered at: the page shown and the
     /// pages next to it.
     textures: HashMap<usize, (u64, egui::TextureHandle)>,
-    /// Pages that failed to render: their thumbnails show instead, the other pages still don't.
+    /// Pages that failed to render when shown, so they aren't tried every frame: their
+    /// thumbnails show instead, the other pages still don't.
     failed: HashSet<usize>,
     /// The pages asked of the renderer ahead, and not back yet. Nothing waits for them: a step
     /// is a frame, which takes what has come back first and draws the rest itself.
@@ -228,7 +230,10 @@ impl UnmarkedPage {
                 self.renderer = self.pages.as_ref().map(|p| p.renderer());
             }
         }
-        let (pages, renderer) = (self.pages.as_ref()?, self.renderer.as_ref()?);
+        // On the web the render pool renders inside `try_recv`, on this thread: rendering ahead
+        // there would draw the pages next to it in the same frame too.
+        let near = if cfg!(target_arch = "wasm32") { &[][..] } else { near };
+        let renderer = self.renderer.as_ref()?;
         // At the preview's size in pixels.
         let scale = |page: usize| {
             let p = doc.info.pages.get(page)?;
@@ -242,14 +247,17 @@ impl UnmarkedPage {
         while let Some(out) = renderer.try_recv() {
             let at = (out.request.page, out.request.tag);
             self.ahead.retain(|a| *a != at);
-            if out.error.is_some() {
-                self.failed.insert(at.0);
-            } else {
+            // An error rendering ahead needn't be the page's (the pool retires its parser, a
+            // request is cancelled): the page is drawn here when it is shown, and that decides.
+            if out.error.is_none() {
                 self.textures.insert(at.0, (at.1, load(ctx, out)));
             }
         }
         let (s, tag) = scale(page)?;
-        if !self.failed.contains(&page) && self.textures.get(&page).is_none_or(|(t, _)| *t != tag) {
+        if !self.failed.contains(&page)
+            && self.textures.get(&page).is_none_or(|(t, _)| *t != tag)
+            && let Some(pages) = self.pages.as_mut()
+        {
             match pages.render_page(page, s) {
                 Ok(out) => {
                     self.textures.insert(page, (tag, load(ctx, out)));
@@ -274,7 +282,8 @@ impl UnmarkedPage {
             self.ahead = wanted;
         }
         self.textures.retain(|p, _| *p == page || near.contains(p));
-        self.textures.get(&page).filter(|_| !self.failed.contains(&page)).map(|(_, t)| t.id())
+        // A picture rendered at another scale beats the thumbnail with the old marks.
+        self.textures.get(&page).map(|(_, t)| t.id())
     }
 }
 
