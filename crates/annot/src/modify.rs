@@ -80,6 +80,16 @@ pub fn delete_annotation(doc: &mut Document, page: usize, index: usize) -> Resul
     // An inline comment has no reference to collect; the pop-up it names still goes.
     let seed = target.as_ref().or_else(|| target.as_dict().and_then(|d| d.reference(b"Popup")));
     let doomed = with_replies_and_popups(doc, &list, seed);
+    // A locked reply can't be deleted on its own, so it doesn't go with the comment or reply it
+    // answers either. Pop-ups follow their comment.
+    for (_, e) in list.iter().enumerate().filter(|(i, e)| *i != index && goes_with(e, &doomed)) {
+        let obj = doc.resolve(e);
+        if let Some(d) = obj.as_dict().filter(|d| d.name(b"Subtype") != Some(b"Popup".as_slice()))
+            && annotation_flags(doc, d) & FLAG_LOCKED != 0
+        {
+            return Err(AnnotError::Invalid("a reply to it is locked".into()));
+        }
+    }
     let kept: Vec<Object> = list.into_iter().enumerate().filter(|(i, e)| *i != index && !goes_with(e, &doomed)).map(|(_, e)| e).collect();
     Ok(set_annots(doc, p, kept)?)
 }
