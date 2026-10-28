@@ -242,11 +242,16 @@ fn a_locked_reply_keeps_what_it_answers() {
     assert_eq!(delete_annotation(&mut doc, 0, reply), Err(AnnotError::Invalid("a reply to it is locked".into())));
     assert_eq!(delete_annotation(&mut doc, 0, note), Err(AnnotError::Invalid("a reply to it is locked".into())));
     assert_eq!(list(&doc, 0).len(), before, "nothing went");
+    // Asked first, read-only, as a Delete command does: the same answer, and the answer's own
+    // lock is its own.
+    assert_eq!(deletable(&doc, 0, note), Err(AnnotError::Invalid("a reply to it is locked".into())));
+    assert_eq!(deletable(&doc, 0, answer), Err(AnnotError::Invalid("the comment is locked".into())));
     // Lifted on a copy, to draw the page beneath, the locks don't count.
     let mut copy = doc.clone();
     lift_annotation(&mut copy, 0, note).unwrap();
     assert!(list(&copy, 0).len() < before, "the thread is lifted off the copy");
     set_locked(&mut doc, 0, answer, false).unwrap();
+    assert_eq!(deletable(&doc, 0, reply), Ok(()));
     delete_annotation(&mut doc, 0, reply).unwrap();
     let left: Vec<String> = list(&doc, 0).iter().map(|d| text(d, b"Contents")).collect();
     assert!(!left.iter().any(|t| t == "first" || t == "locked answer"), "the reply and its answer went: {left:?}");

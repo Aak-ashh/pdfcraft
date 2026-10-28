@@ -275,14 +275,6 @@ fn in_thread(page: &[&Annotation], top: (usize, usize)) -> impl Fn(usize) -> boo
     }
 }
 
-/// Whether a reply to the annotation at `top`, at any depth, is locked: deleting it is refused
-/// then, as the reply can't be deleted.
-pub(crate) fn locked_below(annotations: &[Annotation], top: (usize, usize)) -> bool {
-    let page = on_page(annotations, top.0);
-    let goes = in_thread(&page, top);
-    page.iter().any(|a| a.index != top.1 && a.locked && goes(a.index))
-}
-
 /// The annotations listed on `page`, in `/Annots` order.
 fn on_page(list: &[Annotation], page: usize) -> Vec<&Annotation> {
     let mut v: Vec<&Annotation> = list.iter().filter(|a| a.page == page).collect();
