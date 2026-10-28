@@ -1,8 +1,7 @@
 //! The nonseparable blend modes keep grays gray (ISO 32000-2 §11.3.5.3). vello_cpu 0.0.8's
 //! `clip_color` divided 0 by 0 for grays that rounding left just outside 0..1 and drew them black
-//! under `Color`. Upstream's report also has black under `Luminosity` over a gray going black in
-//! vello_cpu's f32 pipeline; pages render through the u8 pipeline, where that case already holds,
-//! so its test here guards rather than reproduces.
+//! under `Color`. Upstream's report also has black under `Luminosity` over a gray going wrong; that
+//! case already renders correctly here, so its test guards rather than reproduces.
 
 use std::sync::Arc;
 
