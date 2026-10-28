@@ -30,9 +30,9 @@ pub(crate) use as_html::esc;
 pub use as_html::html;
 #[cfg(test)]
 use as_html::{allowed, base64};
-#[cfg(test)]
-use as_markdown::emphasis;
 pub use as_markdown::markdown;
+#[cfg(test)]
+use as_markdown::{emphasis, paragraph};
 pub use as_rtf::rtf;
 pub use layout::{Block, Cell, Image, Page, Table};
 #[cfg(test)]

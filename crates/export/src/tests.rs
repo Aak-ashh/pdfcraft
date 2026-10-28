@@ -819,9 +819,18 @@ fn markdown_escapes_markup_and_keeps_emphasis_and_tables() {
     assert!(md.contains("\\*stars\\* \\_under\\_ \\`tick\\` \\[link\\](x) a\\|b \\# \\#tag next"), "{md}");
     assert!(md.contains("**Strong words in a sentence of their own.**"), "{md}");
     // Markdown reads no emphasis where a marker sits next to a space: the outer spaces go outside.
-    assert_eq!(emphasis(" two words ", true, false), " **two words** ");
-    assert_eq!(emphasis("both", true, true), "***both***");
-    assert_eq!(emphasis("  ", true, true), "  ", "nothing to mark");
+    assert_eq!(emphasis(" two words ", true, false, false, false), " **two words** ");
+    assert_eq!(emphasis("both", true, true, true, true), "***both***");
+    assert_eq!(emphasis("  ", true, true, true, true), "  ", "nothing to mark");
+    // Runs in one style are one: two bold runs side by side don't meet as `****`.
+    assert_eq!(paragraph(&[("hello", true, false), ("world", true, false)]), "**helloworld**");
+    // Markers inside a word would stay literal in CommonMark, so a run there gets HTML tags.
+    assert_eq!(paragraph(&[("foo", false, false), (".", true, false), ("bar", false, false)]), "foo<strong>.</strong>bar");
+    assert_eq!(paragraph(&[("x", true, false), ("y", false, true)]), "<strong>x</strong>*y*", "two styles side by side");
+    // `*` may sit inside a word, and before punctuation that follows a letter.
+    assert_eq!(paragraph(&[("foo", false, false), ("bar", true, false), ("baz", false, false)]), "foo**bar**baz");
+    assert_eq!(paragraph(&[("a ", false, false), ("b", true, false), (" c", false, false)]), "a **b** c");
+    assert_eq!(paragraph(&[("say ", false, false), ("this", false, true), (", then", false, false)]), "say *this*, then");
     assert!(md.contains("*slanted*"), "{md}");
     assert!(!md.chars().any(|c| !allowed(c)), "{md:?}");
 
