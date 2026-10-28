@@ -197,6 +197,8 @@ pub(crate) struct UnmarkedPage {
     /// The document, its edit generation and the kind of mark taken away.
     key: Option<(pdfcraft_engine::DocId, u64, MarkKind)>,
     pages: Option<pdfcraft_engine::UnmarkedPages>,
+    /// Renders the pages next to the one shown, ahead. None on the web, where the pool renders on
+    /// the UI thread inside `try_recv`: it would draw them in the same frame too.
     renderer: Option<pdfcraft_render::RenderPool>,
     /// The pages rendered, with the scale (×1000) they were rendered at: the page shown and the
     /// pages next to it.
@@ -207,12 +209,16 @@ pub(crate) struct UnmarkedPage {
     /// The pages asked of the renderer ahead, and not back yet. Nothing waits for them: a step
     /// is a frame, which takes what has come back first and draws the rest itself.
     ahead: Vec<(usize, u64)>,
+    /// Pages (at a scale) that came back from rendering ahead with an error, not asked ahead
+    /// again: the error needn't be the page's, so drawing it when shown still decides.
+    not_ahead: HashSet<(usize, u64)>,
 }
 
 impl UnmarkedPage {
     /// The picture to preview `page` on in place of its thumbnail, or `None` for the thumbnail:
     /// not Update, no marks of `kind` in the document, the pages can't be prepared, or `page`
-    /// fails to render. `near` are the pages a step goes to from it, rendered ahead.
+    /// fails to render and was never drawn (a picture of it at another scale is shown rather than
+    /// the old marks). `near` are the pages a step goes to from it, rendered ahead.
     fn picture(
         &mut self,
         ctx: &egui::Context,
@@ -227,13 +233,11 @@ impl UnmarkedPage {
             *self = Self { key, ..Default::default() };
             if replace {
                 self.pages = doc.without_marks(kind).ok().flatten();
-                self.renderer = self.pages.as_ref().map(|p| p.renderer());
+                self.renderer = self.pages.as_ref().filter(|_| !cfg!(target_arch = "wasm32")).map(|p| p.renderer());
             }
         }
-        // On the web the render pool renders inside `try_recv`, on this thread: rendering ahead
-        // there would draw the pages next to it in the same frame too.
-        let near = if cfg!(target_arch = "wasm32") { &[][..] } else { near };
-        let renderer = self.renderer.as_ref()?;
+        self.pages.as_ref()?;
+        let near = if self.renderer.is_some() { near } else { &[][..] };
         // At the preview's size in pixels.
         let scale = |page: usize| {
             let p = doc.info.pages.get(page)?;
@@ -244,13 +248,16 @@ impl UnmarkedPage {
             let image = crate::canvas::texture_image([out.width as usize, out.height as usize], out.rgba);
             ctx.load_texture("marks-preview-unmarked", image, egui::TextureOptions::LINEAR)
         };
-        while let Some(out) = renderer.try_recv() {
+        while let Some(out) = self.renderer.as_ref().and_then(|r| r.try_recv()) {
             let at = (out.request.page, out.request.tag);
             self.ahead.retain(|a| *a != at);
             // An error rendering ahead needn't be the page's (the pool retires its parser, a
             // request is cancelled): the page is drawn here when it is shown, and that decides.
+            // It isn't asked ahead again, so a page that always fails isn't rendered every frame.
             if out.error.is_none() {
                 self.textures.insert(at.0, (at.1, load(ctx, out)));
+            } else {
+                self.not_ahead.insert(at);
             }
         }
         let (s, tag) = scale(page)?;
@@ -272,9 +279,13 @@ impl UnmarkedPage {
             .iter()
             .filter(|p| !self.failed.contains(p))
             .filter_map(|&p| scale(p).map(|(_, t)| (p, t)))
+            .filter(|at| !self.not_ahead.contains(at))
             .filter(|(p, t)| self.textures.get(p).is_none_or(|(have, _)| have != t))
             .collect();
-        if !wanted.is_empty() && wanted != self.ahead {
+        if let Some(renderer) = self.renderer.as_ref()
+            && !wanted.is_empty()
+            && wanted != self.ahead
+        {
             let requests = wanted
                 .iter()
                 .filter_map(|&(p, _)| scale(p).map(|(s, tag)| pdfcraft_render::RenderRequest { page: p, scale: s, tag, ..Default::default() }));
