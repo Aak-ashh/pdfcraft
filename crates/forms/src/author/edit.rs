@@ -1,5 +1,5 @@
 use super::join::{check_join, join_radio_group};
-use super::look::{BorderStyle, da_string, patch_da, patch_widget_look, redraw_field, redraw_widgets};
+use super::look::{BorderStyle, da_string, patch_da, patch_widget_look, redraw_widgets};
 use super::tree::{attach, check_place, child_named, clash, detach, ensure_form, inherited, name_parts, own_inherited};
 use super::{Dict, Document, Field, FieldKind, FieldProps, FormError, MIN_FIELD_SIDE, ObjRef, Object, PdfString, fields, flags, invalid};
 
@@ -376,12 +376,21 @@ fn apply_widget_style_props(doc: &mut Document, f: &Field, name: &str, props: &F
 }
 
 /// Redraw the edited widgets. A radio button joining another group (`join`) is redrawn under its
-/// old name `name` first, then its buttons move and the whole group is redrawn as `new_name`.
+/// old name `name` first; then its buttons move, and only they are redrawn as `new_name`, so the
+/// group's own buttons keep their appearances.
 fn redraw_or_join(doc: &mut Document, f: &Field, name: &str, new_name: &str, join: Option<&Field>, only: Option<usize>) -> Result<(), FormError> {
     if let Some(group) = join {
         redraw_widgets(doc, name, only)?;
         join_radio_group(doc, f, group)?;
-        redraw_field(doc, new_name)
+        let moved: Vec<usize> = fields(doc)
+            .into_iter()
+            .find(|g| g.name == new_name)
+            .map(|g| g.widgets.iter().enumerate().filter(|(_, w)| f.widgets.iter().any(|m| m.obj == w.obj)).map(|(i, _)| i).collect())
+            .unwrap_or_default();
+        for index in moved {
+            redraw_widgets(doc, new_name, Some(index))?;
+        }
+        Ok(())
     } else {
         redraw_widgets(doc, new_name, only)
     }

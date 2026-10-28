@@ -4663,6 +4663,21 @@ fn a_radio_button_renamed_to_a_groups_name_joins_the_group() {
     assert_eq!(group.widgets.iter().map(|w| w.state.clone()).collect::<Vec<_>>(), [Some("Off".into()), Some("No".into())]);
 }
 
+/// Joining redraws only the buttons that moved: the group's own keep their appearances, which may
+/// be custom ones a redraw would replace.
+#[test]
+fn joining_a_group_leaves_its_own_buttons_appearances_as_they_are() {
+    let mut doc = two_radio_groups("Yes", "No");
+    let own = field(&fields(&doc), "Group1").widgets[0].obj;
+    let look = |doc: &Document| doc.get(own).as_dict().and_then(|d| d.get(b"AP").cloned());
+    let before = look(&doc);
+    assert!(before.is_some());
+    rename_to(&mut doc, "Group2", "Group1").unwrap();
+    assert_eq!(look(&doc), before);
+    let group = field(&fields(&doc), "Group1").clone();
+    assert!(group.widgets[1].on_state.as_deref() == Some("No"), "the moved button is drawn with its states");
+}
+
 /// A joining button whose export value a button of the group already has takes the next free
 /// "ChoiceN", in its appearance states too, so the two can be chosen apart.
 #[test]
