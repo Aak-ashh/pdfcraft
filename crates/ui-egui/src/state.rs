@@ -113,6 +113,8 @@ pub enum Dialog {
     PageProps,
     /// Protect Using Password.
     Protect,
+    /// Bookmarks ▸ New bookmarks from text styles (#1693).
+    BookmarksFromTextStyles,
     /// Set Page Boxes (crop, trim, bleed, art, media).
     PageBoxes,
     /// Add / Update Header and Footer, Watermark, Background.
