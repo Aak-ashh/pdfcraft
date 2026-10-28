@@ -4669,7 +4669,11 @@ fn clearing_a_kids_value_does_not_bring_back_its_parents() {
         let clear = if ft.contains("Ch") { FieldValue::Choice(Vec::new()) } else { FieldValue::Text(String::new()) };
         set_value(&mut doc, "address.city", &clear).unwrap();
         let f = field(&fields(&reopen(&doc)), "address.city").clone();
-        assert!(f.value.iter().all(String::is_empty), "{ft}: clearing leaves it empty: {:?}", f.value);
+        if ft.contains("Ch") {
+            assert!(f.value.is_empty(), "{ft}: clearing leaves no choice selected: {:?}", f.value);
+        } else {
+            assert!(f.value.iter().all(String::is_empty), "{ft}: clearing leaves it empty: {:?}", f.value);
+        }
     }
 }
 
