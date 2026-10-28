@@ -1,5 +1,5 @@
 use super::paint::edit_anchor;
-use super::state::{Composer, ComposerKind};
+use super::state::{Composer, ComposerKind, locked_below};
 use super::{
     Annotation, Color32, CommentPrefs, CommentTool, DocInfo, DocView, Edit, Rect, ReviewState, Rgb, SELECT_BLUE, SWATCHES, Sense, Stroke, color32,
     icons, theme, tool_for, vec2,
@@ -89,7 +89,8 @@ pub(crate) fn context_menu(
                 ui.close();
             }
             ui.separator();
-            if ui.add_enabled(allowed && !a.locked, egui::Button::new(tl!("Delete"))).clicked() {
+            // A locked reply can't be deleted, so it keeps the comment it answers too.
+            if ui.add_enabled(allowed && !a.locked && !locked_below(&info.annotations, (page, index)), egui::Button::new(tl!("Delete"))).clicked() {
                 view.comments.selected = None;
                 action = Some(CanvasAction::Edit(Box::new(Edit::DeleteAnnotation { page, index })));
                 ui.close();

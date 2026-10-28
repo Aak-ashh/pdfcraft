@@ -245,19 +245,7 @@ pub(super) fn after_delete(before: &[Annotation], after: &[Annotation], gone: (u
         return Some(keep);
     }
     let (old, new) = (on_page(before, gone.0), on_page(after, gone.0));
-    // Only replies on the page go with it: `/IRT` is followed through the page's `/Annots`.
-    let parents: HashMap<usize, usize> = old.iter().filter_map(|a| a.parent.filter(|p| p.0 == gone.0).map(|p| (a.index, p.1))).collect();
-    let goes = |mut i: usize| {
-        // `link_replies` settles every chain within 64 steps.
-        for _ in 0..=64 {
-            if i == gone.1 {
-                return true;
-            }
-            let Some(&up) = parents.get(&i) else { return false };
-            i = up;
-        }
-        false
-    };
+    let goes = in_thread(&old, gone);
     let stays: Vec<&Annotation> = old.iter().copied().filter(|a| !goes(a.index)).collect();
     if stays.len() != new.len() {
         return None;
@@ -266,6 +254,33 @@ pub(super) fn after_delete(before: &[Annotation], after: &[Annotation], gone: (u
     let (was, now) = (stays.get(rank)?, new.get(rank)?);
     let same = (&was.subtype, &was.name, &was.author, &was.contents, was.rect) == (&now.subtype, &now.name, &now.author, &now.contents, now.rect);
     same.then_some((now.page, now.index))
+}
+
+/// Whether the annotation at an index on `top`'s page is `top` or a reply to it at any depth:
+/// what deleting `top` takes along. `page` is that page's listed annotations. Only replies on the
+/// page go with it (`pdfcraft_annot::delete_annotation` follows `/IRT` through the page's
+/// `/Annots`).
+fn in_thread(page: &[&Annotation], top: (usize, usize)) -> impl Fn(usize) -> bool {
+    let parents: HashMap<usize, usize> = page.iter().filter_map(|a| a.parent.filter(|p| p.0 == top.0).map(|p| (a.index, p.1))).collect();
+    move |mut i: usize| {
+        // `link_replies` settles every chain within 64 steps.
+        for _ in 0..=64 {
+            if i == top.1 {
+                return true;
+            }
+            let Some(&up) = parents.get(&i) else { return false };
+            i = up;
+        }
+        false
+    }
+}
+
+/// Whether a reply to the annotation at `top`, at any depth, is locked: deleting it is refused
+/// then, as the reply can't be deleted.
+pub(crate) fn locked_below(annotations: &[Annotation], top: (usize, usize)) -> bool {
+    let page = on_page(annotations, top.0);
+    let goes = in_thread(&page, top);
+    page.iter().any(|a| a.index != top.1 && a.locked && goes(a.index))
 }
 
 /// The annotations listed on `page`, in `/Annots` order.

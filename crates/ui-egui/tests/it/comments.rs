@@ -1411,6 +1411,13 @@ fn one_reply_is_deleted_from_its_menu_and_the_thread_stays() {
     h.run_steps(3);
     assert_eq!(texts(&h), ["The comment", "Right reply, reworded", "Accepted set by Ben"]);
 
+    // The locked reply keeps its comment too: deleting the comment would take it along.
+    h.get_by_label("More").click();
+    h.run_steps(2);
+    assert!(h.get_by_label("Delete").accesskit_node().is_disabled(), "the comment of a locked reply isn't deleted");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+
     h.state_mut().undo();
     h.run_steps(2);
     h.state_mut().undo();

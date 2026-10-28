@@ -70,11 +70,23 @@ pub(crate) fn touch(d: &mut Dict, meta: &Meta) {
 }
 
 /// Delete a comment together with its pop-up and its replies (and theirs), as Acrobat does.
+/// Refused while it, or a reply that would go with it, is locked.
 pub fn delete_annotation(doc: &mut Document, page: usize, index: usize) -> Result<(), AnnotError> {
+    remove_with_replies(doc, page, index, true)
+}
+
+/// Take the annotation at `(page, index)` out of its page with its pop-up and replies, as
+/// [`delete_annotation`] does but whatever their locks: for drawing the page beneath it on a
+/// copy of the document (a stamp or signature being dragged), which changes nothing.
+pub fn lift_annotation(doc: &mut Document, page: usize, index: usize) -> Result<(), AnnotError> {
+    remove_with_replies(doc, page, index, false)
+}
+
+fn remove_with_replies(doc: &mut Document, page: usize, index: usize, check_locks: bool) -> Result<(), AnnotError> {
     let p = page_ref(doc, page)?;
     let list = annots(doc, p);
     let target = list.get(index).cloned().ok_or(AnnotError::NoSuchAnnotation { page, index })?;
-    if let Some(r) = target.as_ref() {
+    if check_locks && let Some(r) = target.as_ref() {
         unlocked(doc, r)?;
     }
     // An inline comment has no reference to collect; the pop-up it names still goes.
@@ -82,12 +94,14 @@ pub fn delete_annotation(doc: &mut Document, page: usize, index: usize) -> Resul
     let doomed = with_replies_and_popups(doc, &list, seed);
     // A locked reply can't be deleted on its own, so it doesn't go with the comment or reply it
     // answers either. Pop-ups follow their comment.
-    for (_, e) in list.iter().enumerate().filter(|(i, e)| *i != index && goes_with(e, &doomed)) {
-        let obj = doc.resolve(e);
-        if let Some(d) = obj.as_dict().filter(|d| d.name(b"Subtype") != Some(b"Popup".as_slice()))
-            && annotation_flags(doc, d) & FLAG_LOCKED != 0
-        {
-            return Err(AnnotError::Invalid("a reply to it is locked".into()));
+    if check_locks {
+        for (_, e) in list.iter().enumerate().filter(|(i, e)| *i != index && goes_with(e, &doomed)) {
+            let obj = doc.resolve(e);
+            if let Some(d) = obj.as_dict().filter(|d| d.name(b"Subtype") != Some(b"Popup".as_slice()))
+                && annotation_flags(doc, d) & FLAG_LOCKED != 0
+            {
+                return Err(AnnotError::Invalid("a reply to it is locked".into()));
+            }
         }
     }
     let kept: Vec<Object> = list.into_iter().enumerate().filter(|(i, e)| *i != index && !goes_with(e, &doomed)).map(|(_, e)| e).collect();

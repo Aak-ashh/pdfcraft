@@ -405,7 +405,7 @@ fn card(ui: &mut egui::Ui, view: &mut DocView, context: CardContext<'_>) -> Opti
                             if selected && allowed && !r.grouped {
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     let more = icons::button(ui, "ellipsis", 20.0, false, tl!("Options for this reply"));
-                                    if let Some(e) = reply_menu(ui, view, r, &more) {
+                                    if let Some(e) = reply_menu(ui, view, r, info, &more) {
                                         edit = Some(e);
                                     }
                                 });
@@ -524,7 +524,11 @@ fn card(ui: &mut egui::Ui, view: &mut DocView, context: CardContext<'_>) -> Opti
                 ui.close();
             }
             ui.separator();
-            if ui.add_enabled(!a.locked, egui::Button::new(tl!("Delete"))).clicked() {
+            // A locked reply can't be deleted, so it keeps the comment it answers too.
+            if ui
+                .add_enabled(!a.locked && !crate::comments::locked_below(&info.annotations, (a.page, a.index)), egui::Button::new(tl!("Delete")))
+                .clicked()
+            {
                 view.comments.selected = None;
                 edit = Some(Edit::DeleteAnnotation { page: a.page, index: a.index });
                 ui.close();
@@ -562,7 +566,7 @@ fn inline_editor(ui: &mut egui::Ui, t: &Tokens, view: &mut DocView, key: (usize,
 /// the reply alone, with what hangs off it (its own replies, status changes and pop-up), as
 /// deleting a comment takes its thread; the comment and its other replies stay. Returns the
 /// edit to apply.
-fn reply_menu(ui: &egui::Ui, view: &mut DocView, r: &Annotation, more: &egui::Response) -> Option<Edit> {
+fn reply_menu(ui: &egui::Ui, view: &mut DocView, r: &Annotation, info: &DocInfo, more: &egui::Response) -> Option<Edit> {
     let mut edit = None;
     let menu_id = ui.scope_id().with(("reply-menu", r.page, r.index));
     if more.clicked() {
@@ -583,8 +587,12 @@ fn reply_menu(ui: &egui::Ui, view: &mut DocView, r: &Annotation, more: &egui::Re
                 ui.close();
             }
             ui.separator();
-            // The card stays selected: the app finds its comment again after the delete.
-            if ui.add_enabled(!r.locked, egui::Button::new(tl!("Delete"))).clicked() {
+            // The card stays selected: the app finds its comment again after the delete. A locked
+            // reply to this one keeps it.
+            if ui
+                .add_enabled(!r.locked && !crate::comments::locked_below(&info.annotations, (r.page, r.index)), egui::Button::new(tl!("Delete")))
+                .clicked()
+            {
                 edit = Some(Edit::DeleteAnnotation { page: r.page, index: r.index });
                 ui.close();
             }

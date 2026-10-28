@@ -90,6 +90,25 @@ fn listed(page: usize, index: usize, contents: &str, parent: Option<(usize, usiz
     }
 }
 
+/// A locked reply at any depth keeps what it answers, up its own chain only: its comment, the
+/// reply above it, but not a sibling reply or a comment on another page.
+#[test]
+fn a_locked_reply_keeps_the_replies_and_comment_above_it() {
+    let lock = |a: Annotation| Annotation { locked: true, ..a };
+    let list = vec![
+        listed(0, 0, "comment", None),
+        listed(0, 1, "A", Some((0, 0))),
+        lock(listed(0, 2, "to A, locked", Some((0, 1)))),
+        listed(0, 3, "B", Some((0, 0))),
+        listed(1, 0, "other page", None),
+    ];
+    assert!(locked_below(&list, (0, 0)), "the comment");
+    assert!(locked_below(&list, (0, 1)), "the reply above the locked one");
+    assert!(!locked_below(&list, (0, 2)), "the locked reply itself: its own lock says so");
+    assert!(!locked_below(&list, (0, 3)), "a sibling reply");
+    assert!(!locked_below(&list, (1, 0)), "another page");
+}
+
 /// What stays selected or open in the editor after a delete is found where it moved to: the
 /// reply's own replies go with it (pop-ups, unlisted, are gone too), and a page that lost
 /// something else, or whose annotation in that place reads differently, keeps nothing.
