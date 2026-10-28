@@ -211,7 +211,7 @@ pub(crate) fn draw_form_xobject<'a, 'b>(
 
     let resources = Resources::for_form(x_object.resources.clone(), resources.clone());
 
-    // PdfCraft patch (45): an isolated group blending in DeviceCMYK starts from a backdrop of
+    // PdfCraft patch (70): an isolated group blending in DeviceCMYK starts from a backdrop of
     // its own, so a device able to blend in CMYK computes its interior apart and composites the
     // result through the layer pushed above (see `cmyk_group`). Knockout groups are left out:
     // their elements composite with the group's initial backdrop, not with each other.
@@ -252,7 +252,7 @@ pub(crate) fn draw_form_xobject<'a, 'b>(
 }
 
 /// The contents of form `x_object`, in `context` as prepared for them (the form's `/Matrix`
-/// applied, its root transform pushed), clipped to its `/BBox`. PdfCraft patch (45): shared by
+/// applied, its root transform pushed), clipped to its `/BBox`. PdfCraft patch (70): shared by
 /// [`draw_form_xobject`] and [`CmykGroup::interpret`].
 pub(crate) fn interpret_form_contents<'a>(
     resources: &Resources<'a>,

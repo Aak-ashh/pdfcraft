@@ -1399,7 +1399,7 @@ impl Color {
             .to_rgba(&self.components, self.opacity, false)
     }
 
-    /// PdfCraft patch (45): the colour as process ink tints `[C, M, Y, K]` (0 = no ink) and
+    /// PdfCraft patch (70): the colour as process ink tints `[C, M, Y, K]` (0 = no ink) and
     /// its opacity, for blending in a `DeviceCMYK` transparency group (ISO 32000-2 §11.3.4).
     ///
     /// `DeviceCMYK` gives its components. `DeviceGray` is black ink alone, `K = 1 − gray`
@@ -1433,7 +1433,7 @@ impl Color {
     }
 }
 
-/// PdfCraft patch (45): `input`, 8-bit `DeviceCMYK` pixels (four bytes each), converted to
+/// PdfCraft patch (70): `input`, 8-bit `DeviceCMYK` pixels (four bytes each), converted to
 /// 8-bit sRGB in `output` (three bytes each) through the CMYK profile pages are drawn with,
 /// so a colour blended in CMYK lands where the same colour painted directly does.
 pub fn cmyk_to_srgb8(input: &[u8], output: &mut [u8]) -> Option<()> {

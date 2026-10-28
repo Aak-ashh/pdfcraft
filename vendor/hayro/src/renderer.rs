@@ -436,7 +436,7 @@ enum PaintSetup {
     Nothing,
 }
 
-/// PdfCraft patch (21): the largest group, in device pixels, blended in CMYK (2^24, a 4096 ×
+/// PdfCraft patch (27): the largest group, in device pixels, blended in CMYK (2^24, a 4096 ×
 /// 4096 square). Each pixel costs about 20 bytes more than drawing the group as before (two
 /// pass canvases, its tints, their RGB and the result); a larger group is drawn as before.
 const MAX_CMYK_GROUP_PIXELS: u64 = 1 << 24;
@@ -469,12 +469,12 @@ pub(crate) struct Renderer {
     pub(crate) preview: bool,
     // TODO: Remove this once vello_cpu bug with non-transparent images is fixed
     image_transparency_stack: Vec<bool>,
-    /// PdfCraft patch (21): set while this renderer draws one ink pass of a group blending
+    /// PdfCraft patch (27): set while this renderer draws one ink pass of a group blending
     /// in `DeviceCMYK` (see [`Renderer::draw_isolated_cmyk_group`]).
     ink: InkState,
 }
 
-/// PdfCraft patch (21): which inks a pass of a `DeviceCMYK` group draws, and whether the
+/// PdfCraft patch (27): which inks a pass of a `DeviceCMYK` group draws, and whether the
 /// group asked for something a pass can't draw.
 ///
 /// A pass paints the complement of ink tints as colour — no ink is white — so the RGB blend
@@ -1126,7 +1126,7 @@ impl Renderer {
             .fill_rect(&Rect::new(0.0, 0.0, width as f64, height as f64));
     }
 
-    /// PdfCraft patch (21): one ink pass of `group` (see [`InkState`]) on a `width` × `height`
+    /// PdfCraft patch (27): one ink pass of `group` (see [`InkState`]) on a `width` × `height`
     /// canvas whose corner is device point `offset`; `None` when the group holds something the
     /// pass has no tints for.
     fn ink_pass(
@@ -1219,7 +1219,7 @@ impl Renderer {
         // covers its triangles alone and must not repeat outside them.
         let mut extend = peniko::Extend::Repeat;
 
-        // PdfCraft patch (21): an ink pass paints tints, and has none for a pattern.
+        // PdfCraft patch (27): an ink pass paints tints, and has none for a pattern.
         if let Some(pass) = self.ink.pass {
             let color = match paint {
                 Paint::Color(c) => self.ink.paint(pass, c),
@@ -1635,7 +1635,7 @@ impl Renderer {
 
 impl<'a> Device<'a> for Renderer {
     fn draw_image(&mut self, image: hayro_interpret::Image<'a, '_>, mut transform: Affine) {
-        // PdfCraft patch (21): an image's pixels are converted to RGB before they reach the
+        // PdfCraft patch (27): an image's pixels are converted to RGB before they reach the
         // device, so an ink pass has no tints for them; the group is drawn as before.
         if self.ink.pass.is_some() {
             self.ink.unsupported = true;
@@ -1818,7 +1818,7 @@ impl<'a> Device<'a> for Renderer {
         self.push_clip_path_inner(&clip_path.path, clip_path.fill);
     }
 
-    /// PdfCraft patch (21), with hayro-interpret patch (45): an isolated group that blends in
+    /// PdfCraft patch (27), with hayro-interpret patch (70): an isolated group that blends in
     /// `DeviceCMYK` (ISO 32000-2 §11.3.4). Its contents are drawn twice on canvases of their own,
     /// as cyan-magenta-yellow and as black (see [`InkState`]), and the tints those passes leave
     /// are converted to RGB through the CMYK profile solid CMYK colour is drawn with. The
@@ -1826,7 +1826,7 @@ impl<'a> Device<'a> for Renderer {
     /// with the group's opacity, soft mask and blend mode as before. Declined (and so drawn as
     /// before) under reading colours, inside a pass (a nested group then blends in the pass's
     /// own CMYK), and for contents a pass has no tints for.
-    /// PdfCraft patch (21): a nested group blending in another space can't be drawn in a pass.
+    /// PdfCraft patch (27): a nested group blending in another space can't be drawn in a pass.
     fn group_blends_outside_device_cmyk(&mut self) {
         if self.ink.pass.is_some() {
             self.ink.unsupported = true;

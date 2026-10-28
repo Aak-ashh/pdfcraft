@@ -7004,8 +7004,8 @@ mod default_colour_spaces;
 // (vendored hayro-syntax patch 28, hayro-interpret patch 55).
 mod devicen_inks;
 
-// #3776: isolated DeviceCMYK groups blend in CMYK (vendored hayro-interpret patch 45, hayro
-// patch 21).
+// #3776: isolated DeviceCMYK groups blend in CMYK (vendored hayro-interpret patch 70, hayro
+// patch 27).
 mod isolated_cmyk_groups;
 
 /// #3109 / #3116: clipping-only text (`7 Tr`) installs a clip for subsequent painting

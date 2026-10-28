@@ -11,7 +11,7 @@ use std::sync::Arc;
 /// §11.3.5.3 blends C, M and Y as complemented R, G and B and takes K from the backdrop
 /// (from the source for Luminosity). PdfCraft blended the colours converted to RGB, so
 /// magenta under black with Difference came out magenta instead of green. Vendored
-/// hayro-interpret patch (45) and hayro patch (21): an isolated group (§11.4.7: its own
+/// hayro-interpret patch (70) and hayro patch (27): an isolated group (§11.4.7: its own
 /// transparent backdrop) blending in DeviceCMYK is blended in CMYK.
 ///
 /// Each cell is a square painted in the CMYK the blend should give, with a smaller isolated
