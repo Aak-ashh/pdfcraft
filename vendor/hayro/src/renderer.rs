@@ -1818,6 +1818,13 @@ impl<'a> Device<'a> for Renderer {
         self.push_clip_path_inner(&clip_path.path, clip_path.fill);
     }
 
+    /// PdfCraft patch (27): a nested group blending in another space can't be drawn in a pass.
+    fn group_blends_outside_device_cmyk(&mut self) {
+        if self.ink.pass.is_some() {
+            self.ink.unsupported = true;
+        }
+    }
+
     /// PdfCraft patch (27), with hayro-interpret patch (70): an isolated group that blends in
     /// `DeviceCMYK` (ISO 32000-2 §11.3.4). Its contents are drawn twice on canvases of their own,
     /// as cyan-magenta-yellow and as black (see [`InkState`]), and the tints those passes leave
@@ -1826,13 +1833,6 @@ impl<'a> Device<'a> for Renderer {
     /// with the group's opacity, soft mask and blend mode as before. Declined (and so drawn as
     /// before) under reading colours, inside a pass (a nested group then blends in the pass's
     /// own CMYK), and for contents a pass has no tints for.
-    /// PdfCraft patch (27): a nested group blending in another space can't be drawn in a pass.
-    fn group_blends_outside_device_cmyk(&mut self) {
-        if self.ink.pass.is_some() {
-            self.ink.unsupported = true;
-        }
-    }
-
     fn draw_isolated_cmyk_group(&mut self, group: &hayro_interpret::CmykGroup<'a, '_>) -> bool {
         if self.color_replacement.is_some() || self.ink.pass.is_some() {
             return false;
