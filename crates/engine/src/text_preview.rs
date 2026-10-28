@@ -19,18 +19,39 @@ impl TextEditPreview {
     }
 
     pub fn render_background(&self, scale: f32) -> Result<RenderedPage, String> {
-        if !scale.is_finite() || scale <= 0.0 {
-            return Err("preview scale must be finite and positive".into());
-        }
-        guard(|| {
-            let mut renderer = PageRenderer::new(self.bytes.clone(), self.config.clone());
-            let out = renderer.render(RenderRequest { page: self.page, scale, ..Default::default() });
-            if let Some(e) = &out.error {
-                return Err(e.clone());
-            }
-            Ok(out)
-        })?
+        render_one(&self.bytes, &self.config, self.page, scale)
     }
+}
+
+/// A document's pages without its marks of one kind ([`Document::without_marks`]).
+pub struct UnmarkedPages {
+    bytes: Arc<Vec<u8>>,
+    config: RenderConfig,
+}
+
+impl UnmarkedPages {
+    pub fn renderer(&self) -> RenderPool {
+        RenderPool::new(self.bytes.clone(), 1, self.config.clone())
+    }
+
+    pub fn render_page(&self, page: usize, scale: f32) -> Result<RenderedPage, String> {
+        render_one(&self.bytes, &self.config, page, scale)
+    }
+}
+
+/// `page` of `bytes` at `scale`, on this thread.
+fn render_one(bytes: &Arc<Vec<u8>>, config: &RenderConfig, page: usize, scale: f32) -> Result<RenderedPage, String> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("preview scale must be finite and positive".into());
+    }
+    guard(|| {
+        let mut renderer = PageRenderer::new(bytes.clone(), config.clone());
+        let out = renderer.render(RenderRequest { page, scale, ..Default::default() });
+        if let Some(e) = &out.error {
+            return Err(e.clone());
+        }
+        Ok(out)
+    })?
 }
 
 impl Document {
@@ -91,21 +112,24 @@ impl Document {
         })?
     }
 
-    /// The page without its marks of `kind`: what Update replaces them on, so its preview doesn't
-    /// draw the new marks over the old ones (or tint the old background). `None` when the page has
-    /// none, and its thumbnail already is that page. Read-only, like [`Self::text_edit_preview`].
-    pub fn page_without_marks(&self, page: usize, kind: crate::MarkKind) -> Result<Option<TextEditPreview>, String> {
+    /// The document without its marks of `kind`, on every page: what Update replaces them on, so
+    /// its preview doesn't draw the new marks over the old ones (or tint the old background).
+    /// Made once for all the pages a dialog steps through, as cloning and writing the document
+    /// costs about a save. `None` when the document has none, and the thumbnails already are
+    /// those pages. Read-only, like [`Self::text_edit_preview`].
+    pub fn without_marks(&self, kind: crate::MarkKind) -> Result<Option<UnmarkedPages>, String> {
         if !self.marks().contains(&kind) {
             return Ok(None);
         }
         guard(|| {
             let editor = self.editor.as_ref().ok_or("the document can't be read")?;
             let mut cos = editor.cos.clone();
-            if pdfcraft_edit::remove_marks(&mut cos, &[page], kind).map_err(|e| e.to_string())? == 0 {
+            let n = pdfcraft_model::pages(&cos).len();
+            if pdfcraft_edit::remove_marks(&mut cos, &(0..n).collect::<Vec<_>>(), kind).map_err(|e| e.to_string())? == 0 {
                 return Ok(None);
             }
             let bytes = Arc::new(pdfcraft_cos::write_incremental(&cos, &pdfcraft_cos::SaveOptions::default()).map_err(|e| e.to_string())?);
-            Ok(Some(TextEditPreview { page, bytes, config: self.config.clone() }))
+            Ok(Some(UnmarkedPages { bytes, config: self.config.clone() }))
         })?
     }
 

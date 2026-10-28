@@ -183,26 +183,29 @@ fn behind(color: [f64; 3], opacity: f64) -> Color32 {
     rgb32(color.map(|c| 1.0 - a * (1.0 - c)))
 }
 
-/// In Update, the page previewed without the marks the dialog replaces. Its thumbnail still has
-/// them, so the new marks would be drawn over the old ones, and a new background colour would tint
-/// the old one. Rendered off the UI thread like the thumbnail, once per page shown.
+/// In Update, the pages previewed without the marks the dialog replaces. Their thumbnails still
+/// have them, so the new marks would be drawn over the old ones, and a new background colour
+/// would tint the old one. The document without them is made once per dialog (it costs about a
+/// save), and each page shown is rendered from it off the UI thread, like the thumbnails.
 #[derive(Default)]
 pub(crate) struct UnmarkedPage {
-    /// The document, its edit generation, the page and the kind of mark taken away.
-    key: Option<(pdfcraft_engine::DocId, u64, usize, MarkKind)>,
+    /// The document, its edit generation and the kind of mark taken away.
+    key: Option<(pdfcraft_engine::DocId, u64, MarkKind)>,
     renderer: Option<pdfcraft_render::RenderPool>,
-    texture: Option<egui::TextureHandle>,
-    tag: Option<u64>,
+    /// The page and scale last asked for.
+    asked: Option<(usize, u64)>,
+    /// The page and scale the texture shows.
+    texture: Option<(usize, u64, egui::TextureHandle)>,
 }
 
 impl UnmarkedPage {
     pub(crate) fn pending(&self) -> bool {
-        self.renderer.is_some() && self.texture.is_none()
+        self.renderer.is_some() && self.asked.is_some() && self.texture.as_ref().map(|(p, t, _)| (*p, *t)) != self.asked
     }
 
-    /// The picture to preview `page` on in place of its thumbnail: `None` when the thumbnail is
-    /// that page (not Update, or no marks of `kind` on it, or the page can't be prepared), and
-    /// `Some(None)` while it renders, when the page is a blank sheet.
+    /// The picture to preview `page` on in place of its thumbnail, or `None` for the thumbnail:
+    /// not Update, no marks of `kind` in the document, the pages can't be prepared, or `page` is
+    /// still rendering (its thumbnail shows until then, rather than a blank sheet).
     fn picture(
         &mut self,
         ctx: &egui::Context,
@@ -210,39 +213,39 @@ impl UnmarkedPage {
         page: usize,
         kind: MarkKind,
         replace: bool,
-    ) -> Option<Option<egui::TextureId>> {
-        let key = replace.then(|| (id, doc.edit_generation(), page, kind));
+    ) -> Option<egui::TextureId> {
+        let key = replace.then(|| (id, doc.edit_generation(), kind));
         if self.key != key {
             *self = Self { key, ..Default::default() };
             if replace {
-                self.renderer = doc.page_without_marks(page, kind).ok().flatten().map(|p| p.renderer());
+                self.renderer = doc.without_marks(kind).ok().flatten().map(|p| p.renderer());
             }
         }
         let renderer = self.renderer.as_ref()?;
         // At the preview's size in pixels.
         let p = doc.info.pages.get(page)?;
         let scale = PREVIEW_SIDE * ctx.pixels_per_point() / p.width.max(p.height).max(1.0);
-        let tag = (scale * 1000.0) as u64;
-        if self.tag != Some(tag) {
-            renderer.set_queue(vec![pdfcraft_render::RenderRequest { page, scale, tag, ..Default::default() }]);
-            self.tag = Some(tag);
+        let asked = (page, (scale * 1000.0) as u64);
+        if self.asked != Some(asked) {
+            renderer.set_queue(vec![pdfcraft_render::RenderRequest { page, scale, tag: asked.1, ..Default::default() }]);
+            self.asked = Some(asked);
         }
         if let Some(out) = renderer.try_recv() {
             if out.error.is_some() {
-                // The thumbnail, as before, rather than no page at all.
+                // The thumbnails, as before, rather than no page at all.
                 self.renderer = None;
                 self.texture = None;
                 return None;
             }
-            if out.request.tag == tag {
+            if (out.request.page, out.request.tag) == asked {
                 let image = crate::canvas::texture_image([out.width as usize, out.height as usize], out.rgba);
-                self.texture = Some(ctx.load_texture("marks-preview-unmarked", image, egui::TextureOptions::LINEAR));
+                self.texture = Some((page, asked.1, ctx.load_texture("marks-preview-unmarked", image, egui::TextureOptions::LINEAR)));
             }
         }
         if self.pending() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
-        Some(self.texture.as_ref().map(|t| t.id()))
+        self.texture.as_ref().filter(|(p, ..)| *p == page).map(|(.., t)| t.id())
     }
 }
 
@@ -448,7 +451,7 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens, kind: M
     let target = shown_preview(&d.range, &mut d.preview, current, count);
     let page = doc.info.pages.get(target).map(|p| (p.width as f64, p.height as f64)).unwrap_or((612.0, 792.0));
     let unmarked = app.unmarked_page.picture(ui.ctx(), (doc, id), target, kind, d.replace);
-    let picture = unmarked.unwrap_or_else(|| {
+    let picture = unmarked.or_else(|| {
         app.views.get_mut(i).and_then(|view| {
             view.need_thumbnail(target, true);
             view.thumb_id(target)
