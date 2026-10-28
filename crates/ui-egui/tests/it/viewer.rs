@@ -992,13 +992,19 @@ fn the_window_title_marks_unsaved_changes_until_saved() {
     }
     h.run_steps(2);
     assert_eq!(h.state().window_title, "b.pdf • — PdfCraft", "unsaved changes (#3640)");
+    // Removed on drop, so a failing assert below doesn't leave it behind.
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let dir = Dir(std::env::temp_dir().join(format!("pdfcraft-title-dirty-{}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
     // Saved under its own name, so the title changes only by the mark.
-    let dir = std::env::temp_dir().join(format!("pdfcraft-title-dirty-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    h.state_mut().save_override = Some(dir.join("b.pdf").to_string_lossy().into_owned());
+    h.state_mut().save_override = Some(dir.0.join("b.pdf").to_string_lossy().into_owned());
     assert!(h.state_mut().execute("file.save"));
     h.run_steps(2);
-    let _ = std::fs::remove_dir_all(&dir);
     let s = h.state();
     assert!(!s.session.get(s.views[s.active.unwrap()].id).unwrap().dirty);
     assert_eq!(s.window_title, "b.pdf — PdfCraft", "saved");
