@@ -386,8 +386,6 @@ fn update_previews_the_page_without_the_marks_it_replaces() {
         let mut app = PdfCraftApp::new();
         app.set_option("language", "en").unwrap();
         app.open_bytes("doc.pdf", None, pdf.clone()).unwrap();
-        // The Pages panel keeps both thumbnails, for stepping to page 2 in Update below.
-        app.set_option("panel", "pages").unwrap();
         app
     });
     h.run_steps(4);
@@ -427,30 +425,26 @@ fn update_previews_the_page_without_the_marks_it_replaces() {
     assert!(h.state_mut().execute("edit.background.update"));
     h.run_steps(2);
     h.state_mut().marks_draft.bg.color = [0.6, 0.8, 1.0];
-    let white = |i: &egui::ColorImage| at(i, 0.5, 0.75) == egui::Color32::WHITE;
-    let (tint, page) = wait_for_preview(&mut h, &uploads, "the page without its background", white);
+    h.step();
+    // Update shows the page without the marks from the frame it opens: neither a blank sheet nor
+    // the old marks while it renders.
+    let shown = |h: &Harness<'static, PdfCraftApp>| preview_picture(h, &uploads).expect("a page is previewed");
+    let (tint, page) = shown(&h);
     assert_eq!(tint, egui::Color32::from_rgb(153, 204, 255), "the new colour tints the page");
     assert_eq!(at(&page, 0.5, 0.75), egui::Color32::WHITE, "the page is previewed without the yellow background");
     assert!(count(&page, red) > 200 && count(&page, blue) > 40 && count(&page, dark) > 1000, "the watermark, header and page content stay");
-    // Stepping to page 2 shows its thumbnail until it renders without the background, not a
-    // blank sheet: the pages are prepared once, and each renders on its own.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while h.state().views[0].thumb(1).is_none() {
-        assert!(std::time::Instant::now() < deadline, "page 2's thumbnail never loaded");
-        h.step();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    // So does a step to page 2: the pages are prepared once, and each is drawn as it is shown.
     h.state_mut().marks_draft.preview = Some(1);
     h.step();
-    assert!(preview_picture(&h, &uploads).is_some(), "a page shows while page 2 renders");
-    wait_for_preview(&mut h, &uploads, "page 2 without its background", white);
+    assert_eq!(at(&shown(&h).1, 0.5, 0.75), egui::Color32::WHITE, "page 2 is previewed without its background at once");
     h.get_by_label("Cancel").click();
     h.run_steps(2);
 
     assert!(h.state_mut().execute("edit.watermark.update"));
     h.run_steps(2);
     h.state_mut().marks_draft.wm.text = "NEW".into();
-    let (_, page) = wait_for_preview(&mut h, &uploads, "the page without its watermark", |i| count(i, red) == 0);
+    h.step();
+    let (_, page) = shown(&h);
     assert_eq!(count(&page, red), 0, "the new watermark isn't previewed over the old one");
     assert!(at(&page, 0.5, 0.75) == yellow && count(&page, blue) > 40, "the background and header stay");
     h.get_by_label("Cancel").click();
@@ -458,7 +452,7 @@ fn update_previews_the_page_without_the_marks_it_replaces() {
 
     assert!(h.state_mut().execute("edit.header_footer.update"));
     h.run_steps(2);
-    let (_, page) = wait_for_preview(&mut h, &uploads, "the page without its header", |i| count(i, blue) == 0);
+    let (_, page) = shown(&h);
     assert_eq!(count(&page, blue), 0, "the new header isn't previewed over the old one");
     assert!(at(&page, 0.5, 0.75) == yellow && count(&page, red) > 200, "the background and watermark stay");
 }

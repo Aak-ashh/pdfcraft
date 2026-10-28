@@ -307,7 +307,7 @@ impl PdfCraftApp {
 
     /// `true` while any open document still waits for page renders (used by headless capture).
     pub fn render_pending(&self) -> bool {
-        self.views.iter().any(|v| v.render_pending()) || self.unmarked_page.pending()
+        self.views.iter().any(|v| v.render_pending())
     }
 }
 
