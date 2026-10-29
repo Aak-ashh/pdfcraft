@@ -3971,6 +3971,29 @@ fn add_text_places_a_box_on_a_picture_and_beside_a_paragraph() {
     assert!(h.state().views[0].content.draft.is_some(), "a click beside the paragraph starts a text box");
 }
 
+/// Add text opens a paragraph with a click anywhere in its box, just inside its edge too, where the
+/// edge's grip shows (a drag there rewraps it, as with Edit text). Add text's hits left the grip
+/// out there, so the click neither opened the paragraph nor started a box.
+#[test]
+fn add_text_opens_a_paragraph_from_just_inside_its_edge() {
+    let mut h = harness(2, |_| {});
+    h.state_mut().quick_tool = pdfcraft_ui_egui::QuickTool::AddText;
+    h.run_steps(2);
+    let id = h.state().views[0].id;
+    let block = h.state().session.get(id).unwrap().text_blocks(0)[0].clone();
+    let r = h.state().views[0].page_screen_rect(0).expect("on screen");
+    let k = r.width() / 200.0;
+    // 2 px right of where the text starts: 4 px into its box, within its left edge's grip.
+    let inside = egui::pos2(r.left() + block.rect[0] as f32 * k, r.top() + (300.0 - ((block.rect[1] + block.rect[3]) / 2.0) as f32) * k)
+        + egui::vec2(2.0, 0.0);
+    h.hover_at(inside);
+    h.run_steps(2);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::ResizeHorizontal, "the edge's grip");
+    click_at(&mut h, inside);
+    assert!(h.state().views[0].line_editor.is_some(), "the click opens the paragraph for typing");
+    assert!(h.state().views[0].content.draft.is_none(), "and starts no text box");
+}
+
 #[test]
 fn dragging_the_rotate_knob_turns_a_page_image() {
     let mut png = Vec::new();

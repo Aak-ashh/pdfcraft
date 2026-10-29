@@ -273,6 +273,12 @@ fn paragraph_box(xf: &PageXform, info: &DocInfo, page: usize, rect: [f64; 4]) ->
     xf.user_rect(info, page, rect.map(|v| v as f32)).expand(2.0)
 }
 
+/// Whether `p` lies in the box of one of the paragraphs `lines` on `page`, its edge grips there
+/// included, not beside it: where Add text acts on the page's own paragraphs.
+pub(crate) fn over_paragraph(xf: &PageXform, info: &DocInfo, page: usize, lines: &[pdfcraft_engine::TextBlock], p: Pos2) -> bool {
+    lines.iter().any(|l| paragraph_box(xf, info, page, l.rect).contains(p))
+}
+
 /// The width handles need the page upright (or upside down): on a quarter-turned page the
 /// screen's horizontal is the paragraph's vertical.
 fn has_edges(info: &DocInfo, page: usize) -> bool {

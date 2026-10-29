@@ -1276,10 +1276,8 @@ fn page_tool_input(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<
     };
     let on_objects = tool == QuickTool::EditText && can_modify && crate::object_ui::page_input(cx, view);
     let over_source = tool == QuickTool::AddText
-        && pointer.is_some_and(|p| {
-            !crate::content_ui::hits_added(&xf, info, i, added, p)
-                && lines.iter().any(|line| xf.user_rect(info, i, line.rect.map(|v| v as f32)).expand(2.0).contains(p))
-        });
+        && pointer
+            .is_some_and(|p| !crate::content_ui::hits_added(&xf, info, i, added, p) && crate::edit_text_ui::over_paragraph(&xf, info, i, &lines, p));
     let source_blocked = over_source && view.content.hold_blocked();
     if over_source && resp.clicked() && !source_blocked {
         if let Some(edit) = view.content.finish_draft(added) {
@@ -1433,16 +1431,14 @@ impl PageHits<'_> {
                 .filter(|e| !e.has_changes())
                 .and_then(|e| lines.get(e.block))
                 .map(|l| xf.user_rect(info, page, l.rect.map(|v| v as f32)).expand(2.0));
-            // Add text acts on the page's paragraphs only over their text (it finishes the box
-            // being typed there): not on pictures, nor beside a paragraph, where a click starts
-            // a new box.
+            // Add text acts on the page's paragraphs only in their boxes, edges included (it
+            // finishes the box being typed there, `over_source`): not on pictures, nor beside a
+            // paragraph, where a click starts a new box.
             let edit_text = tool == QuickTool::EditText;
-            let body = |h: &crate::page_router::Hit| {
-                matches!(h.owner, crate::page_router::Owner::Paragraph { part: crate::page_router::ParagraphPart::Body, .. })
-            };
+            let on_paragraphs = edit_text || crate::edit_text_ui::over_paragraph(xf, info, page, lines, p);
             (
                 edit_text.then(|| crate::edit_text_ui::picture_hit(xf, page, info, images, view, p)).flatten(),
-                crate::edit_text_ui::hit(xf, info, page, lines, open.map(|e| e.block), p).filter(|h| edit_text || body(h)),
+                on_paragraphs.then(|| crate::edit_text_ui::hit(xf, info, page, lines, open.map(|e| e.block), p)).flatten(),
                 edit_text.then(|| crate::object_ui::hit(view, xf, info, page, frame, p)).flatten(),
                 edit_text.then(|| crate::edit_text_ui::picture_handle_hit(clip, xf, page, info, images, view, p)).flatten(),
             )
