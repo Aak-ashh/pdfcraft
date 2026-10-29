@@ -3994,6 +3994,39 @@ fn add_text_opens_a_paragraph_from_just_inside_its_edge() {
     assert!(h.state().views[0].content.draft.is_none(), "and starts no text box");
 }
 
+/// With Add text a paragraph dragged off its own box still moves to where the button comes up, as
+/// with Edit text. Add text acted on the page's paragraphs only while the pointer was over one, so
+/// the drag was left hanging, to land wherever the pointer next met a paragraph.
+#[test]
+fn add_text_finishes_a_paragraph_drag_that_leaves_its_box() {
+    let mut h = harness(2, |_| {});
+    h.state_mut().quick_tool = pdfcraft_ui_egui::QuickTool::AddText;
+    h.run_steps(2);
+    let id = h.state().views[0].id;
+    let before = h.state().session.get(id).unwrap().text_blocks(0)[0].rect;
+    let r = h.state().views[0].page_screen_rect(0).expect("on screen");
+    let k = r.width() / 200.0;
+    let from = egui::pos2(r.left() + ((before[0] + before[2]) / 2.0) as f32 * k, r.top() + (300.0 - ((before[1] + before[3]) / 2.0) as f32) * k);
+    // The drag starts in the box (8 px down), then goes 60 pt down, onto the blank page under it.
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    h.hover_at(from + egui::vec2(0.0, 8.0));
+    h.run_steps(1);
+    for i in 1..=4 {
+        h.hover_at(from + egui::vec2(0.0, 15.0 * k * i as f32));
+        h.run_steps(1);
+    }
+    h.drop_at(from + egui::vec2(0.0, 60.0 * k));
+    for _ in 0..10 {
+        h.run_steps(2);
+    }
+    assert!(h.state().views[0].block_drag.is_none(), "the drag is over");
+    let after = h.state().session.get(id).unwrap().text_blocks(0)[0].rect;
+    assert!(before[1] - after[1] > 50.0, "the paragraph moved down with it: {before:?} to {after:?}");
+}
+
 #[test]
 fn dragging_the_rotate_knob_turns_a_page_image() {
     let mut png = Vec::new();

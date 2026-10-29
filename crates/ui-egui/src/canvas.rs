@@ -1275,9 +1275,13 @@ fn page_tool_input(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<
         crate::redact_ui::page_input(cx, over_text, view)
     };
     let on_objects = tool == QuickTool::EditText && can_modify && crate::object_ui::page_input(cx, view);
+    // Add text acts on the page's own paragraphs over them, and on the one its press was on until
+    // the button is up: a drag that leaves the box still ends, and no new box takes it over.
     let over_source = tool == QuickTool::AddText
-        && pointer
-            .is_some_and(|p| !crate::content_ui::hits_added(&xf, info, i, added, p) && crate::edit_text_ui::over_paragraph(&xf, info, i, &lines, p));
+        && (matches!(view.router.owner(i), Some(crate::page_router::Owner::Paragraph { .. }))
+            || pointer.is_some_and(|p| {
+                !crate::content_ui::hits_added(&xf, info, i, added, p) && crate::edit_text_ui::over_paragraph(&xf, info, i, &lines, p)
+            }));
     let source_blocked = over_source && view.content.hold_blocked();
     if over_source && resp.clicked() && !source_blocked {
         if let Some(edit) = view.content.finish_draft(added) {
