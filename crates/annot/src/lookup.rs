@@ -231,6 +231,8 @@ pub fn isolate_annotation(doc: &mut Document, page: usize, index: usize) -> Resu
 
 /// [`isolate_annotation`] for several annotations of one page: those of them with a normal
 /// appearance stay, in their order on the page. `false`, with `doc` unchanged, when none has one.
+/// An index that isn't one of the page's annotations is an error even when the others are, and
+/// leaves `doc` unchanged too.
 pub fn isolate_annotations(doc: &mut Document, page: usize, indices: &[usize]) -> Result<bool, AnnotError> {
     let p = page_ref(doc, page)?;
     let list = annots(doc, p);
