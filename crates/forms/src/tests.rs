@@ -5125,6 +5125,8 @@ fn joining_by_name_is_only_for_radio_buttons_and_unlocked_groups() {
     set_props(&mut doc, "Group1", &FieldProps { locked: Some(true), ..FieldProps::default() }).unwrap();
     assert!(rename_to(&mut doc, "Group2", "Group1").is_err(), "a locked group");
     assert_eq!(fields(&doc).len(), 3);
+}
+
 /// `/I` of field `name`: the selected positions in `/Opt`, or `None` when absent.
 fn selection_indices(doc: &Document, name: &str) -> Option<Vec<i64>> {
     let f = field(&fields(doc), name).clone();

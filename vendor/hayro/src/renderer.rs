@@ -1187,6 +1187,7 @@ impl Renderer {
             knockout: Vec::new(),
             erasing: false,
             erase_groups: 0,
+            knockout_passes: Vec::new(),
         };
         // The pass draws inside a layer of its own. On the bare canvas, vello_cpu fills a tile
         // that a paint covers completely without the blend mode, so the middle of a group wider
