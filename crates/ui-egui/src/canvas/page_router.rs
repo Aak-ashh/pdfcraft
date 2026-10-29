@@ -20,6 +20,12 @@ pub(crate) enum Owner {
     Comment { index: usize, part: CommentPart },
     /// A link, by its index in the document's links.
     Link { index: usize },
+    /// A form field's widget, by the field's index in the form and the widget's in the field.
+    Field { field: usize, widget: usize },
+    /// Prepare Form: a field's widget, to select and move.
+    PrepareField { field: usize, widget: usize },
+    /// Prepare Form: a corner handle of the selected field, to resize it.
+    PrepareCorner { left: bool, top: bool },
 }
 
 /// The part of a comment a hit is on.

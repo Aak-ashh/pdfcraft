@@ -98,8 +98,9 @@ pub(crate) fn hit(cx: &PageCx<'_>, view: &DocView, p: Pos2) -> Option<Hit> {
     }
     let markup = is_markup(&a.subtype);
     let icon = if cx.allowed && !markup { egui::CursorIcon::Move } else { egui::CursorIcon::PointingHand };
-    // Signatures and Fill & Sign's marks are placed on the page rather than comments on it.
-    let layer = if a.fill_sign { Layer::Placed } else { Layer::Comment };
+    // What a drag moves whole (a note, a shape, a signature, a Fill & Sign mark) is placed on the
+    // page, over a form field; text markup lies on the text, under one.
+    let layer = if a.fill_sign || !markup { Layer::Placed } else { Layer::Comment };
     // Text markup does not move: a click selects it, a drag across it selects the text.
     Some(Hit { declines_drag: markup, ..Hit::new(Owner::Comment { index: a.index, part: CommentPart::Body }, layer, icon) })
 }
@@ -122,12 +123,6 @@ fn grabs(cx: &PageCx<'_>, view: &DocView) -> bool {
 /// tool ([`hit`]), so the tool does not place a mark there.
 pub(crate) fn fill_grabs(cx: &PageCx<'_>, view: &DocView) -> bool {
     matches!(cx.tool, QuickTool::Fill(_)) && grabs(cx, view)
-}
-
-/// With the Select tool, a comment that would move (not text markup) is picked up before a form
-/// field under it, so a signature placed over a field can still be dragged off it.
-pub(crate) fn select_grabs(cx: &PageCx<'_>, view: &DocView) -> bool {
-    cx.tool == QuickTool::Select && grabs(cx, view)
 }
 
 /// With a shape tool, the selected comment's handles are picked up ([`hit`]).

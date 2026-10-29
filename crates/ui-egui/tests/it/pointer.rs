@@ -107,6 +107,31 @@ fn checkbox_pdf() -> Vec<u8> {
     ])
 }
 
+/// A 300×400 page with two unchecked check boxes side by side: `agree` at x 100..120 and
+/// `other` at x 120..140, both at y 200..220.
+fn two_checkboxes_pdf() -> Vec<u8> {
+    pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R 5 0 R] /DA (/ZaDb 0 Tf 0 g) /DR << /Font << /ZaDb 6 0 R >> >> >> >>",
+        PAGES,
+        "<< /Type /Page /Parent 2 0 R /Annots [4 0 R 5 0 R] >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Btn /T (agree) /V /Off /AS /Off /Rect [100 200 120 220] /P 3 0 R /F 4 /MK << /CA (4) >> /DA (/ZaDb 11 Tf 0 g) >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Btn /T (other) /V /Off /AS /Off /Rect [120 200 140 220] /P 3 0 R /F 4 /MK << /CA (4) >> /DA (/ZaDb 11 Tf 0 g) >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats >>",
+    ])
+}
+
+/// The check box `agree` of [`checkbox_pdf`], with a highlight drawn over it.
+fn highlighted_checkbox_pdf() -> Vec<u8> {
+    pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] /DA (/ZaDb 0 Tf 0 g) /DR << /Font << /ZaDb 5 0 R >> >> >> >>",
+        PAGES,
+        "<< /Type /Page /Parent 2 0 R /Annots [4 0 R 6 0 R] >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Btn /T (agree) /V /Off /AS /Off /Rect [100 200 120 220] /P 3 0 R /F 4 /MK << /CA (4) >> /DA (/ZaDb 11 Tf 0 g) >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats >>",
+        "<< /Type /Annot /Subtype /Highlight /Rect [95 195 125 225] /QuadPoints [95 225 125 225 95 195 125 195] /C [1 1 0] /F 4 /T (Ana) >>",
+    ])
+}
+
 /// The app with `pdf` open at `zoom` percent and its first frames run. The left panel stays
 /// open only where a test places the page relative to the window's chrome.
 fn open(pdf: Vec<u8>, zoom: &'static str, left_open: bool) -> Harness<'static, PdfCraftApp> {
@@ -686,6 +711,40 @@ fn coalesced_click_places_a_stamp() {
     let p = at(&h, 150.0, 150.0);
     coalesced_click(&mut h, p);
     assert_eq!(stamps(&h), 1, "a click whose press and release share a frame places the stamp");
+}
+
+/// The value of the field named `name` on the first view's document.
+fn field_value(h: &Harness<'_, PdfCraftApp>, name: &str) -> Vec<String> {
+    let s = h.state();
+    s.session.get(s.views[0].id).unwrap().form.iter().find(|f| f.name == name).unwrap().value.clone()
+}
+
+/// A press belongs to the field it lands on: pressed at the right edge of `agree` and released just
+/// over the edge of `other` beside it (a click still, to egui), it ticks neither, as a button
+/// pressed and released off itself does nothing. The release used to tick `other`.
+#[test]
+fn a_press_on_one_check_box_released_over_another_ticks_neither() {
+    let mut h = open(two_checkboxes_pdf(), "150", false);
+    let (press, release) = (at(&h, 119.0, 210.0), at(&h, 121.0, 210.0));
+    h.hover_at(press);
+    h.run_steps(1);
+    h.drag_at(press);
+    h.run_steps(1);
+    h.drop_at(release);
+    h.run_steps(4);
+    assert_eq!((field_value(&h, "agree"), field_value(&h, "other")), (Vec::<String>::new(), Vec::new()), "neither box is ticked");
+}
+
+/// Text markup lies on the text, under a form field: a click on a check box under a highlight
+/// ticks the box, and the field's hand shows there.
+#[test]
+fn a_check_box_under_a_highlight_takes_the_click() {
+    let mut h = open(highlighted_checkbox_pdf(), "150", false);
+    let p = at(&h, 110.0, 210.0);
+    assert_eq!(cursor_at(&mut h, p), egui::CursorIcon::PointingHand);
+    mouse_click(&mut h, p);
+    assert_eq!(field_value(&h, "agree"), ["Yes"], "the box is ticked");
+    assert_eq!(h.state().views[0].comments.selected, None, "and the highlight is not selected");
 }
 
 #[test]

@@ -1129,7 +1129,24 @@ fn page_tool_input(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<
     let PageFrame { resp, ptr, pointer, .. } = *frame;
     let cx = PageToolContext { ui, resp, xf: &xf, ptr, page: i, doc, info };
     let pcx = comments::PageCx { page: i, xf: &xf, ptr, info, tool, prefs, allowed, hidden: comments_hidden, redact_mark };
-    let hits = |view: &DocView, p: Pos2| [link_hit(info, &xf, i, p), comments::hit(&pcx, view, p)].into_iter().flatten();
+    let field_tool = match tool {
+        QuickTool::Field(f) => Some(f),
+        _ => None,
+    };
+    // While a table is being set up, nothing else is drawn or moved.
+    let prepare_allowed = can_modify && table_preview.is_none() && frame.out.open_table.is_none();
+    // What lies under a point, bottom up: links, comments, then form fields (Prepare's fields,
+    // being moved, over the comments; filled ones under the comments that move).
+    let hits = |view: &DocView, p: Pos2| {
+        let fields = if preparing {
+            crate::prepare::hit(&xf, info, i, form, field_tool, prepare_allowed, &view.prepare, p)
+        } else if tool == QuickTool::Select {
+            crate::forms_ui::hit(&xf, info, i, form, can_fill, p)
+        } else {
+            None
+        };
+        [link_hit(info, &xf, i, p), comments::hit(&pcx, view, p), fields].into_iter().flatten()
+    };
     if let Some(o) = ptr.pressed().filter(|o| xf.rect.contains(*o)) {
         let at = hits(view, o).collect::<Vec<_>>();
         view.router.press(i, at, tool);
@@ -1231,13 +1248,7 @@ fn page_tool_input(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<
         frame.out.open_boxes = true;
     }
     let on_field = if preparing {
-        let field_tool = match tool {
-            QuickTool::Field(f) => Some(f),
-            _ => None,
-        };
-        // While a table is being set up, nothing else is drawn or moved.
-        let allowed = can_modify && table_preview.is_none() && frame.out.open_table.is_none();
-        let o = crate::prepare::page_input(cx, form, field_tool, allowed, view);
+        let o = crate::prepare::page_input(cx, form, field_tool, prepare_allowed, view);
         frame.out.field_props |= o.properties;
         frame.out.field_placed |= o.placed;
         frame.out.open_table = frame.out.open_table.or(o.table);
@@ -1245,7 +1256,6 @@ fn page_tool_input(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<
     } else {
         tool == QuickTool::Select
             && !(editing_content && can_modify && crate::content_ui::select_grabs(&xf, ptr, i, info, added, view))
-            && !comments::select_grabs(&pcx, view)
             && crate::forms_ui::page_input(cx, form, can_fill, view)
     };
     // Redact draws boxes off text; so does Highlight (an area highlight, as in Acrobat).
