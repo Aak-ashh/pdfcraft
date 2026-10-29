@@ -5125,4 +5125,146 @@ fn joining_by_name_is_only_for_radio_buttons_and_unlocked_groups() {
     set_props(&mut doc, "Group1", &FieldProps { locked: Some(true), ..FieldProps::default() }).unwrap();
     assert!(rename_to(&mut doc, "Group2", "Group1").is_err(), "a locked group");
     assert_eq!(fields(&doc).len(), 3);
+/// `/I` of field `name`: the selected positions in `/Opt`, or `None` when absent.
+fn selection_indices(doc: &Document, name: &str) -> Option<Vec<i64>> {
+    let f = field(&fields(doc), name).clone();
+    let d = doc.get(f.obj).as_dict().cloned().unwrap();
+    d.get(b"I").map(|i| doc.resolve(i).as_array().unwrap().iter().map(|o| o.as_int().unwrap()).collect())
+}
+
+#[test]
+fn changing_a_lists_options_repoints_its_selected_indices() {
+    let mut doc = one_page();
+    let list =
+        add_field(&mut doc, 0, [50.0, 600.0, 250.0, 680.0], &NewField::List { options: vec!["A".into(), "B".into(), "C".into()], multi: true }, None)
+            .unwrap();
+    set_value(&mut doc, &list, &FieldValue::Choice(vec!["C".into(), "B".into()])).unwrap();
+    assert_eq!(selection_indices(&doc, &list), Some(vec![1, 2]));
+    let f = field(&fields(&doc), &list).clone();
+    doc.update_dict(f.obj, |d| d.set(b"TI".to_vec(), Object::Int(2))).unwrap();
+    // Removing A moves B and C up one place.
+    let opts = |o: &[&str]| FieldProps { options: Some(o.iter().map(|s| s.to_string()).collect()), ..FieldProps::default() };
+    set_props(&mut doc, &list, &opts(&["B", "C", "D"])).unwrap();
+    assert_eq!(selection_indices(&doc, &list), Some(vec![0, 1]));
+    // Removing B leaves only C selected; the top row would point past the end.
+    set_props(&mut doc, &list, &opts(&["C"])).unwrap();
+    assert_eq!(selection_indices(&doc, &list), Some(vec![0]));
+    assert_eq!(top_row(&doc, f.obj), Some(0), "the list scrolls back to its only row");
+    // No selected value is offered any more.
+    set_props(&mut doc, &list, &opts(&["X", "Y"])).unwrap();
+    assert_eq!(selection_indices(&doc, &list), None);
+    let doc = reopen(&doc);
+    assert_eq!(selection_indices(&doc, &list), None);
+}
+
+fn top_row(doc: &Document, obj: ObjRef) -> Option<i64> {
+    doc.get(obj).as_dict().and_then(|d| d.get(b"TI")).and_then(|o| o.as_int())
+}
+
+#[test]
+fn shrinking_a_lists_options_scrolls_a_widget_with_its_own_top_row() {
+    let objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [7 0 R] >>".into(),
+        "<< /Fields [6 0 R] /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >>".into(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+        "<< /FT /Ch /T (pick) /Opt [(A) (B) (C) (D) (E) (F)] /V (F) /I [5] /Kids [7 0 R] >>".into(),
+        "<< /Type /Annot /Subtype /Widget /Parent 6 0 R /TI 5 /Rect [50 700 250 720] /P 3 0 R >>".into(),
+    ];
+    let mut doc = document(&objs);
+    let widget = ObjRef::new(7, 0);
+    set_props(&mut doc, "pick", &FieldProps { options: Some(vec!["F".into(), "A".into()]), ..FieldProps::default() }).unwrap();
+    assert_eq!(selection_indices(&doc, "pick"), Some(vec![0]));
+    // The widget's own /TI is read before the field's; row 5 no longer exists.
+    assert_eq!(top_row(&doc, widget), Some(0), "the widget scrolls to F, now row 0");
+    let doc = reopen(&doc);
+    assert_eq!(top_row(&doc, widget), Some(0));
+}
+
+#[test]
+fn each_widget_with_its_own_top_row_scrolls_by_itself() {
+    // Widget 7 shows from the field's top row; widget 8 keeps its own /TI 4.
+    let objs = |v: &str| -> Vec<String> {
+        vec![
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+            "<< /Type /Page /Parent 2 0 R /Annots [7 0 R 8 0 R] >>".into(),
+            "<< /Fields [6 0 R] /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >>".into(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+            format!("<< /FT /Ch /T (pick) /Opt [(A) (B) (C) (D) (E) (F)] {v} /Kids [7 0 R 8 0 R] >>"),
+            "<< /Type /Annot /Subtype /Widget /Parent 6 0 R /Rect [50 700 250 740] /P 3 0 R >>".into(),
+            "<< /Type /Annot /Subtype /Widget /Parent 6 0 R /TI 4 /Rect [50 600 250 620] /P 3 0 R >>".into(),
+        ]
+    };
+    let (first, other) = (ObjRef::new(7, 0), ObjRef::new(8, 0));
+    // The options shrink: the first widget already shows A, the other's row 4 is gone.
+    let mut doc = document(&objs("/V (A) /I [0]"));
+    set_props(&mut doc, "pick", &FieldProps { options: Some(vec!["A".into(), "B".into()]), ..FieldProps::default() }).unwrap();
+    assert_eq!(top_row(&doc, first), None);
+    assert_eq!(top_row(&reopen(&doc), other), Some(0), "options: the other widget scrolls to A");
+    // A new value the first widget already shows, below the other's view.
+    let mut doc = document(&objs("/V (B) /I [1]"));
+    set_value(&mut doc, "pick", &FieldValue::Choice(vec!["A".into()])).unwrap();
+    assert_eq!(top_row(&doc, ObjRef::new(6, 0)), None, "the field's top row did not move");
+    assert_eq!(top_row(&reopen(&doc), other), Some(0), "value: the other widget scrolls to A");
+}
+
+/// A list box's top row is chosen with the font size set in the same edit: at the larger size
+/// fewer rows fit, so it scrolls further to keep the selection in view.
+#[test]
+fn a_list_boxs_top_row_follows_a_font_size_changed_with_its_items() {
+    let mut doc = document(&[
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [6 0 R] >>".into(),
+        "<< /Fields [6 0 R] /DA (/Helv 10 Tf 0 g) /DR << /Font << /Helv 5 0 R >> >> >>".into(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+        "<< /FT /Ch /T (pick) /Opt [(A) (B) (C) (D) (E)] /V (C) /I [2] /Type /Annot /Subtype /Widget /Rect [50 700 250 740] /P 3 0 R >>".into(),
+    ]);
+    let items = ["Z", "A", "B", "C", "D"].map(String::from).to_vec();
+    set_props(&mut doc, "pick", &FieldProps { options: Some(items), font_size: Some(20.0), ..FieldProps::default() }).unwrap();
+    let doc = reopen(&doc);
+    let g = field(&fields(&doc), "pick").clone();
+    let w = &g.widgets[0];
+    let rows = w.list.unwrap();
+    let shown = rows.top..rows.top + rows.visible(w.rect[3] - w.rect[1]);
+    assert!(shown.contains(&3), "C is row 3; rows {shown:?} show");
+}
+
+#[test]
+fn sorting_a_combo_boxs_items_repoints_its_selected_index() {
+    let mut doc = one_page();
+    let combo = add_field(
+        &mut doc,
+        0,
+        [50.0, 600.0, 250.0, 620.0],
+        &NewField::Combo { options: vec!["Pear".into(), "apple".into(), "Fig".into()], editable: false },
+        None,
+    )
+    .unwrap();
+    set_value(&mut doc, &combo, &FieldValue::Choice(vec!["Pear".into()])).unwrap();
+    assert_eq!(selection_indices(&doc, &combo), Some(vec![0]));
+    set_props(&mut doc, &combo, &FieldProps { flags: vec![(flags::SORT, true)], ..FieldProps::default() }).unwrap();
+    // apple, Fig, Pear: the selection follows Pear to the end.
+    assert_eq!(selection_indices(&doc, &combo), Some(vec![2]));
+    assert_eq!(field(&fields(&doc), &combo).value, vec!["Pear".to_string()]);
+}
+
+#[test]
+fn sorting_keeps_which_of_two_items_with_one_export_value_is_selected() {
+    let mut doc = one_page();
+    let list = add_field(&mut doc, 0, [50.0, 600.0, 250.0, 680.0], &NewField::List { options: vec!["a".into()], multi: false }, None).unwrap();
+    let f = field(&fields(&doc), &list).clone();
+    let item = |e: &str, shown: &str| Object::Array(vec![Object::String(PdfString::text(e)), Object::String(PdfString::text(shown))]);
+    // Zeta and Alpha both export "x"; `/I` says Zeta is the one selected.
+    doc.update_dict(f.obj, |d| {
+        d.set(b"Opt".to_vec(), Object::Array(vec![item("x", "Zeta"), item("x", "Alpha"), item("y", "Mid")]));
+        d.set(b"V".to_vec(), PdfString::text("x"));
+        d.set(b"I".to_vec(), Object::Array(vec![Object::Int(0)]));
+    })
+    .unwrap();
+    set_props(&mut doc, &list, &FieldProps { flags: vec![(flags::SORT, true)], ..FieldProps::default() }).unwrap();
+    // Alpha, Mid, Zeta: the selection follows Zeta, not the first item exporting "x".
+    assert_eq!(selection_indices(&doc, &list), Some(vec![2]));
 }

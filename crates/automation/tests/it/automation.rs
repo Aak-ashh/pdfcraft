@@ -9406,3 +9406,29 @@ fn deleting_one_radio_button_through_tools_keeps_the_group() {
     ok(&mut a, "edit_undo", json!({ "doc": doc }));
     assert_eq!(size(&mut a)["options"], json!(["S", "M", "L"]), "one undo step brings it back");
 }
+/// `/I` of the top-level field `name` in the saved file `path`.
+fn saved_selection_indices(path: &Path, name: &str) -> Option<Vec<i64>> {
+    let d = pdfcraft_cos::Document::open(std::sync::Arc::new(std::fs::read(path).unwrap())).unwrap();
+    let root = d.get(d.root().unwrap()).as_dict().cloned().unwrap();
+    let form = d.resolve(root.get(b"AcroForm").unwrap()).as_dict().cloned().unwrap();
+    let all = d.resolve(form.get(b"Fields").unwrap()).as_array().cloned().unwrap();
+    let f = all
+        .iter()
+        .filter_map(|o| d.resolve(o).as_dict().cloned())
+        .find(|f| f.get(b"T").and_then(|t| d.resolve(t).as_string().map(|s| s.to_text())).as_deref() == Some(name))
+        .unwrap();
+    f.get(b"I").map(|i| d.resolve(i).as_array().unwrap().iter().map(|o| o.as_int().unwrap()).collect())
+}
+
+#[test]
+fn changing_a_lists_options_through_tools_keeps_its_saved_selection_on_the_same_items() {
+    let dir = workdir("choice-index");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    let args = json!({ "doc": doc, "page": 1, "type": "list", "rect": [20, 60, 180, 140], "options": ["A", "B", "C"], "multi_select": true, "name": "letters" });
+    ok(&mut a, "form_add_field", args);
+    ok(&mut a, "form_fill", json!({ "doc": doc, "values": { "letters": ["B", "C"] } }));
+    ok(&mut a, "form_set_props", json!({ "doc": doc, "field": "letters", "options": ["B", "C", "D"] }));
+    ok(&mut a, "doc_save", json!({ "doc": doc, "path": "letters.pdf" }));
+    assert_eq!(saved_selection_indices(&dir.join("letters.pdf"), "letters"), Some(vec![0, 1]), "B and C are now items 0 and 1");
+}
