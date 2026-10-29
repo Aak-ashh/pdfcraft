@@ -9496,6 +9496,33 @@ fn a_blank_line_stays_a_separate_paragraph_through_tools() {
     assert_eq!(ok(&mut a, "text_paragraphs", json!({ "doc": spaced_doc, "page": 1 }))["count"], 1);
 }
 
+/// #2529, through the same tools as a width drag. The typed double space falls on the wrap.
+/// Omitting `text` reflows with the saved gap count. An incremental save and a full rewrite
+/// both still have both spaces after the box is widened again.
+#[test]
+fn narrowing_then_widening_keeps_a_typed_double_space_through_tools() {
+    let dir = workdir("double-space-width");
+    std::fs::write(dir.join("a.pdf"), helvetica_page("BT /F1 24 Tf 20 150 Td (One  Two) Tj ET")).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    assert_eq!(ok(&mut a, "text_paragraphs", json!({ "doc": doc, "page": 1 }))["paragraphs"][0]["editor_text"], "One  Two");
+    ok(&mut a, "text_edit", json!({ "doc": doc, "page": 1, "paragraph": 1, "width": 45.0 }));
+    let narrow = &ok(&mut a, "text_paragraphs", json!({ "doc": doc, "page": 1 }))["paragraphs"][0];
+    assert_eq!(narrow["editor_text"], "One\nTwo", "{narrow}");
+    for (name, full) in [("narrow-inc.pdf", false), ("narrow-full.pdf", true)] {
+        ok(&mut a, "doc_save", json!({ "doc": doc, "path": name, "full": full }));
+        let saved = ok(&mut a, "doc_open", json!({ "path": name }))["doc"].as_u64().unwrap();
+        let block = &ok(&mut a, "text_paragraphs", json!({ "doc": saved, "page": 1 }))["paragraphs"][0];
+        assert_eq!(block["editor_text"], "One\nTwo", "{name}: {block}");
+        ok(&mut a, "text_edit", json!({ "doc": saved, "page": 1, "paragraph": 1, "width": 200.0 }));
+        let wide_name = format!("wide-{name}");
+        ok(&mut a, "doc_save", json!({ "doc": saved, "path": wide_name, "full": full }));
+        let wide = ok(&mut a, "doc_open", json!({ "path": wide_name }))["doc"].as_u64().unwrap();
+        let block = &ok(&mut a, "text_paragraphs", json!({ "doc": wide, "page": 1 }))["paragraphs"][0];
+        assert_eq!(block["editor_text"], "One  Two", "{name}: the second typed space was lost: {block}");
+    }
+}
+
 fn paragraph_texts(a: &mut Automation, doc: u64) -> Vec<String> {
     ok(a, "text_paragraphs", json!({ "doc": doc, "page": 1 }))["paragraphs"]
         .as_array()

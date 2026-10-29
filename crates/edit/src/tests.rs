@@ -3286,18 +3286,32 @@ fn a_wrapped_line_rejoins_when_widened_and_a_typed_break_stays() {
 /// #2529 (reviewer): a run of typed spaces that happens to fall at a wrap point is not the same
 /// as the single space an ordinary word gap leaves. Narrowing drops the whole gap, as any wrap
 /// does (#4199's own test: `wrapped("aa  bb  cc", 6.0) == ["aa  bb", "cc"]`); widening it back
-/// must not quietly turn two typed spaces into one.
+/// must not quietly turn two typed spaces into one. The count is stored on the wrap marker, so
+/// it has to survive an incremental save and a full rewrite, not only the in-memory rewrite.
 #[test]
 fn narrowing_then_widening_keeps_a_typed_double_space() {
-    let mut doc = text_page("BT /F1 24 Tf 20 150 Td (One  Two) Tj ET");
-    let wide = text::text_blocks(&doc, 0).unwrap().into_iter().next().unwrap().rect;
-    let wide_width = wide[2] - wide[0];
-    text::rewrite_block(&mut doc, 0, 0, None, &text::BlockStyle { width: Some(45.0), ..Default::default() }).unwrap();
-    let block = text::text_blocks(&doc, 0).unwrap().into_iter().next().unwrap();
-    assert_eq!(block.editor_text, "One\nTwo", "the narrow box did not wrap between the two typed spaces: {}", block.editor_text);
-    text::rewrite_block(&mut doc, 0, 0, Some(&block.reflow_text), &text::BlockStyle { width: Some(wide_width), ..Default::default() }).unwrap();
-    let rewidened = text::text_blocks(&doc, 0).unwrap().into_iter().next().unwrap();
-    assert_eq!(rewidened.editor_text, "One  Two", "the second typed space was lost: {:?}", rewidened.editor_text);
+    let fresh = text_page("BT /F1 24 Tf 20 150 Td (One  Two) Tj ET");
+    let wide_width = {
+        let wide = text::text_blocks(&fresh, 0).unwrap().into_iter().next().unwrap().rect;
+        wide[2] - wide[0]
+    };
+    for (save, reopen_as) in
+        [("incremental", reopen(&fresh)), ("full", Document::open(Arc::new(write_full(&fresh, &SaveOptions::default()).unwrap())).unwrap())]
+    {
+        let mut doc = reopen_as;
+        text::rewrite_block(&mut doc, 0, 0, None, &text::BlockStyle { width: Some(45.0), ..Default::default() }).unwrap();
+        let doc =
+            if save == "incremental" { reopen(&doc) } else { Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap() };
+        let block = text::text_blocks(&doc, 0).unwrap().into_iter().next().unwrap();
+        assert_eq!(block.editor_text, "One\nTwo", "{save}: the narrow box did not wrap between the two typed spaces: {}", block.editor_text);
+        assert_eq!(block.reflow_text, "One  Two", "{save}: the saved wrap did not remember both spaces: {:?}", block.reflow_text);
+        let mut doc = doc;
+        text::rewrite_block(&mut doc, 0, 0, Some(&block.reflow_text), &text::BlockStyle { width: Some(wide_width), ..Default::default() }).unwrap();
+        let doc =
+            if save == "incremental" { reopen(&doc) } else { Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap() };
+        let rewidened = text::text_blocks(&doc, 0).unwrap().into_iter().next().unwrap();
+        assert_eq!(rewidened.editor_text, "One  Two", "{save}: the second typed space was lost: {:?}", rewidened.editor_text);
+    }
 }
 
 /// #2529: a Chinese/Japanese word split has no space of its own (`wrap`'s own doc comment: "those
