@@ -49,9 +49,15 @@ fn neighbour_left(lines: &[TextLine], block: &TextBlock) -> Option<f64> {
 /// is wider than the column the title sits in, and gives it no frame while a narrower one does. A lone row's own box is no frame
 /// to align in: left-aligning a title centred on the page left it where it was, and since a single
 /// row grows to the page's margin, centring it again moved it right each time. `None` when no
-/// alignment is asked for, or when the paragraph is several rows, turned, or given a width or a
-/// move of its own.
-pub(crate) fn alignment_frame(lines: &[TextLine], blocks: &[TextBlock], block: &TextBlock, style: &BlockStyle) -> Option<[f64; 2]> {
+/// alignment is asked for, when the paragraph is several rows, turned, or given a width or a move of
+/// its own, or when its text changes and no column holds it (`text_changed`).
+pub(crate) fn alignment_frame(
+    lines: &[TextLine],
+    blocks: &[TextBlock],
+    block: &TextBlock,
+    style: &BlockStyle,
+    text_changed: bool,
+) -> Option<[f64; 2]> {
     let asked = style.align.is_some() || style.aligns.iter().any(Option::is_some);
     if !asked || style.width.is_some() || style.offset.is_some() || block.rows.len() != 1 || block.rotation.abs() > 0.01 {
         return None;
@@ -62,12 +68,13 @@ pub(crate) fn alignment_frame(lines: &[TextLine], blocks: &[TextBlock], block: &
     // The column an overlapping paragraph makes, when it holds the row.
     let column = |other: &TextBlock| -> Option<[f64; 2]> {
         let left = other.rect[0];
+        // Whole rows, not their runs: a row of several styles reaches its last run's right edge.
         let right = other
-            .lines
+            .rows
             .iter()
-            .filter_map(|i| lines.get(*i))
-            .filter(|line| (line.rect[0] - left).abs() < tolerance)
-            .map(|line| line.rect[2])
+            .filter_map(|row| row_rect(row, lines))
+            .filter(|row| (row[0] - left).abs() < tolerance)
+            .map(|row| row[2])
             .fold(f64::NEG_INFINITY, f64::max);
         (right.is_finite() && right - left > own[1] - own[0] && own[0] >= left - tolerance && own[1] <= right + tolerance).then_some([left, right])
     };
@@ -77,7 +84,13 @@ pub(crate) fn alignment_frame(lines: &[TextLine], blocks: &[TextBlock], block: &
         .filter_map(|other| column(other).map(|frame| (frame, gap(other))))
         .min_by(|(a, near_a), (b, near_b)| (a[1] - a[0]).total_cmp(&(b[1] - b[0])).then(near_a.total_cmp(near_b)))
         .map(|(frame, _)| frame);
-    Some(frame.unwrap_or(own))
+    // The row's own box, with no column to align in, is no width for new text to wrap at: edited,
+    // the row keeps the width it would have had without the alignment.
+    match frame {
+        Some(frame) => Some(frame),
+        None if text_changed => None,
+        None => Some(own),
+    }
 }
 
 /// Whether a block reads as centred, and so must keep its centre when it grows or wraps.

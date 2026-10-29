@@ -766,7 +766,7 @@ pub(crate) fn rewrite_block_from(
     // An alignment for a one-row paragraph is laid out across the column it sits in, as a
     // paragraph of that width moved to its left edge.
     let framed;
-    let style = match alignment_frame(&lines, &blocks, &b, style) {
+    let style = match alignment_frame(&lines, &blocks, &b, style, text.is_some_and(|t| t != b.editor_text)) {
         Some([left, right]) => {
             framed = BlockStyle { width: Some(right - left), offset: Some([left - b.rect[0], 0.0]), ..style.clone() };
             &framed

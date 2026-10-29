@@ -7255,6 +7255,41 @@ fn a_justified_paragraph_from_the_editor_fills_its_rows() {
     assert!(row("end")[2] < right - 20.0, "the last row isn't");
 }
 
+/// A column whose rows are several runs (a second style on the same baseline) reaches the right
+/// edge of its whole rows, not of the run at the left edge: a title wider than that first run is
+/// still held by the column and aligns to it (CodeRabbit on b9940d7d).
+#[test]
+fn a_column_is_measured_by_its_whole_rows_not_its_first_runs() {
+    let page = "BT /F1 18 Tf 1 0 0 1 100 672 Tm (A longer title) Tj ET                 BT /F1 10 Tf 12 TL 50 610 Td (The first column runs to here.) Tj ET                 BT /F1 11 Tf 1 0 0 rg 1 0 0 1 185 610 Tm (and keeps going on.) Tj ET                 BT /F1 10 Tf 12 TL 50 598 Td (A second row of it.) Tj ET";
+    let blocks = text::text_blocks(&text_page(page), 0).unwrap();
+    let body = blocks.iter().find(|b| b.text.starts_with("The first")).expect("the body is a block");
+    assert!(body.rows.first().is_some_and(|row| row.len() >= 2), "the body's first row is several runs: {:?}", body.rows);
+    let lines = text::text_lines(&text_page(page), 0).unwrap();
+    let column_right =
+        body.rows.iter().filter_map(|row| row.iter().filter_map(|i| lines.get(*i)).map(|l| l.rect[2]).reduce(f64::max)).fold(f64::MIN, f64::max);
+    let mut doc = text_page(page);
+    let index = blocks.iter().position(|b| b.text == "A longer title").expect("the title is a block of its own");
+    let style = text::BlockStyle { aligns: vec![Some(added::Align::Right)], ..Default::default() };
+    text::rewrite_block(&mut doc, 0, index, Some("A longer title"), &style).unwrap();
+    let title = text::text_lines(&doc, 0).unwrap().into_iter().find(|l| l.text == "A longer title").unwrap().rect;
+    assert!((title[2] - column_right).abs() < 1.0, "right: on the whole row's right edge, {title:?} vs {column_right}");
+}
+
+/// A row with no column of its own is aligned in its own box, but that box is not the width its new
+/// text wraps at: changing the text together with an alignment keeps a single row on one row, as
+/// it does without the alignment (CodeRabbit on b9940d7d).
+#[test]
+fn an_isolated_row_edited_with_an_alignment_does_not_wrap_at_its_old_width() {
+    for align in [added::Align::Center, added::Align::Right] {
+        let mut doc = text_page("BT /F1 18 Tf 1 0 0 1 100 700 Tm (Title) Tj ET");
+        let longer = "A much longer title for the page";
+        let style = text::BlockStyle { aligns: vec![Some(align)], ..Default::default() };
+        text::rewrite_block(&mut doc, 0, 0, Some(longer), &style).unwrap();
+        let lines = text::text_lines(&doc, 0).unwrap();
+        assert_eq!(lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), [longer], "{align:?}: the title stays on one row");
+    }
+}
+
 /// A heading across the whole page sits closer to the title than the title's own column does: the
 /// title is still aligned in its own column, not across the heading's page-wide frame (FredApps's
 /// review of 43f848d5). Centre and right both go by the column.
