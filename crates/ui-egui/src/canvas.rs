@@ -29,6 +29,7 @@ mod navigation;
 mod organize;
 pub(super) mod page_cursor;
 pub(super) mod page_pointer;
+pub(super) mod page_router;
 pub mod scroll_speed;
 mod selection;
 pub(super) mod signature_drag;
@@ -473,6 +474,8 @@ pub struct DocView {
     pub(crate) signature_drag: crate::signature_drag::SignatureDrag,
     /// What the page modules claim for the cursor this frame; `document_area` sets it once.
     pub(crate) cursor: crate::page_cursor::PageCursor,
+    /// Who the press the pages hold belongs to.
+    pub(crate) router: crate::page_router::PageRouter,
     /// Escape cancelled the press the pages hold: the page ignores it until the button is up, so
     /// its release neither clicks nor ends a drag.
     pub(crate) press_cancelled: bool,
@@ -590,6 +593,7 @@ impl DocView {
         self.org_drag = None;
         self.panel_drag = None;
         self.selection_drag = false;
+        self.router.cancel();
         self.auto_scroll.cancel();
         self.prepare.cancel_pointer_gesture();
         self.content.cancel_pointer_gesture();
@@ -729,6 +733,7 @@ impl DocView {
             fill_signature_page: None,
             signature_drag: Default::default(),
             cursor: Default::default(),
+            router: Default::default(),
             press_cancelled: false,
         }
     }
@@ -1124,6 +1129,11 @@ fn page_tool_input(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<
     let PageFrame { resp, ptr, pointer, .. } = *frame;
     let cx = PageToolContext { ui, resp, xf: &xf, ptr, page: i, doc, info };
     let pcx = comments::PageCx { page: i, xf: &xf, ptr, info, tool, prefs, allowed, hidden: comments_hidden, redact_mark };
+    let hits = |view: &DocView, p: Pos2| [link_hit(info, &xf, i, p), comments::hit(&pcx, view, p)].into_iter().flatten();
+    if let Some(o) = ptr.pressed().filter(|o| xf.rect.contains(*o)) {
+        let at = hits(view, o).collect::<Vec<_>>();
+        view.router.press(i, at, tool);
+    }
     if let QuickTool::Measure(measure_tool) = tool {
         crate::measure_ui::page_input(ui, resp, doc, view, &pcx, measure_tool, units);
     }
@@ -1326,6 +1336,15 @@ fn page_tool_input(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<
         view.links.context = Some((i, l.index));
     }
     let consumed = on_objects || on_edit_text || on_link || on_content || boxing || on_field || comments::page_input(ui, resp, &pcx, view);
+    // The cursor and the tip from what lies under the pointer, after the tools claimed theirs (the
+    // last claim on a layer stands).
+    if frame.env.unobstructed
+        && let Some(p) = pointer
+    {
+        for h in hits(view, p).collect::<Vec<_>>() {
+            view.cursor.claim_with_tip(h.layer, h.icon, h.tip);
+        }
+    }
     PageInput { consumed, area_tool }
 }
 
@@ -1430,8 +1449,10 @@ fn update_text_cursor(view: &mut DocView, gesture: &TextGesture<'_>) {
 }
 
 fn update_selection_on_press(ui: &egui::Ui, view: &mut DocView, text: &PageText, gesture: &TextGesture<'_>) {
+    // A press held by what keeps its drag (a link, a comment that moves) selects no text; one on
+    // text markup lets its drag select the text underneath.
     let press_here = gesture.ptr.origin.is_some_and(|origin| gesture.rect.contains(origin));
-    if gesture.ptr.pressed().is_some() && press_here && !gesture.over_link {
+    if gesture.ptr.pressed().is_some() && press_here && !view.router.keeps_drag() {
         let now = ui.input(|input| input.time);
         let (max_delay, max_dist) = ui.ctx().options(|options| (options.input_options.max_double_click_delay, options.input_options.max_click_dist));
         let consecutive = now - view.last_press_time <= max_delay && view.last_press_pos.is_some_and(|pos| pos.distance(gesture.pointer) <= max_dist);
@@ -1446,7 +1467,7 @@ fn update_selection_on_press(ui: &egui::Ui, view: &mut DocView, text: &PageText,
             view.selection = Some(Selection::run(gesture.page, first, last));
         }
     }
-    if gesture.resp.drag_started() && press_here && !gesture.over_link {
+    if gesture.resp.drag_started() && press_here && !view.router.keeps_drag() {
         view.actions_dismissed = None;
         view.selection_drag = true;
         let origin = gesture.ptr.origin.unwrap_or(gesture.pointer);
@@ -1518,7 +1539,7 @@ fn finish_text_pointer_gesture(ui: &egui::Ui, view: &mut DocView, text: &PageTex
         && let Some((first, last)) = text.nearest(gesture.vx, gesture.vy).and_then(|anchor| click_unit(text, clicks, anchor))
     {
         view.selection = Some(Selection::run(gesture.page, first, last));
-    } else if gesture.resp.clicked() && view.clicks < 2 && !gesture.over_link {
+    } else if gesture.resp.clicked() && view.clicks < 2 && !view.router.keeps_drag() {
         let shift = ui.input(|input| input.modifiers.shift);
         match (
             view.selection.as_mut().filter(|selection| shift && selection.page == gesture.page).map(|selection| &mut selection.span),
@@ -1606,25 +1627,14 @@ fn page_overlays(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<'_
     // Links: the hand and the link's target, which count only for the tools that follow or
     // edit links (`Layer::reached_by`). Tips draw above the palette, so none shows while it is
     // open, even beside it.
-    if unobstructed && let Some(p) = pointer {
-        for l in info.links.iter().filter(|l| l.page == i) {
-            let sr = xf.user_rect(info, i, l.rect);
-            if sr.contains(p) {
-                let label = match &l.target {
-                    LinkTarget::Page(n, _) => {
-                        crate::i18n::fmt(tl!("Go to page {p}"), &[("p", info.pages.get(*n).map(|p| p.label.as_str()).unwrap_or("?"))])
-                    }
-                    LinkTarget::Uri(u) => u.clone(),
-                    LinkTarget::SetLayers { .. } => tl!("Set layer visibility").to_string(),
-                    LinkTarget::RemoteGoTo { file, .. } => file.clone(),
-                    LinkTarget::Other(s) => crate::i18n::fmt(tl!("{s} action"), &[("s", s)]),
-                };
-                view.cursor.claim_with_tip(Layer::Link, egui::CursorIcon::PointingHand, Some(label));
-                if resp.clicked() && tool == QuickTool::Select && !input.consumed {
-                    frame.out.clicked_link = Some(l.target.clone());
-                }
-            }
-        }
+    if unobstructed
+        && resp.clicked()
+        && tool == QuickTool::Select
+        && !input.consumed
+        && let Some(crate::page_router::Owner::Link { index }) = view.router.owner(i)
+        && let Some(l) = info.links.get(index)
+    {
+        frame.out.clicked_link = Some(l.target.clone());
     }
     // Comments say what they are with any tool, beside its cursor, as Acrobat's do.
     comments::describe(&pcx, view);
@@ -1759,6 +1769,21 @@ fn draw_page(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<'_>, i
     page_overlays(ui, view, frame, &slot, &input);
 }
 
+/// The link under `p` on `page`: the hand, and where a click goes. Only the Select tool follows
+/// links and the Link tool edits them (`Layer::reached_by`).
+fn link_hit(info: &DocInfo, xf: &PageXform, page: usize, p: Pos2) -> Option<crate::page_router::Hit> {
+    let (index, l) = info.links.iter().enumerate().rfind(|(_, l)| l.page == page && xf.user_rect(info, page, l.rect).contains(p))?;
+    let label = match &l.target {
+        LinkTarget::Page(n, _) => crate::i18n::fmt(tl!("Go to page {p}"), &[("p", info.pages.get(*n).map(|p| p.label.as_str()).unwrap_or("?"))]),
+        LinkTarget::Uri(u) => u.clone(),
+        LinkTarget::SetLayers { .. } => tl!("Set layer visibility").to_string(),
+        LinkTarget::RemoteGoTo { file, .. } => file.clone(),
+        LinkTarget::Other(s) => crate::i18n::fmt(tl!("{s} action"), &[("s", s)]),
+    };
+    let owner = crate::page_router::Owner::Link { index };
+    Some(crate::page_router::Hit { tip: Some(label), ..crate::page_router::Hit::new(owner, Layer::Link, egui::CursorIcon::PointingHand) })
+}
+
 /// Escape while the pages hold a press abandons the gesture it drives, whichever tool's: nothing is
 /// placed, drawn, moved, resized or opened, and the press is ignored until the button is up. The
 /// frame of the release still belongs to the cancelled press.
@@ -1853,6 +1878,7 @@ fn draw_pages(
     // or a press they hold. The page modules read it rather than egui's raw pointer state.
     let ptr = PagePointer::read(ui, &resp, modal);
     cancel_on_escape(ui.ctx(), view, &ptr);
+    view.router.settle(ptr.any_down, !ptr.edges.is_empty());
     let pointer = ptr.pos;
     // A press on a page makes it the current one (as in Acrobat), so a page command with
     // no selection (Rotate, Delete) acts on the page the reader pointed at, not on a page

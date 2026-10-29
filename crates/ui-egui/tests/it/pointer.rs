@@ -296,11 +296,23 @@ fn a_links_tip_shows_only_with_its_hand() {
     assert_eq!(hover(&mut h, rectangle, 3.0), (Crosshair, false), "a drag draws a rectangle");
 }
 
+/// A drag from plain text onto a link still selects the text: the press decides, not where the
+/// pointer has got to once egui calls it a drag.
+#[test]
+fn a_drag_from_text_onto_a_link_selects_the_text() {
+    let mut h = open(linked_text_pdf(), "150", false);
+    // "before you start." lies right of the link, which covers x 40..160.
+    let (plain, linked) = (at(&h, 200.0, 303.0), at(&h, 100.0, 303.0));
+    assert_eq!(wait_for_cursor(&mut h, plain, |c| c == egui::CursorIcon::Text), egui::CursorIcon::Text, "the page's text has arrived");
+    mouse_drag(&mut h, plain, linked - plain);
+    let selected = h.state().views[0].selected_text().unwrap_or_default();
+    assert!(selected.contains("example.org"), "the drag selected across the link: {selected:?}");
+}
+
 /// Over two comments the tip names the one drawn on top (#3620), and a click should select that
 /// one too. The renderer paints in `/Annots` order, but the hit test takes the last comment in
 /// inspection's order, which is by top edge, and selects the one underneath.
 #[test]
-#[ignore = "step 3 of the page pointer router: one hit test"]
 fn a_click_on_stacked_comments_selects_the_one_drawn_on_top() {
     let mut h = open(stacked_comments_pdf(), "150", false);
     let overlap = at(&h, 125.0, 225.0);
