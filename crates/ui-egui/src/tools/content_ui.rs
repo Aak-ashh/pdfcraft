@@ -619,8 +619,9 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
     // Clicks outside the document (the Format text panel) keep the text open, as they keep a
     // paragraph being edited open.
     // Where the click that took the focus was: the pointer itself may be gone by then (a touch, a
-    // pen lifted away).
-    let outside = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !view.viewport_rect().contains(p));
+    // pen lifted away). The keyboard moving there (Tab, a screen reader) keeps it open too.
+    let away = |p: egui::Pos2| !view.viewport_rect().contains(p);
+    let outside = ctx.input(|i| i.pointer.interact_pos()).is_some_and(away) || crate::edit_text_ui::focus_pos(ctx).is_some_and(away);
     // Shown at once, like the paragraph editor: a fade-in shows the page's copy through it. Over
     // the page, so only where the document shows: text scrolled under the mode bar or a side
     // panel must leave them their pointer (#2755).
@@ -700,8 +701,10 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
                     })
                     .response
                     .rect;
-                // Pressing a button takes the focus from the text: that is not a click away.
-                let on_buttons = ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| buttons.contains(p));
+                // Pressing a button, or moving the keyboard to one, takes the focus from the text:
+                // that is not a click away.
+                let on_buttons = ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| buttons.contains(p))
+                    || crate::edit_text_ui::focus_pos(ui.ctx()).is_some_and(|p| buttons.contains(p));
                 cancel |= ui.input(|i| i.key_pressed(egui::Key::Escape));
                 commit = done || resp.lost_focus() && !on_buttons && !outside && !view.objects.hold_editor;
             });

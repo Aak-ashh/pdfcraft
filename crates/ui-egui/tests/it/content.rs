@@ -1014,6 +1014,77 @@ fn aligning_a_selected_line_of_added_text_aligns_only_that_line() {
     assert_eq!(aligns(&h), (pdfcraft_engine::TextAlign::Left, vec![]));
 }
 
+/// Two lines of added text with the same words, each aligned its own way: deleting the first line
+/// with its break leaves the second line's alignment, not the deleted one's (CodeRabbit on
+/// 648dd428).
+#[test]
+fn deleting_the_first_of_two_same_lines_keeps_the_second_lines_alignment() {
+    use pdfcraft_engine::TextAlign::{Center, Right};
+    let mut h = harness();
+    let rect = [40.0, 195.0, 240.0, 220.0];
+    let text = pdfcraft_engine::AddedText { rect, text: "Same\nSame".into(), aligns: vec![Some(Center), Some(Right)], ..Default::default() };
+    assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::AddText { page: 0, text }));
+    assert!(h.state_mut().execute("edit.text"));
+    h.run_steps(3);
+    let point = at(&h, 120.0, 195.0);
+    click(&mut h, point);
+    assert_eq!(h.state().views[0].content.draft.as_ref().and_then(|d| d.index), Some(0), "the editor opened on the text");
+    // Select the first line with its break, and delete it.
+    h.key_press(egui::Key::ArrowUp);
+    h.key_press(egui::Key::Home);
+    // "Same" and its line break.
+    for _ in 0..5 {
+        h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowRight);
+    }
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    let d = h.state().views[0].content.draft.as_ref().expect("still typing");
+    assert_eq!((d.text.as_str(), d.style.aligns.clone()), ("Same", vec![Some(Right)]), "the second line's alignment stays");
+}
+
+/// The same with the alignment controls reached by keyboard or a screen reader (focused, then
+/// pressed, with no pointer): the box stays open when the focus leaves it for the Format text
+/// panel, and both choices are for the selected line.
+#[test]
+fn aligning_a_selected_line_of_added_text_by_keyboard_keeps_the_box_open() {
+    let mut h = harness();
+    let rect = [40.0, 195.0, 240.0, 220.0];
+    let text = pdfcraft_engine::AddedText {
+        rect,
+        text: "Line one
+Line two"
+            .into(),
+        ..Default::default()
+    };
+    assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::AddText { page: 0, text }));
+    assert!(h.state_mut().execute("edit.text"));
+    h.run_steps(3);
+    let point = at(&h, 45.0, 195.0);
+    click(&mut h, point);
+    assert_eq!(h.state().views[0].content.draft.as_ref().and_then(|d| d.index), Some(0), "the editor opened on the text");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::End);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::Home);
+    h.run_steps(2);
+    let align_by_focus = |h: &mut Harness<'static, PdfCraftApp>, choice: &str| {
+        for label in ["Alignment", choice] {
+            h.get_by_label(label).focus();
+            h.run_steps(2);
+            h.get_by_label(label).click();
+            h.run_steps(3);
+        }
+    };
+    let aligns = |h: &Harness<'static, PdfCraftApp>| match &added(h)[0].content {
+        pdfcraft_engine::AddedContent::Text(t) => (t.align, t.aligns.clone()),
+        _ => panic!(),
+    };
+    align_by_focus(&mut h, "Align right");
+    assert!(h.state().views[0].content.draft.is_some(), "the box stays open");
+    assert_eq!(aligns(&h), (pdfcraft_engine::TextAlign::Left, vec![None, Some(pdfcraft_engine::TextAlign::Right)]));
+    align_by_focus(&mut h, "Centre");
+    assert!(h.state().views[0].content.draft.is_some(), "the box is still open");
+    assert_eq!(aligns(&h), (pdfcraft_engine::TextAlign::Left, vec![None, Some(pdfcraft_engine::TextAlign::Center)]));
+}
+
 /// The same in an added text box: Redo after Undo puts the typing back in the box, and the
 /// document's own Redo stays waiting.
 #[test]

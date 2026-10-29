@@ -69,13 +69,33 @@ fn trimmed(mut aligns: Vec<Option<Align>>) -> Vec<Option<Align>> {
 /// paragraph it changed, or for lines only inserted, of the paragraph before them (so Enter in or
 /// after a centred paragraph makes centred ones).
 pub fn remap(old: &str, new: &str, aligns: &[Option<Align>]) -> Vec<Option<Align>> {
+    remap_at(old, new, aligns, None)
+}
+
+/// [`remap`] for an edit that left the caret at byte `caret` of `new`. Repeated paragraphs can
+/// make where the edit was ambiguous ("A\nA" to "A" deletes either one); the caret, at the edit's
+/// end, says which. It only chooses between readings that fit the texts, so a caret away from the
+/// edit never makes it an edit of other paragraphs.
+pub fn remap_at(old: &str, new: &str, aligns: &[Option<Align>], caret: Option<usize>) -> Vec<Option<Align>> {
     if aligns.is_empty() || old == new {
         return aligns.to_vec();
     }
     let (o, n): (Vec<&str>, Vec<&str>) = (old.split('\n').collect(), new.split('\n').collect());
     let shortest = o.len().min(n.len());
-    let prefix = o.iter().zip(&n).take_while(|(a, b)| a == b).count().min(shortest);
-    let suffix = o.iter().rev().zip(n.iter().rev()).take_while(|(a, b)| a == b).count().min(shortest - prefix);
+    let same_start = o.iter().zip(&n).take_while(|(a, b)| a == b).count().min(shortest);
+    let same_end = o.iter().rev().zip(n.iter().rev()).take_while(|(a, b)| a == b).count().min(shortest);
+    let fewest_kept = shortest - same_start;
+    let (prefix, suffix) = match caret {
+        Some(at) if fewest_kept <= same_end => {
+            // The edit's paragraphs of `new` end before the caret's paragraph when the caret starts
+            // one, and with it otherwise.
+            let starts = at == 0 || at.checked_sub(1).and_then(|i| new.as_bytes().get(i)) == Some(&b'\n');
+            let end = paragraph_at(new, at).saturating_add(usize::from(!starts));
+            let suffix = n.len().saturating_sub(end).clamp(fewest_kept, same_end);
+            (shortest - suffix, suffix)
+        }
+        _ => (same_start, same_end.min(shortest - same_start)),
+    };
     let at = |i: usize| aligns.get(i).copied().flatten();
     let inserted_only = o.len() - prefix - suffix == 0;
     let changed = if inserted_only && prefix > 0 { at(prefix - 1) } else { at(prefix) };
@@ -131,5 +151,24 @@ mod tests {
         assert_eq!(remap("A\nB", "x", &[None, Some(Right)]), []);
         assert_eq!(remap("A\nA", "A", &[Some(Center), Some(Right)]), [Some(Center)]);
         assert_eq!(remap("A", "A\nA", &[Some(Center)]), [Some(Center), Some(Center)]);
+    }
+
+    /// Repeated rows make the edit's place ambiguous: "A\nA" to "A" deletes either row. The caret,
+    /// where the edit ended, settles which (CodeRabbit on 648dd428).
+    #[test]
+    fn the_caret_says_which_of_two_same_rows_an_edit_took() {
+        let aligns = [Some(Center), Some(Right)];
+        assert_eq!(remap_at("A\nA", "A", &aligns, Some(0)), [Some(Right)], "the first row and its break deleted");
+        assert_eq!(remap_at("A\nA", "A", &aligns, Some(1)), [Some(Center)], "the break and the second row deleted");
+        assert_eq!(remap_at("A\nA", "A", &aligns, None), [Some(Center)], "no caret: as before");
+        // Enter at the start of the first of two same rows: the new row is before it.
+        assert_eq!(remap_at("A\nA", "\nA\nA", &aligns, Some(1)), [Some(Center), Some(Center), Some(Right)]);
+        // Enter at the end of the second: the new row follows it.
+        assert_eq!(remap_at("A\nA", "A\nA\n", &aligns, Some(4)), [Some(Center), Some(Right), Some(Right)]);
+        // A caret away from the edit never makes it an edit of other rows.
+        assert_eq!(remap_at("A\nB\nC", "A\nB\nCx", &[Some(Center), Some(Right), None], Some(0)), [Some(Center), Some(Right)]);
+        // A caret past the end, or not on a character boundary, is no panic.
+        assert_eq!(remap_at("A\nA", "A", &aligns, Some(99)), [Some(Center)]);
+        assert_eq!(remap_at("é\né", "é", &aligns, Some(1)), [Some(Center)]);
     }
 }

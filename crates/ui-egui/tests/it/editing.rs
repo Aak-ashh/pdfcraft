@@ -6578,6 +6578,39 @@ fn aligning_a_selected_row_aligns_only_that_row_and_undo_puts_it_back() {
     assert!((row_rect(&h, "nine")[0] - last[0]).abs() < 0.5, "the last row is back");
 }
 
+/// Format text's alignment flyout by keyboard or screen reader: each control is focused, then
+/// pressed, with no pointer anywhere.
+fn align_by_focus(h: &mut Harness<'static, PdfCraftApp>, choice: &str) {
+    for label in ["Alignment", choice] {
+        h.get_by_label(label).focus();
+        h.run_steps(2);
+        h.get_by_label(label).click();
+        h.run_steps(3);
+    }
+}
+
+/// The same as by pointer, with the alignment controls reached by keyboard or a screen reader:
+/// the paragraph stays open when the focus leaves it for the Format text panel, the selected row
+/// takes the alignment, and a second choice is for that row again.
+#[test]
+fn aligning_a_selected_row_by_keyboard_keeps_the_paragraph_open() {
+    let mut h = three_row_paragraph();
+    let first = row_rect(&h, "One");
+    let wide = row_rect(&h, "three");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    align_by_focus(&mut h, "Align right");
+    assert!(h.state().views[0].line_editor.is_some(), "the paragraph stays open");
+    let moved = row_rect(&h, "nine");
+    assert!((moved[2] - wide[2]).abs() < 1.0, "the last row is right-aligned: {moved:?}");
+    align_by_focus(&mut h, "Centre");
+    assert!(h.state().views[0].line_editor.is_some(), "the paragraph is still open");
+    assert!((row_rect(&h, "One")[0] - first[0]).abs() < 0.5, "the first row stays put: {:?}", row_rect(&h, "One"));
+    let last = row_rect(&h, "nine");
+    assert!((((last[0] + last[2]) - (wide[0] + wide[2])) / 2.0).abs() < 1.0, "the last row is centred: {last:?} in {wide:?}");
+}
+
 /// A row aligned on its own, deleted by typing, then brought back with Undo from the menu: it
 /// comes back with its alignment, and Redo deletes it again. The box's history keeps only text,
 /// so the restored row took the alignment of the row before it.

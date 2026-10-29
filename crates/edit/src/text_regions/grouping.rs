@@ -50,15 +50,12 @@ fn neighbour_left(lines: &[TextLine], block: &TextBlock) -> Option<f64> {
 /// to align in: left-aligning a title centred on the page left it where it was, and since a single
 /// row grows to the page's margin, centring it again moved it right each time. `None` when no
 /// alignment is asked for, when the paragraph is several rows, turned, or given a width or a move of
-/// its own, or when its text changes and no column holds it (`text_changed`).
-pub(crate) fn alignment_frame(
-    lines: &[TextLine],
-    blocks: &[TextBlock],
-    block: &TextBlock,
-    style: &BlockStyle,
-    text_changed: bool,
-) -> Option<[f64; 2]> {
-    let asked = style.align.is_some() || style.aligns.iter().any(Option::is_some);
+/// its own, or when its `draft` text changes and no column holds it.
+pub(crate) fn alignment_frame(lines: &[TextLine], blocks: &[TextBlock], block: &TextBlock, style: &BlockStyle, draft: &str) -> Option<[f64; 2]> {
+    // Every row of the draft is aligned, by its own alignment or the paragraph's: moving the
+    // paragraph to its column's edge would move a row that has none. Entries past the draft's
+    // rows name no row.
+    let asked = (0..crate::paragraph_align::count(draft)).all(|row| style.aligns.get(row).copied().flatten().or(style.align).is_some());
     if !asked || style.width.is_some() || style.offset.is_some() || block.rows.len() != 1 || block.rotation.abs() > 0.01 {
         return None;
     }
@@ -88,7 +85,7 @@ pub(crate) fn alignment_frame(
     // the row keeps the width it would have had without the alignment.
     match frame {
         Some(frame) => Some(frame),
-        None if text_changed => None,
+        None if draft != block.editor_text => None,
         None => Some(own),
     }
 }

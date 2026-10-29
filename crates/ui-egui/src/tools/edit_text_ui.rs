@@ -155,6 +155,10 @@ pub(crate) fn follow_typing(
     aligns: &mut [&mut Vec<Option<pdfcraft_engine::TextAlign>>],
 ) {
     let now: Vec<Vec<_>> = aligns.iter().map(|a| a.to_vec()).collect();
+    // Where the edit left the caret, as a byte of `after`: it says which of two same rows changed.
+    let caret = egui::TextEdit::load_state(ctx, id)
+        .and_then(|s| s.cursor.char_range())
+        .map(|r| after.char_indices().nth(r.primary.index.into()).map_or(after.len(), |(at, _)| at));
     let next = ctx.data_mut(|d| {
         let seen = d.get_temp_mut_or_default::<AlignHistory>(id.with(ALIGN_HISTORY));
         if seen.iter().any(|(text, was)| text == before && *was != now) {
@@ -163,7 +167,7 @@ pub(crate) fn follow_typing(
         remember(seen, before, now.clone());
         let next = match seen.iter().rev().find(|(text, _)| text == after) {
             Some((_, was)) if was.len() == now.len() => was.clone(),
-            _ => now.iter().map(|a| pdfcraft_engine::paragraph_align::remap(before, after, a)).collect(),
+            _ => now.iter().map(|a| pdfcraft_engine::paragraph_align::remap_at(before, after, a, caret)).collect(),
         };
         remember(seen, after, next.clone());
         next
@@ -624,9 +628,11 @@ pub(crate) fn page_input(cx: PageToolContext<'_>, lines: &[pdfcraft_engine::Text
 /// The inline editor; returns the edit once the text is applied.
 pub(crate) fn overlay(ctx: &egui::Context, view: &mut DocView, info: &DocInfo) -> Option<Edit> {
     let view_id = view.id;
-    // Clicks outside the document (the Format text panel) keep the paragraph open. Where the
-    // click landed is `interact_pos`: `latest_pos` is gone on the frame a tap lifts.
-    let outside = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !view.viewport_rect().contains(p));
+    // Clicks outside the document (the Format text panel) keep the paragraph open, as does the
+    // keyboard moving there. Where the click landed is `interact_pos`: `latest_pos` is gone on the
+    // frame a tap lifts.
+    let away = |p: egui::Pos2| !view.viewport_rect().contains(p);
+    let outside = ctx.input(|i| i.pointer.interact_pos()).is_some_and(away) || focus_pos(ctx).is_some_and(away);
     let page = view.line_editor.as_ref()?.page;
     let xf = view.page_xform(page)?;
     let hold = view.objects.hold_editor;
@@ -819,6 +825,13 @@ pub(crate) fn finished_edit(ed: LineEditor) -> Option<Edit> {
         text: ed.text,
         style,
     })
+}
+
+/// Where the keyboard is: the centre of the widget that has it. A text box that loses it to a
+/// widget reached by Tab or a screen reader (the Format text panel's controls) judges where it
+/// went by this, as it judges a click by where the click landed.
+pub(crate) fn focus_pos(ctx: &egui::Context) -> Option<egui::Pos2> {
+    ctx.memory(|m| m.focused()).and_then(|id| ctx.read_response(id)).map(|r| r.rect.center())
 }
 
 /// Whether an editor's text box `r` lost the keyboard this frame, given whether it `had` it at

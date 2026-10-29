@@ -7255,6 +7255,22 @@ fn a_justified_paragraph_from_the_editor_fills_its_rows() {
     assert!(row("end")[2] < right - 20.0, "the last row isn't");
 }
 
+/// An alignment for a row the draft doesn't have names no row: a one-row title given one for a
+/// second row only stays where it is, not moved to its column's edge. Nor does a row of the draft
+/// with no alignment of its own move because another row has one (CodeRabbit on 648dd428).
+#[test]
+fn a_title_moves_to_its_column_only_for_an_alignment_of_its_own() {
+    let page = "BT /F1 24 Tf 1 0 0 1 250 700 Tm (Title) Tj ET          BT /F1 10 Tf 12 TL 72 650 Td (The body of the page runs across the whole column here.) Tj T* (It has a second row that is a little shorter.) Tj ET";
+    let title = |doc: &Document| text::text_lines(doc, 0).unwrap().into_iter().find(|l| l.text == "Title").unwrap().rect;
+    let before = title(&text_page(page));
+    for draft in ["Title", "Title\nSub"] {
+        let mut doc = text_page(page);
+        let style = text::BlockStyle { aligns: vec![None, Some(added::Align::Right)], ..Default::default() };
+        text::rewrite_block(&mut doc, 0, 0, Some(draft), &style).unwrap();
+        assert!((title(&doc)[0] - before[0]).abs() < 0.5, "{draft:?}: the title stays put, {:?} vs {before:?}", title(&doc));
+    }
+}
+
 /// A column whose rows are several runs (a second style on the same baseline) reaches the right
 /// edge of its whole rows, not of the run at the left edge: a title wider than that first run is
 /// still held by the column and aligns to it (CodeRabbit on b9940d7d).
