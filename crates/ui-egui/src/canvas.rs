@@ -1444,7 +1444,8 @@ impl PageHits<'_> {
         };
         // Added text and pictures, over the page's own paragraphs and under the objects selected
         // together.
-        let added = (editing_content && can_modify).then(|| crate::content_ui::hit(xf, info, page, added, view, p)).flatten();
+        let picks_up = matches!(tool, QuickTool::Select | QuickTool::AddText | QuickTool::EditText);
+        let added = (editing_content && can_modify && picks_up).then(|| crate::content_ui::hit(xf, info, page, added, view, p)).flatten();
         [link_hit(info, xf, page, p), comments::hit(pcx, view, p), pictures, paragraphs, added, objects, grips, fields]
             .into_iter()
             .flatten()
@@ -1688,9 +1689,12 @@ fn page_overlays(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<'_
     }
     crate::image_pick::drop_stale(doc, view);
     crate::image_pick::paint(painter, &xf, i, info, view);
-    comments::page_after_text(resp, &pcx, view);
-    if tool == QuickTool::Redact && can_modify {
-        crate::redact_ui::after_text(resp, i, info, view);
+    // A cancelled press ends no selection: no markup or redaction is made from it.
+    if !view.press_cancelled {
+        comments::page_after_text(resp, &pcx, view);
+        if tool == QuickTool::Redact && can_modify {
+            crate::redact_ui::after_text(resp, i, info, view);
+        }
     }
     if input.area_tool {
         crate::redact_ui::paint(painter, i, view, pointer);
@@ -1892,11 +1896,19 @@ fn link_hit(info: &DocInfo, xf: &PageXform, page: usize, p: Pos2) -> Option<crat
 /// placed, drawn, moved, resized or opened, and the press is ignored until the button is up. The
 /// frame of the release still belongs to the cancelled press.
 fn cancel_on_escape(ctx: &egui::Context, view: &mut DocView, ptr: &PagePointer) {
-    if view.press_cancelled && !ptr.any_down && ptr.edges.is_empty() {
+    // Over once the button is up and its release seen, or when a new press comes (its release and
+    // the next press can share a frame).
+    let new_press = matches!(ptr.edges.last(), Some(crate::page_pointer::Edge::Press(_)));
+    if view.press_cancelled && (new_press || !ptr.any_down && ptr.edges.is_empty()) {
         view.press_cancelled = false;
     }
     if !view.press_cancelled && ptr.origin.is_some() && ptr.primary_down && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
+        // A text selection being dragged goes with its drag: the markup, redaction or Replace
+        // Text that its end would make is not made.
+        if view.selection_drag {
+            view.clear_selection();
+        }
         view.cancel_pointer_gestures();
         view.press_cancelled = true;
     }
@@ -1983,6 +1995,11 @@ fn draw_pages(
     let ptr = PagePointer::read(ui, &resp, modal);
     cancel_on_escape(ui.ctx(), view, &ptr);
     view.router.settle(ptr.any_down, !ptr.edges.is_empty());
+    // A new press is no longer the last one's, wherever it lands (the page it is on gives it
+    // its owner; in the gap between pages it has none).
+    if ptr.pressed().is_some() {
+        view.router.cancel();
+    }
     let pointer = ptr.pos;
     // A press on a page makes it the current one (as in Acrobat), so a page command with
     // no selection (Rotate, Delete) acts on the page the reader pointed at, not on a page

@@ -289,7 +289,8 @@ pub(crate) fn hit(xf: &PageXform, info: &DocInfo, page: usize, lines: &[pdfcraft
         return None;
     }
     let boxes: Vec<Rect> = lines.iter().map(|l| paragraph_box(xf, info, page, l.rect)).collect();
-    let (block, grip) = grab_at(&boxes, p, has_edges(info, page))?;
+    // Edges rewrap closed paragraphs only: around the open one lies its frame (`object_ui`).
+    let (block, grip) = grab_at(&boxes, p, has_edges(info, page) && active.is_none())?;
     let paragraph = |part| Owner::Paragraph { block, part };
     Some(match (active, grip) {
         (None, Grip::Left) => Hit::new(paragraph(ParagraphPart::Left), Layer::Handle, egui::CursorIcon::ResizeHorizontal),

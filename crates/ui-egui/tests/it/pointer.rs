@@ -802,6 +802,57 @@ fn escape_cancels_a_signature_rectangle() {
     assert!(s.dialog.is_none(), "and no signing dialog opens: {:?}", s.dialog);
 }
 
+/// A highlight dragged over the line of [`text_pdf`] at 150 %, from x 45 to x 150, with Escape
+/// before the release when `escape`; the comments then on the page.
+fn drag_a_highlight(escape: bool) -> usize {
+    let mut h = open(text_pdf(), "150", false);
+    h.state_mut().quick_tool = QuickTool::Comment(CommentTool::Highlight);
+    h.run_steps(4);
+    let (a, b) = (at(&h, 45.0, 303.0), at(&h, 150.0, 303.0));
+    assert_eq!(wait_for_cursor(&mut h, a, |c| c == egui::CursorIcon::Text), egui::CursorIcon::Text, "the page's text has arrived");
+    h.drag_at(a);
+    h.run_steps(1);
+    h.hover_at(b);
+    h.run_steps(2);
+    if escape {
+        h.key_press(egui::Key::Escape);
+        h.run_steps(1);
+    }
+    h.drop_at(b);
+    h.run_steps(4);
+    let s = h.state();
+    s.session.get(s.views[0].id).unwrap().info.annotations.len()
+}
+
+/// Escape mid-drag abandons a highlight being drawn over text: the release makes no highlight.
+#[test]
+fn escape_cancels_a_highlight_being_dragged_over_text() {
+    assert_eq!(drag_a_highlight(false), 1, "control: the drag highlights the text");
+    assert_eq!(drag_a_highlight(true), 0, "with Escape before the release, no highlight is made");
+}
+
+/// A click on a comment, and in the frame of its release a press beside the page, then a drag
+/// from there: the drag is not the comment's, so it does not move it.
+#[test]
+fn a_drag_from_beside_the_page_right_after_a_click_leaves_the_comment_alone() {
+    let mut h = open(comment_on_text_pdf(), "150", false);
+    let on_comment = at(&h, 120.0, 315.0);
+    let beside = page(&h).left_center() - egui::vec2(20.0, 0.0);
+    let before = square(&h).expect("the rectangle");
+    h.hover_at(on_comment);
+    h.run_steps(1);
+    h.drag_at(on_comment);
+    h.run_steps(1);
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    one_frame(&mut h, [button(on_comment, false), egui::Event::PointerMoved(beside), button(beside, true)]);
+    h.run_steps(1);
+    h.hover_at(beside + egui::vec2(0.0, 60.0));
+    h.run_steps(2);
+    h.drop_at(beside + egui::vec2(0.0, 60.0));
+    h.run_steps(4);
+    assert_eq!(square(&h), Some(before), "the comment stays where it was");
+}
+
 /// Only the primary button draws a signature rectangle: a right-drag opens no signing dialog.
 #[test]
 fn a_right_drag_draws_no_signature_rectangle() {
