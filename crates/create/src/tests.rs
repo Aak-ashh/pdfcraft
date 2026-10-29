@@ -1519,3 +1519,58 @@ fn jbig2_images_export_as_their_picture() {
     let alpha: Vec<u8> = picture(h).as_chunks::<4>().0.iter().map(|p| 255 - p[0]).collect();
     assert_eq!(alphas(&exported_rgba(&page(w, h, &jbig2, None, true)).1), alpha);
 }
+
+/// A JBIG2 image's `/JBIG2Globals` are decoded before its JBIG2 page's size is known, so they have
+/// a limit of their own, 32 MiB, far below the 1 GiB of any stream: globals that Flate-decode to
+/// one byte more skip the image, with the limit in the reason, though they take a few kilobytes
+/// in the file. Globals of exactly the limit are read, and the limit is the same through an
+/// indirect `/DecodeParms`, in an array or not.
+#[test]
+fn jbig2_globals_are_decoded_within_a_limit_of_their_own() {
+    const LIMIT: usize = 32 << 20;
+    let bits = [0xF0u8, 0x0F, 0xAA, 0x55];
+    let jbig2 = pdfcraft_filters::encode_jbig2_generic(&bits, 16, 2).unwrap();
+    let picture: Vec<u8> = (0..32).flat_map(|i| if bits[i / 8] & (0x80 >> (i % 8)) != 0 { [255; 4] } else { [0, 0, 0, 255] }).collect();
+    // Globals of `len` bytes, Flate-encoded: one extension segment (ISO/IEC 14492 7.4.14), which a
+    // decoder skips; its 11-byte header gives the length of the data after it.
+    let globals = |len: usize| {
+        let mut g = vec![0, 0, 0, 0, 0x3E, 0, 0];
+        g.extend_from_slice(&u32::try_from(len - 11).unwrap().to_be_bytes());
+        g.extend_from_slice(&[0, 0, 0, 1]);
+        g.resize(len, 0);
+        pdfcraft_filters::encode_flate(&g)
+    };
+    // The image, its /DecodeParms naming `flated` as its globals: direct (0), by reference (1), or
+    // by reference in an array (2).
+    let page = |flated: &[u8], form: usize| {
+        let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+        with_image(&mut doc, |doc| {
+            let mut g = Dict::new();
+            g.set(b"Filter".to_vec(), Object::name("FlateDecode"));
+            let g = doc.add(Object::Stream(Stream::from_raw(g, flated.to_vec())));
+            let mut parms = Dict::new();
+            parms.set(b"JBIG2Globals".to_vec(), Object::Ref(g));
+            let parms = match form {
+                0 => Object::Dict(parms),
+                1 => Object::Ref(doc.add(Object::Dict(parms))),
+                _ => Object::Array(vec![Object::Ref(doc.add(Object::Dict(parms)))]),
+            };
+            let mut d = image_dict(16, 2, "DeviceGray", 1);
+            d.set(b"Filter".to_vec(), Object::name("JBIG2Decode"));
+            d.set(b"DecodeParms".to_vec(), parms);
+            Stream::from_raw(d, jbig2.clone())
+        });
+        doc
+    };
+
+    let (small, full, over) = (globals(15), globals(LIMIT), globals(LIMIT + 1));
+    assert!(over.len() < 64 << 10, "the oversized globals take {} bytes in the file", over.len());
+    assert_eq!(exported_rgba(&page(&full, 0)).1, picture, "globals of exactly the limit");
+    for form in 0..3 {
+        assert_eq!(exported_rgba(&page(&small, form)).1, picture, "small globals, form {form}");
+        let out = extract_images(&page(&over, form), &[0], 0);
+        assert!(out.images.is_empty(), "globals over the limit, form {form}");
+        let why = &out.skipped.first().expect("the image is skipped").2;
+        assert!(why.starts_with("the JBIG2 globals can't be read") && why.contains(&format!("limit of {LIMIT} bytes")), "{why}");
+    }
+}

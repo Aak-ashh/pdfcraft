@@ -125,15 +125,23 @@ fn decode_parms(doc: &Document, s: &Stream) -> Dict {
     p.as_dict().cloned().unwrap_or_default()
 }
 
+/// The most an image's `/JBIG2Globals` decode to: the symbol and pattern dictionaries an encoder
+/// shares between pages, themselves coded, so far less than any stream may decode to
+/// ([`pdfcraft_cos::MAX_DECODED`], 1 GiB). Globals past it refuse the image.
+const MAX_GLOBALS: usize = 32 << 20;
+
 /// [`decoded`] for a JBIG2 image. Its JBIG2 page has to be the image's width, which the caller
 /// checked against the export's size limit, and within that limit itself: the decoder decodes the
 /// whole page, rows past the image's height too, so a small `/Height` over a far taller page
 /// would cost more than the limit allows. Rows past the image's height are dropped, and too few
 /// rows are refused by the caller. Globals that can't be read refuse the image, rather than
-/// decoding it without them.
+/// decoding it without them. They are decoded before the page's size is known, so the page's
+/// limit can't bound them; they have [`MAX_GLOBALS`] of their own.
 fn jbig2(doc: &Document, s: &Stream) -> Result<Vec<u8>, String> {
     let globals = match decode_parms(doc, s).get(b"JBIG2Globals").map(|g| doc.resolve(g)).as_deref() {
-        Some(Object::Stream(g)) => Some(doc.with_direct_parms(g).decoded().map_err(|e| format!("the JBIG2 globals can't be read: {e}"))?),
+        Some(Object::Stream(g)) => {
+            Some(doc.with_direct_parms(g).decoded_within(MAX_GLOBALS).map_err(|e| format!("the JBIG2 globals can't be read: {e}"))?)
+        }
         _ => None,
     };
     let image = hayro_jbig2::Image::new_embedded(&s.raw, globals.as_deref()).map_err(|e| format!("the JBIG2 image can't be read: {e}"))?;
