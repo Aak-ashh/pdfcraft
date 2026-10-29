@@ -1,3 +1,4 @@
+use crate::cmyk_group::CmykGroup;
 use crate::font::Glyph;
 use crate::soft_mask::SoftMask;
 use crate::{BlendMode, ClipPath, Image};
@@ -120,6 +121,17 @@ pub trait Device<'a> {
     fn end_knockout_pass(&mut self) -> Vec<BlendMode> {
         Vec::new()
     }
+    /// PdfCraft patch (70): draw the contents of an isolated transparency group that blends
+    /// in `DeviceCMYK` (ISO 32000-2 §11.3.4), already inside the layer it is composited
+    /// through. Return `true` when the device drew them; on `false` (the default) the
+    /// interpreter draws the contents into the device as for any other group.
+    fn draw_isolated_cmyk_group(&mut self, _group: &CmykGroup<'a, '_>) -> bool {
+        false
+    }
+    /// PdfCraft patch (70): an isolated transparency group that names a blending colour space
+    /// other than `DeviceCMYK` is about to be drawn. A device drawing an enclosing group in CMYK
+    /// can no longer draw that group right, since this one blends in its own space.
+    fn group_blends_outside_device_cmyk(&mut self) {}
 }
 
 /// A device that discards all drawing operations.
