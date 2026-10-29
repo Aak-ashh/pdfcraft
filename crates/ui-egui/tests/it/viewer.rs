@@ -1027,6 +1027,31 @@ fn the_window_title_marks_a_draft_that_is_not_applied_yet() {
     assert_eq!(s.page_title, "b.pdf • — PdfCraft");
 }
 
+/// #3640: a document that arrives while the window or browser tab is hidden, when eframe runs
+/// only `App::logic` and no frame is drawn, still gives the titles its name.
+#[test]
+fn a_document_opened_while_hidden_names_the_titles() {
+    let mut h = harness();
+    h.run_steps(2);
+    let before = h.state().views.len();
+    let bytes = pdfcraft_engine::Session::new().create_from_text("Arrived", "Arrived while hidden").unwrap();
+    h.state().inbox.lock().unwrap().push(("arrived.pdf".into(), bytes.to_vec()));
+    let ctx = h.ctx.clone();
+    let mut frame = eframe::Frame::_new_kittest();
+    // The open runs on a worker and is taken in by a later `logic`, as eframe keeps calling it.
+    for _ in 0..500 {
+        let _ = ctx.run_logic(&egui::RawInput::default(), |ctx| eframe::App::logic(h.state_mut(), ctx, &mut frame));
+        if h.state().views.len() > before {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let s = h.state();
+    assert_eq!(s.views.len(), before + 1, "the document opened in logic");
+    assert_eq!(s.page_title, "arrived.pdf — PdfCraft");
+    assert_eq!(s.window_title, "arrived.pdf — PdfCraft");
+}
+
 /// #3640: a document that asks to show its own title shows it in the window, but the web page's
 /// title, which an embedding host reads to tell which file opened, keeps the file's name.
 #[test]
