@@ -3935,6 +3935,42 @@ fn editing_existing_images_on_the_page() {
     check_existing_artwork("picture.png", png);
 }
 
+/// Add text places a box with a click anywhere off its own boxes: on a scanned page (one picture
+/// filling it) too, and just beside a paragraph, where Edit text would rewrap it.
+#[test]
+fn add_text_places_a_box_on_a_picture_and_beside_a_paragraph() {
+    let mut png = Vec::new();
+    image::RgbImage::from_pixel(80, 40, image::Rgb([200, 40, 40])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("picture.png", None, png.clone()).expect("opens");
+        app
+    });
+    h.run_steps(4);
+    h.state_mut().quick_tool = pdfcraft_ui_egui::QuickTool::AddText;
+    h.run_steps(2);
+    let c = h.state().views[0].page_screen_rect(0).expect("on screen").center();
+    h.hover_at(c);
+    h.run_steps(2);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Text, "the I-beam over the picture");
+    click_at(&mut h, c);
+    assert!(h.state().views[0].content.draft.is_some(), "a click on the picture starts a text box");
+
+    let mut h = harness(2, |_| {});
+    h.state_mut().quick_tool = pdfcraft_ui_egui::QuickTool::AddText;
+    h.run_steps(2);
+    let id = h.state().views[0].id;
+    let block = h.state().session.get(id).unwrap().text_blocks(0)[0].clone();
+    let r = h.state().views[0].page_screen_rect(0).expect("on screen");
+    let k = r.width() / 200.0;
+    // 6 px left of the text: 4 px past its box, within a closed paragraph's edge grip in Edit text.
+    let beside = egui::pos2(r.left() + block.rect[0] as f32 * k, r.top() + (300.0 - ((block.rect[1] + block.rect[3]) / 2.0) as f32) * k)
+        - egui::vec2(6.0, 0.0);
+    click_at(&mut h, beside);
+    assert!(h.state().views[0].content.draft.is_some(), "a click beside the paragraph starts a text box");
+}
+
 #[test]
 fn dragging_the_rotate_knob_turns_a_page_image() {
     let mut png = Vec::new();

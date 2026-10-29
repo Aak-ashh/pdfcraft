@@ -1433,11 +1433,18 @@ impl PageHits<'_> {
                 .filter(|e| !e.has_changes())
                 .and_then(|e| lines.get(e.block))
                 .map(|l| xf.user_rect(info, page, l.rect.map(|v| v as f32)).expand(2.0));
+            // Add text acts on the page's paragraphs only over their text (it finishes the box
+            // being typed there): not on pictures, nor beside a paragraph, where a click starts
+            // a new box.
+            let edit_text = tool == QuickTool::EditText;
+            let body = |h: &crate::page_router::Hit| {
+                matches!(h.owner, crate::page_router::Owner::Paragraph { part: crate::page_router::ParagraphPart::Body, .. })
+            };
             (
-                crate::edit_text_ui::picture_hit(xf, page, info, images, view, p),
-                crate::edit_text_ui::hit(xf, info, page, lines, open.map(|e| e.block), p),
-                (tool == QuickTool::EditText).then(|| crate::object_ui::hit(view, xf, info, page, frame, p)).flatten(),
-                crate::edit_text_ui::picture_handle_hit(clip, xf, page, info, images, view, p),
+                edit_text.then(|| crate::edit_text_ui::picture_hit(xf, page, info, images, view, p)).flatten(),
+                crate::edit_text_ui::hit(xf, info, page, lines, open.map(|e| e.block), p).filter(|h| edit_text || body(h)),
+                edit_text.then(|| crate::object_ui::hit(view, xf, info, page, frame, p)).flatten(),
+                edit_text.then(|| crate::edit_text_ui::picture_handle_hit(clip, xf, page, info, images, view, p)).flatten(),
             )
         } else {
             (None, None, None, None)
