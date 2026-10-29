@@ -232,7 +232,7 @@ impl PdfCraftApp {
                 if let Some(doc) = self.session.get(id) {
                     self.views[i].document_changed(&doc.info);
                 }
-                self.views[i].comments.selected = None;
+                self.views[i].comments.history_stepped();
                 let label = crate::i18n::edit_label(&label);
                 if undo {
                     self.notify_fmt("Undid {label}", &[("label", &label)]);

@@ -230,6 +230,16 @@ impl CommentView {
             self.editor_focus = None;
         }
     }
+
+    /// Undo or Redo just ran. Either may have put annotations back or taken them away, on any
+    /// page, so a (page, index) held here may now name another one. The selection and the inline
+    /// editor close, its unsaved text with it, rather than Save writing that text over whatever
+    /// took its place.
+    pub(crate) fn history_stepped(&mut self) {
+        self.selected = None;
+        self.editing = None;
+        self.editor_focus = None;
+    }
 }
 
 /// Where the annotation at `keep` is once the one at `gone` was deleted, or `None` when it went
