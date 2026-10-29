@@ -132,6 +132,16 @@ fn highlighted_checkbox_pdf() -> Vec<u8> {
     ])
 }
 
+/// A 300×400 page with a push button at x 100..200, y 200..220 whose action opens a web address.
+fn button_pdf() -> Vec<u8> {
+    pdf(&[
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] /DA (/Helv 0 Tf 0 g) >> >>",
+        PAGES,
+        "<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Btn /Ff 65536 /T (web) /Rect [100 200 200 220] /P 3 0 R /A << /S /URI /URI (https://example.org/) >> >>",
+    ])
+}
+
 /// The app with `pdf` open at `zoom` percent and its first frames run. The left panel stays
 /// open only where a test places the page relative to the window's chrome.
 fn open(pdf: Vec<u8>, zoom: &'static str, left_open: bool) -> Harness<'static, PdfCraftApp> {
@@ -725,13 +735,46 @@ fn field_value(h: &Harness<'_, PdfCraftApp>, name: &str) -> Vec<String> {
 fn a_press_on_one_check_box_released_over_another_ticks_neither() {
     let mut h = open(two_checkboxes_pdf(), "150", false);
     let (press, release) = (at(&h, 119.0, 210.0), at(&h, 121.0, 210.0));
+    slipping_click(&mut h, press, release);
+    assert_eq!((field_value(&h, "agree"), field_value(&h, "other")), (Vec::<String>::new(), Vec::new()), "neither box is ticked");
+}
+
+/// A click whose pointer slips from `press` to `release` before the button comes up (a click
+/// still, to egui, while they are close), in frames of their own as [`mouse_click`] sends them.
+fn slipping_click(h: &mut Harness<'_, PdfCraftApp>, press: egui::Pos2, release: egui::Pos2) {
     h.hover_at(press);
     h.run_steps(1);
     h.drag_at(press);
     h.run_steps(1);
     h.drop_at(release);
     h.run_steps(4);
-    assert_eq!((field_value(&h, "agree"), field_value(&h, "other")), (Vec::<String>::new(), Vec::new()), "neither box is ticked");
+}
+
+/// A click follows the link its press was on only when released over it: pressed just inside the
+/// link's edge and released just past it, it follows nothing, as a button pressed and released off
+/// itself does nothing. The press used to be enough.
+#[test]
+fn a_press_on_a_link_released_off_it_follows_nothing() {
+    let mut h = open(link_pdf(), "150", false);
+    // The link ends at x 250.
+    let press = at(&h, 249.0, 325.0);
+    slipping_click(&mut h, press, press + egui::vec2(5.0, 0.0));
+    assert_eq!(h.state().pending_link, None, "nothing asks to open the link");
+    mouse_click(&mut h, press);
+    assert!(h.state().pending_link.is_some(), "a click there asks to open it");
+}
+
+/// The same for a push button: pressed just inside its edge and released just past it, it runs no
+/// action. The press used to be enough.
+#[test]
+fn a_press_on_a_button_released_off_it_runs_nothing() {
+    let mut h = open(button_pdf(), "150", false);
+    // The button ends at x 200.
+    let press = at(&h, 199.0, 210.0);
+    slipping_click(&mut h, press, press + egui::vec2(5.0, 0.0));
+    assert_eq!(h.state().pending_link, None, "the button's action does not run");
+    mouse_click(&mut h, press);
+    assert!(h.state().pending_link.is_some(), "a click there runs it");
 }
 
 /// Text markup lies on the text, under a form field: a click on a check box under a highlight

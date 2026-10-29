@@ -208,7 +208,10 @@ pub(crate) fn page_input(cx: PageToolContext<'_>, form: &[FormField], allowed: b
         view.forms.focus = Some(Focus { press: Some(at), ..open_focus(f, wi) });
         view.forms.pressed = true;
     }
-    if !resp.clicked() {
+    // A click counts released over the widget its press was on, as a button's does: one that slips
+    // off it first does nothing (a check box's overlay closes on it too).
+    if !resp.clicked() || !ptr.pos.and_then(|p| hit(xf, info, page, form, allowed, p)).is_some_and(|h| h.owner == Owner::Field { field, widget: wi })
+    {
         return true;
     }
     if !allowed {

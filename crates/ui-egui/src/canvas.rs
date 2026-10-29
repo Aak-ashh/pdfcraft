@@ -1737,12 +1737,14 @@ fn page_overlays(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<'_
     paint_field_highlights(painter, &xf, info, form.as_slice(), i, view.highlight_fields);
     // Links: the hand and the link's target, which count only for the tools that follow or
     // edit links (`Layer::reached_by`). Tips draw above the palette, so none shows while it is
-    // open, even beside it.
+    // open, even beside it. A click follows the link its press was on, released over it: one that
+    // slips off the link first follows nothing, as a button's does.
     if unobstructed
         && resp.clicked()
         && tool == QuickTool::Select
         && !input.consumed
-        && let Some(crate::page_router::Owner::Link { index }) = view.router.owner(i)
+        && let Some(owner @ crate::page_router::Owner::Link { index }) = view.router.owner(i)
+        && pointer.and_then(|p| link_hit(info, &xf, i, p)).is_some_and(|h| h.owner == owner)
         && let Some(l) = info.links.get(index)
     {
         frame.out.clicked_link = Some(l.target.clone());
