@@ -12,11 +12,18 @@ const MAX_PIXELS: u64 = 80_000_000;
 
 /// The resources of a page, inherited from the page tree if the page has none.
 pub(crate) fn page_resources(doc: &Document, page: ObjRef) -> Option<Dict> {
+    held_page_resources(doc, page).map(|(resources, _)| resources)
+}
+
+/// [`page_resources`], and the object holding them: the page or the page-tree node they are
+/// written in (inherited from), or the resources dictionary when it is an object of its own.
+fn held_page_resources(doc: &Document, page: ObjRef) -> Option<(Dict, ObjRef)> {
     let mut node = Some(page);
     for _ in 0..64 {
-        let d = doc.get(node?).as_dict()?.clone();
+        let n = node?;
+        let d = doc.get(n).as_dict()?.clone();
         if let Some(r) = d.get(b"Resources") {
-            return doc.resolve(r).as_dict().cloned();
+            return Some((doc.resolve(r).as_dict().cloned()?, r.as_ref().unwrap_or(n)));
         }
         node = d.reference(b"Parent");
     }
@@ -53,18 +60,56 @@ struct Walk<'a> {
     /// False once a use may have been missed (depth or work limit).
     complete: bool,
     out: HashMap<ObjRef, f64>,
-    /// Images drawn at least once where `/DefaultGray` or `/DefaultRGB` is in force.
-    defaults: HashSet<ObjRef>,
+    /// Images drawn or listed at least once where `/DefaultGray` or `/DefaultRGB` is in force, by
+    /// object number: a reference with another generation reaches the same image.
+    defaults: HashSet<u32>,
+    /// The references the walk followed to reach its images, and the pages and page-tree nodes
+    /// whose resources it read.
+    read: Read,
+}
+
+/// Where a walk read a reference: under a name in an `/XObject` dictionary (an image or a form),
+/// as resources' `/XObject` dictionary, or as the `/Resources` of a page, node or form.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Entry {
+    Name(Vec<u8>),
+    XObject,
+    Resources,
+}
+
+/// The references a walk followed, by object number: (the object referred to, the object holding
+/// the reference, where in it), and the pages and page-tree nodes whose resources it read.
+#[derive(Default)]
+struct Read {
+    entries: HashSet<(u32, u32, Entry)>,
+    roots: HashSet<u32>,
 }
 
 impl Walk<'_> {
     /// Walk one content stream, recording each image's displayed resolution (pixels per inch, the
-    /// smaller of the two axes) and descending into form XObjects. `defaults`: an enclosing
-    /// stream's resources remap a device colour space.
-    fn content(&mut self, data: &[u8], resources: &Dict, ctm: Matrix, defaults: bool) {
+    /// smaller of the two axes) and descending into form XObjects. `holder` is the object holding
+    /// `resources`. `defaults`: an enclosing stream's resources remap a device colour space.
+    fn content(&mut self, data: &[u8], resources: &Dict, holder: ObjRef, ctm: Matrix, defaults: bool) {
         let doc = self.doc;
         let defaults = defaults || remaps_device_spaces(doc, resources);
         let xobjects = resources.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
+        let xholder = match resources.get(b"XObject").and_then(Object::as_ref) {
+            Some(x) => {
+                self.read.entries.insert((x.num, holder.num, Entry::XObject));
+                x
+            }
+            None => holder,
+        };
+        // Every entry counts as read, drawn here or not: content using these resources (a Type3
+        // glyph without its own, say) draws it under the same defaults.
+        for (name, v) in xobjects.iter() {
+            if let Some(r) = v.as_ref() {
+                self.read.entries.insert((r.num, xholder.num, Entry::Name(name.to_vec())));
+                if defaults {
+                    self.defaults.insert(r.num);
+                }
+            }
+        }
         let mut stack = vec![ctm];
         for op in pdfcraft_content::parse(data).ops {
             let top = stack.last().copied().unwrap_or(ctm);
@@ -96,10 +141,10 @@ impl Walk<'_> {
                                 *e = e.min(ppi);
                             }
                             if defaults {
-                                self.defaults.insert(r);
+                                self.defaults.insert(r.num);
                             }
                         }
-                        Some(b"Form") => self.form(r, s, resources, top, defaults),
+                        Some(b"Form") => self.form(r, s, (resources, holder), top, defaults),
                         _ => {}
                     }
                 }
@@ -108,8 +153,37 @@ impl Walk<'_> {
         }
     }
 
-    /// Descend into form `r` drawn with `ctm` from a stream whose resources are `resources`.
-    fn form(&mut self, r: ObjRef, s: &Stream, resources: &Dict, ctm: Matrix, defaults: bool) {
+    /// Read the resources of page `p` and of each page-tree node above it, each of them a root: a
+    /// node's resources are its inheriting pages' (every page is walked), or no page's.
+    fn resources_above(&mut self, p: ObjRef) {
+        let doc = self.doc;
+        let mut node = Some(p);
+        for _ in 0..64 {
+            let Some(n) = node else { return };
+            // A node met before had its own nodes above it read then.
+            if !self.read.roots.insert(n.num) {
+                return;
+            }
+            let Some(d) = doc.get(n).as_dict().cloned() else { return };
+            if let Some(r) = d.get(b"Resources")
+                && let Some(resources) = doc.resolve(r).as_dict().cloned()
+            {
+                let holder = match r.as_ref() {
+                    Some(res) => {
+                        self.read.entries.insert((res.num, n.num, Entry::Resources));
+                        res
+                    }
+                    None => n,
+                };
+                self.content(&[], &resources, holder, Matrix([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]), false);
+            }
+            node = d.reference(b"Parent");
+        }
+    }
+
+    /// Descend into form `r` drawn with `ctm` from a stream whose resources are `resources`, with
+    /// the object holding them.
+    fn form(&mut self, r: ObjRef, s: &Stream, (resources, holder): (&Dict, ObjRef), ctm: Matrix, defaults: bool) {
         if self.path.contains(&r) {
             return;
         }
@@ -144,7 +218,19 @@ impl Walk<'_> {
             return;
         };
         self.path.push(r);
-        self.content(&data, own.as_ref().unwrap_or(resources), inner, defaults);
+        match &own {
+            Some(own) => {
+                let own_holder = match s.dict.get(b"Resources").and_then(Object::as_ref) {
+                    Some(res) => {
+                        self.read.entries.insert((res.num, r.num, Entry::Resources));
+                        res
+                    }
+                    None => r,
+                };
+                self.content(&data, own, own_holder, inner, defaults);
+            }
+            None => self.content(&data, resources, holder, inner, defaults),
+        }
         self.path.pop();
     }
 }
@@ -165,9 +251,10 @@ pub fn effective_resolutions(doc: &Document, pages: &[ObjRef]) -> HashMap<ObjRef
     walk_pages(doc, pages).0
 }
 
-/// [`effective_resolutions`], and the images drawn where `/DefaultGray` or `/DefaultRGB` is in
-/// force: all of them when a use may have been missed.
-fn walk_pages(doc: &Document, pages: &[ObjRef]) -> (HashMap<ObjRef, f64>, HashSet<ObjRef>) {
+/// [`effective_resolutions`], the images drawn or listed where `/DefaultGray` or `/DefaultRGB` is
+/// in force, by object number (all of them when a use may have been missed), and the references
+/// followed to reach them.
+fn walk_pages(doc: &Document, pages: &[ObjRef]) -> (HashMap<ObjRef, f64>, HashSet<u32>, Read) {
     let mut walk = Walk {
         doc,
         path: Vec::new(),
@@ -178,12 +265,14 @@ fn walk_pages(doc: &Document, pages: &[ObjRef]) -> (HashMap<ObjRef, f64>, HashSe
         complete: true,
         out: HashMap::new(),
         defaults: HashSet::new(),
+        read: Read::default(),
     };
     for p in pages {
         let Some(dict) = doc.get(*p).as_dict().cloned() else { continue };
         let page = pdfcraft_model::Page { obj: *p, dict };
+        walk.resources_above(*p);
         let Some(contents) = page.dict.get(b"Contents") else { continue };
-        let res = page_resources(doc, *p).unwrap_or_default();
+        let (res, holder) = held_page_resources(doc, *p).unwrap_or_else(|| (Dict::default(), *p));
         walk.budget = DecodeBudget::page();
         let Some(data) = content_bytes(doc, contents, &mut walk.budget) else {
             walk.complete = false;
@@ -191,13 +280,103 @@ fn walk_pages(doc: &Document, pages: &[ObjRef]) -> (HashMap<ObjRef, f64>, HashSe
         };
         // Content coordinates are in page units; image resolution is in physical inches.
         let unit = page.user_unit(doc);
-        walk.content(&data, &res, Matrix([unit, 0.0, 0.0, unit, 0.0, 0.0]), false);
+        walk.content(&data, &res, holder, Matrix([unit, 0.0, 0.0, unit, 0.0, 0.0]), false);
     }
     if !walk.complete {
         walk.out.values_mut().for_each(|v| *v = f64::INFINITY);
-        walk.defaults.extend(walk.out.keys());
+        walk.defaults.extend(walk.out.keys().map(|r| r.num));
     }
-    (walk.out, walk.defaults)
+    (walk.out, walk.defaults, walk.read)
+}
+
+/// Whether image `r` is one [`one_bit`] may make grey: eight-bit `DeviceRGB`, not in an image codec.
+fn device_rgb(doc: &Document, r: ObjRef) -> bool {
+    let Object::Stream(s) = &*doc.get(r) else { return false };
+    let cs = s.dict.get(b"ColorSpace").map(|cs| doc.resolve(cs));
+    let codec =
+        s.filters().iter().any(|(f, _)| matches!(f, pdfcraft_filters::Filter::Dct | pdfcraft_filters::Filter::Jpx | pdfcraft_filters::Filter::Jbig2));
+    s.dict.int(b"BitsPerComponent") == Some(8)
+        && !codec
+        && cs.as_deref().and_then(Object::as_name).is_some_and(|n| matches!(n, b"DeviceRGB" | b"RGB"))
+}
+
+/// Call `f` with every reference in `o`, a dictionary's or array's included, a stream's dictionary
+/// too, but not those in objects referred to.
+fn each_ref(o: &Object, mut f: impl FnMut(ObjRef)) {
+    // Direct objects nest finitely (the parser builds trees), so this ends.
+    let mut stack = vec![o];
+    while let Some(o) = stack.pop() {
+        match o {
+            Object::Ref(r) => f(*r),
+            Object::Dict(d) => stack.extend(d.iter().map(|(_, v)| v)),
+            Object::Array(a) => stack.extend(a),
+            Object::Stream(s) => stack.extend(s.dict.iter().map(|(_, v)| v)),
+            _ => {}
+        }
+    }
+}
+
+/// The images among `images` (by object number) that may be drawn beyond what the walk read:
+/// some object the document uses refers to the image, or to an object on the way to it from a
+/// page (an `/XObject` dictionary, resources, a form), other than as the page and form resources
+/// the walk read do. So an annotation's appearance, a pattern, a Type3 glyph or a soft mask's
+/// group drawing it, directly or through resources or a form it shares with a page, counts, as
+/// other default colour spaces may be in force there, and so does any other reference (another
+/// image's `/Alternates`, say). Objects nothing reaches from the trailer don't count.
+fn used_elsewhere(doc: &Document, images: &HashSet<u32>, read: &Read) -> HashSet<u32> {
+    if images.is_empty() {
+        return HashSet::new();
+    }
+    let targets: HashSet<u32> = read.entries.iter().map(|(target, ..)| *target).collect();
+    // References to each object the walk followed, by the object holding them.
+    let mut held: HashMap<u32, HashMap<u32, usize>> = HashMap::new();
+    let mut queue: Vec<u32> = Vec::new();
+    let mut visited = HashSet::new();
+    for (_, v) in doc.trailer().iter() {
+        each_ref(v, |r| queue.push(r.num));
+    }
+    while let Some(num) = queue.pop() {
+        if !visited.insert(num) {
+            continue;
+        }
+        let obj = doc.get(ObjRef::new(num, doc.generation(num)));
+        each_ref(&obj, |r| {
+            if targets.contains(&r.num) {
+                *held.entry(r.num).or_default().entry(num).or_default() += 1;
+            }
+            if !visited.contains(&r.num) {
+                queue.push(r.num);
+            }
+        });
+    }
+    let mut seen: HashMap<(u32, u32), usize> = HashMap::new();
+    for (target, holder, _) in &read.entries {
+        *seen.entry((*target, *holder)).or_default() += 1;
+    }
+    // Covered: every reference to it is one the walk followed, held by a page or node, or by an
+    // object covered in turn. Everything the walk reached starts covered, and whatever has a
+    // reference it didn't follow, or is held by an object taken out, is taken out, until nothing
+    // more is. Content beyond what the walk read has to refer to an object on its way to the
+    // image, which takes out everything after it; a cycle the walk read whole stays covered.
+    let mut holds: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (target, holders) in &held {
+        for h in holders.keys() {
+            holds.entry(*h).or_default().push(*target);
+        }
+    }
+    let mut covered: HashSet<u32> = held.keys().copied().collect();
+    let passes = |t: u32, covered: &HashSet<u32>| {
+        held.get(&t)
+            .is_some_and(|holders| holders.iter().all(|(h, n)| seen.get(&(t, *h)) == Some(n) && (read.roots.contains(h) || covered.contains(h))))
+    };
+    let mut check: Vec<u32> = covered.iter().copied().collect();
+    while let Some(t) = check.pop() {
+        if covered.contains(&t) && !passes(t, &covered) {
+            covered.remove(&t);
+            check.extend(holds.get(&t).into_iter().flatten().copied());
+        }
+    }
+    images.iter().copied().filter(|i| !covered.contains(i)).collect()
 }
 
 /// Colour components of a colour space PdfCraft resamples: gray (1) or RGB (3).
@@ -600,9 +779,9 @@ type Pixel = fn(&[u8]) -> Option<bool>;
 ///   - eight-bit `DeviceRGB` whose every pixel is black or white, which becomes `DeviceGray`. A
 ///     decode array the same for all three components becomes that one pair; another stops it.
 ///     Calibrated RGB and RGB with a profile are left out, as the profile could make them other
-///     than black and white; so is one drawn where `/DefaultGray` or `/DefaultRGB` is in force
-///     (`defaults`), which would draw it otherwise as grey, and one whose soft mask has a `/Matte`
-///     of three components;
+///     than black and white; so is one drawn where `/DefaultGray` or `/DefaultRGB` is or may be in
+///     force (`defaults`), which would draw it otherwise as grey, and one whose soft mask has a
+///     `/Matte` of three components;
 ///   - an indexed image of 2, 4 or 8 bits that uses only palette entries 0 and 1, which stay 0 and
 ///     1 at one bit, whatever their colours, so the colour space stays. A decode array other than
 ///     the default stops it: in index units it would mean something else at one bit.
@@ -805,7 +984,7 @@ pub(crate) fn downsample_bits(data: &[u8], w: u32, h: u32, nw: u32, nh: u32, dar
 
 /// A black-and-white image (see [`one_bit`]) resampled and stored again per `settings`, if that is
 /// smaller as stored; `ppi` is its effective resolution, and `defaults` says it is drawn where
-/// `/DefaultGray` or `/DefaultRGB` is in force. Also says whether it was resampled.
+/// `/DefaultGray` or `/DefaultRGB` is or may be in force. Also says whether it was resampled.
 ///
 /// - **Resampled** ([`downsample_bits`]) when its resolution is above `above_ppi`, to `target_ppi`,
 ///   unless it has a soft mask, whose own size would then have to follow, or is a halftone or a
@@ -896,7 +1075,12 @@ pub(crate) fn run(
     report: &mut Report,
     progress: &mut dyn FnMut(Stage) -> bool,
 ) -> Result<(), OptimizeError> {
-    let (ppi, defaults) = walk_pages(doc, pages);
+    let (ppi, mut defaults, read) = walk_pages(doc, pages);
+    // Black-and-white RGB becomes grey, which default colour spaces would draw otherwise: one used
+    // where the walk didn't look may be drawn so.
+    let packs = settings.mono.compression != MonoCompression::Retain;
+    let rgb: HashSet<u32> = ppi.keys().filter(|r| packs && device_rgb(doc, **r)).map(|r| r.num).collect();
+    defaults.extend(used_elsewhere(doc, &rgb, &read));
     // Soft masks are processed with their image, not on their own.
     let masks: HashSet<ObjRef> = ppi
         .keys()
@@ -918,7 +1102,7 @@ pub(crate) fn run(
         // Packed from more bits a sample, it is lossless at one bit, but the grey or colour
         // settings can make it smaller still (below).
         let packed_from_more = s.dict.int(b"BitsPerComponent").is_some_and(|b| b > 1);
-        let (packed, mono) = match mono(doc, s, ppi, defaults.contains(&r), &settings.mono) {
+        let (packed, mono) = match mono(doc, s, ppi, defaults.contains(&r.num), &settings.mono) {
             Some(m) if packed_from_more => (Some(m), None),
             m => (None, m),
         };

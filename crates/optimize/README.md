@@ -45,9 +45,12 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
   row, not as T.4 sends them, is read as PdfCraft draws it, which at `/K 0` may be other rows than
   were coded, and an image stored again keeps them). Packed to one bit first, unless a colour-key `/Mask` is in the image's
   own values: eight-bit grey of only 0 and 255; eight-bit `DeviceRGB` of only black and white,
-  which becomes `DeviceGray` (not calibrated RGB or RGB with a profile, nor one drawn where
-  `/DefaultGray` or `/DefaultRGB` is in force, which would then draw it otherwise, nor one whose
-  soft mask has a `/Matte`); and an indexed image of 2, 4 or 8 bits that uses only palette entries
+  which becomes `DeviceGray` (not calibrated RGB or RGB with a profile, nor one drawn or listed
+  where `/DefaultGray` or `/DefaultRGB` is in force, which would then draw it otherwise, nor one
+  referred to from anywhere but the page and form resources the optimizer reads, where they may
+  be: an annotation's appearance or a pattern drawing it, directly or through resources or a form
+  it shares with a page, or another image's `/Alternates`; nor one whose soft mask has a
+  `/Matte`); and an indexed image of 2, 4 or 8 bits that uses only palette entries
   0 and 1, which keeps its palette, whatever its two colours. A decode array stays when it means
   the same at one bit (grey's, or RGB's if the same for each component, as grey's), and an indexed
   image's default one goes, as the default at one bit; otherwise the image is left alone. The grey

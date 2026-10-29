@@ -1169,6 +1169,287 @@ fn black_and_white_rgb_stays_rgb_where_grey_would_be_drawn_otherwise() {
     assert_eq!(stream(&doc, img).raw, before.raw, "a use not followed");
 }
 
+/// An empty document, and a maker of images of only black and white as eight-bit `DeviceRGB`.
+fn rgb_page_fixture() -> (Document, impl Fn(&mut Document) -> ObjRef) {
+    let (w, h) = (1200u32, 480u32);
+    let rgb_data = samples_of(&bilevel(w, h, false), w, h, [&[0, 0, 0], &[255, 255, 255]], 8);
+    let image = move |doc: &mut Document| {
+        let mut d = Dict::new();
+        d.set(b"Type".to_vec(), Object::name("XObject"));
+        d.set(b"Subtype".to_vec(), Object::name("Image"));
+        d.set(b"Width".to_vec(), Object::Int(w.into()));
+        d.set(b"Height".to_vec(), Object::Int(h.into()));
+        d.set(b"BitsPerComponent".to_vec(), Object::Int(8));
+        d.set(b"ColorSpace".to_vec(), Object::name("DeviceRGB"));
+        doc.add(Object::Stream(Stream::flate(d, &rgb_data)))
+    };
+    (Document::new_empty(), image)
+}
+
+/// `q … cm /N Do Q` for each name, one under the other.
+fn draw_each(names: &[&str]) -> String {
+    names.iter().enumerate().map(|(i, n)| format!("q 200 0 0 80 6 {} cm /{n} Do Q ", 690 - 100 * i)).collect()
+}
+
+/// An `/XObject` dictionary of `names`.
+fn xobject_dict(names: &[(&str, ObjRef)]) -> Dict {
+    let mut x = Dict::new();
+    for (n, r) in names {
+        x.set(n.as_bytes().to_vec(), Object::Ref(*r));
+    }
+    x
+}
+
+/// A stream drawing `/Im` (or nothing) whose `/Resources` is `resources`, with `extra` in its
+/// dictionary: a form, an appearance or a tiling pattern.
+fn drawing(doc: &mut Document, resources: Option<Object>, extra: &[(&str, Object)]) -> ObjRef {
+    let mut f = Dict::new();
+    f.set(b"BBox".to_vec(), Object::Array(vec![0.into(), 0.into(), 612.into(), 792.into()]));
+    if let Some(resources) = resources {
+        f.set(b"Resources".to_vec(), resources);
+    }
+    for (k, v) in extra {
+        f.set(k.as_bytes().to_vec(), v.clone());
+    }
+    doc.add(Object::Stream(Stream::from_raw(f, draw_each(&["Im"]).into_bytes())))
+}
+
+fn form_entries() -> [(&'static str, Object); 2] {
+    [("Type", Object::name("XObject")), ("Subtype", Object::name("Form"))]
+}
+
+/// Resources of `entries`.
+fn resources_of(entries: Vec<(&str, Object)>) -> Dict {
+    let mut res = Dict::new();
+    for (k, v) in entries {
+        res.set(k.as_bytes().to_vec(), v);
+    }
+    res
+}
+
+/// Give page `p` an annotation whose normal appearance is `appearance`.
+fn annotate(doc: &mut Document, p: ObjRef, appearance: ObjRef) {
+    let mut ap = Dict::new();
+    ap.set(b"N".to_vec(), Object::Ref(appearance));
+    let mut annotation = Dict::new();
+    annotation.set(b"Subtype".to_vec(), Object::name("Square"));
+    annotation.set(b"Rect".to_vec(), Object::Array(vec![0.into(), 0.into(), 100.into(), 100.into()]));
+    annotation.set(b"AP".to_vec(), Object::Dict(ap));
+    let annotation = doc.add(Object::Dict(annotation));
+    let mut annots = doc.get(p).as_dict().and_then(|d| d.get(b"Annots").and_then(|a| a.as_array().cloned())).unwrap_or_default();
+    annots.push(Object::Ref(annotation));
+    doc.update_dict(p, |d| d.set(b"Annots".to_vec(), Object::Array(annots))).unwrap();
+}
+
+/// `/DefaultGray` as a calibrated grey, in a `/ColorSpace` resource dictionary.
+fn default_gray() -> Object {
+    let mut white_point = Dict::new();
+    white_point.set(b"WhitePoint".to_vec(), Object::Array(vec![Object::Real(0.9505), 1.into(), Object::Real(1.089)]));
+    let mut c = Dict::new();
+    c.set(b"DefaultGray".to_vec(), Object::Array(vec![Object::name("CalGray"), Object::Dict(white_point)]));
+    Object::Dict(c)
+}
+
+/// Optimize with colour and grey settings that leave images alone, so only packing acts; the
+/// report's images resampled and stored again.
+fn pack_only(doc: &mut Document) -> (usize, usize) {
+    let keep = ImageSettings { downsample: false, target_ppi: 150.0, above_ppi: 225.0, compression: Compression::Retain };
+    let r = optimize(doc, &Settings { color: keep, gray: keep, ..Settings::default() }).unwrap();
+    (r.images_resampled, r.images_recompressed)
+}
+
+/// Black-and-white RGB becomes grey for every use at once, so it stays RGB, byte for byte, when
+/// any use may be beyond the page content and forms the optimizer reads, where other default
+/// colour spaces may be in force: drawn by an annotation's appearance whose resources make
+/// `/DefaultGray` the grey it would be drawn in; by a tiling pattern; through an `/XObject`
+/// dictionary, or a form, that a page shares with such an appearance;
+/// referred to with another generation by the page than by such an appearance; drawn plainly on
+/// one page and, named with another generation, on a page whose resources set `/DefaultGray`;
+/// drawn plainly and only listed (not drawn) where `/DefaultGray` is in force, under the same
+/// generation or another, as a Type3 glyph without resources could draw it there; or held in an
+/// array elsewhere (another image's `/Alternates`).
+#[test]
+fn black_and_white_rgb_used_beyond_the_page_content_read_stays_rgb() {
+    let (mut doc, image) = rgb_page_fixture();
+    let [in_annotation, in_pattern, shared_xobjects, shared_form, other_generation, generation_under_defaults, listed, listed_as_1, in_array] =
+        [(); 9].map(|_| image(&mut doc));
+    let gray_resources = |im: Object| Some(Object::Dict(resources_of(vec![("XObject", im), ("ColorSpace", default_gray())])));
+    let direct = |im: ObjRef| Object::Dict(xobject_dict(&[("Im", im)]));
+
+    let appearance = drawing(&mut doc, gray_resources(direct(in_annotation)), &form_entries());
+    let pattern_entries =
+        [("PatternType", 1.into()), ("PaintType", 1.into()), ("TilingType", 1.into()), ("XStep", 612.into()), ("YStep", 792.into())];
+    let pattern = drawing(&mut doc, Some(Object::Dict(resources_of(vec![("XObject", direct(in_pattern))]))), &pattern_entries);
+    let p = page(&mut doc, &[("A", in_annotation), ("B", in_pattern)], &(draw_each(&["A", "B"]) + "/Pattern cs /P scn 0 0 10 10 re f"));
+    annotate(&mut doc, p, appearance);
+    doc.update_dict(p, |d| {
+        let mut res = d.get(b"Resources").and_then(Object::as_dict).cloned().unwrap();
+        let mut patterns = Dict::new();
+        patterns.set(b"P".to_vec(), Object::Ref(pattern));
+        res.set(b"Pattern".to_vec(), Object::Dict(patterns));
+        d.set(b"Resources".to_vec(), Object::Dict(res));
+    })
+    .unwrap();
+
+    // An /XObject dictionary of its own, read for a page, and a form drawn by a page, each also
+    // used by an appearance under DefaultGray.
+    let x = doc.add(Object::Dict(xobject_dict(&[("Im", shared_xobjects)])));
+    let q = page(&mut doc, &[], &draw_each(&["Im"]));
+    doc.update_dict(q, |d| d.set(b"Resources".to_vec(), Object::Dict(resources_of(vec![("XObject", Object::Ref(x))])))).unwrap();
+    let appearance = drawing(&mut doc, gray_resources(Object::Ref(x)), &form_entries());
+    annotate(&mut doc, q, appearance);
+    let form = drawing(&mut doc, Some(Object::Dict(resources_of(vec![("XObject", direct(shared_form))]))), &form_entries());
+    let q = page(&mut doc, &[("F", form)], &draw_each(&["F"]));
+    let appearance = drawing(&mut doc, gray_resources(Object::Dict(xobject_dict(&[("Im", form)]))), &form_entries());
+    annotate(&mut doc, q, appearance);
+
+    // The page names it with generation 1 (it is 0); the appearance with 0.
+    let q = page(&mut doc, &[("Im", ObjRef { generation: 1, ..other_generation })], &draw_each(&["Im"]));
+    let appearance = drawing(&mut doc, gray_resources(direct(other_generation)), &form_entries());
+    annotate(&mut doc, q, appearance);
+
+    // Drawn plainly as 0, and as 1 where DefaultGray is in force.
+    page(&mut doc, &[("Im", generation_under_defaults)], &draw_each(&["Im"]));
+    let q = page(&mut doc, &[], &draw_each(&["Im"]));
+    let gray = resources_of(vec![
+        ("XObject", Object::Dict(xobject_dict(&[("Im", ObjRef { generation: 1, ..generation_under_defaults })]))),
+        ("ColorSpace", default_gray()),
+    ]);
+    doc.update_dict(q, |d| d.set(b"Resources".to_vec(), Object::Dict(gray))).unwrap();
+
+    // Drawn plainly, and only listed where DefaultGray is in force, as 0 and as 1.
+    page(&mut doc, &[("A", listed), ("B", listed_as_1)], &draw_each(&["A", "B"]));
+    let q = page(&mut doc, &[], "");
+    let gray = resources_of(vec![
+        ("XObject", Object::Dict(xobject_dict(&[("A", listed), ("B", ObjRef { generation: 1, ..listed_as_1 })]))),
+        ("ColorSpace", default_gray()),
+    ]);
+    doc.update_dict(q, |d| d.set(b"Resources".to_vec(), Object::Dict(gray))).unwrap();
+
+    // Another image drawn on the page lists it as an alternate.
+    let mut alternate = Dict::new();
+    alternate.set(b"Image".to_vec(), Object::Ref(in_array));
+    let holder = image(&mut doc);
+    doc.update_dict(holder, |d| {
+        d.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+        d.set(b"Alternates".to_vec(), Object::Array(vec![Object::Dict(alternate)]));
+    })
+    .unwrap();
+    page(&mut doc, &[("Im", in_array), ("Alt", holder)], &draw_each(&["Im"]));
+
+    let kept = [in_annotation, in_pattern, shared_xobjects, shared_form, other_generation, generation_under_defaults, listed, listed_as_1, in_array];
+    let before = kept.map(|r| stream(&doc, r));
+    pack_only(&mut doc);
+    for (i, b) in kept.iter().zip(&before) {
+        let s = stream(&doc, *i);
+        assert_eq!((&s.dict, &s.raw), (&b.dict, &b.raw), "{i:?}");
+    }
+}
+
+/// Black-and-white RGB that the page content and forms the optimizer reads are the only uses of
+/// becomes grey, however its resources are written: drawn on two pages, by a form, under two
+/// names on one page; through resources that are an object of their own, shared by two pages,
+/// whose `/XObject` dictionary is one too; through resources an object of their own with a direct
+/// `/XObject` dictionary; through resources a page inherits from the page tree; by a form whose
+/// `/Resources` is a reference; by a form without resources, through its page's; listed under a
+/// second name nothing draws; through resources an object of their own that a page without
+/// content lists too; and with an object nothing in the document reaches referring to it as well.
+#[test]
+fn black_and_white_rgb_drawn_only_where_the_optimizer_reads_becomes_grey() {
+    let (mut doc, image) = rgb_page_fixture();
+    let [everywhere, shared_resources, resources_object, inherited, form_resources_object, no_resources, spare_name, no_contents, unreachable] =
+        [(); 9].map(|_| image(&mut doc));
+    let set_resources = |doc: &mut Document, q: ObjRef, res: Object| doc.update_dict(q, |d| d.set(b"Resources".to_vec(), res)).unwrap();
+
+    let form =
+        drawing(&mut doc, Some(Object::Dict(resources_of(vec![("XObject", Object::Dict(xobject_dict(&[("Im", everywhere)])))]))), &form_entries());
+    page(&mut doc, &[("E", everywhere), ("F", form)], &draw_each(&["E", "F"]));
+    page(&mut doc, &[("E", everywhere), ("G", everywhere)], &draw_each(&["E", "G"]));
+
+    let x = doc.add(Object::Dict(xobject_dict(&[("Im", shared_resources)])));
+    let res = doc.add(Object::Dict(resources_of(vec![("XObject", Object::Ref(x))])));
+    for _ in 0..2 {
+        let q = page(&mut doc, &[], &draw_each(&["Im"]));
+        set_resources(&mut doc, q, Object::Ref(res));
+    }
+    let res = doc.add(Object::Dict(resources_of(vec![("XObject", Object::Dict(xobject_dict(&[("Im", resources_object)])))])));
+    let q = page(&mut doc, &[], &draw_each(&["Im"]));
+    set_resources(&mut doc, q, Object::Ref(res));
+
+    let q = page(&mut doc, &[], &draw_each(&["I"]));
+    doc.update_dict(q, |d| {
+        d.remove(b"Resources");
+    })
+    .unwrap();
+    let pages = doc.root().and_then(|r| doc.get(r).as_dict().and_then(|d| d.reference(b"Pages"))).unwrap();
+    set_resources(&mut doc, pages, Object::Dict(resources_of(vec![("XObject", Object::Dict(xobject_dict(&[("I", inherited)])))])));
+
+    let res = doc.add(Object::Dict(resources_of(vec![("XObject", Object::Dict(xobject_dict(&[("Im", form_resources_object)])))])));
+    let form = drawing(&mut doc, Some(Object::Ref(res)), &form_entries());
+    page(&mut doc, &[("F", form)], &draw_each(&["F"]));
+    let form = drawing(&mut doc, None, &form_entries());
+    page(&mut doc, &[("F", form), ("Im", no_resources)], &draw_each(&["F"]));
+
+    page(&mut doc, &[("C", spare_name), ("D", spare_name)], &draw_each(&["C"]));
+    let res = doc.add(Object::Dict(resources_of(vec![("XObject", Object::Dict(xobject_dict(&[("Im", no_contents)])))])));
+    for drawn in [true, false] {
+        let q = page(&mut doc, &[], &draw_each(&["Im"]));
+        set_resources(&mut doc, q, Object::Ref(res));
+        if !drawn {
+            doc.update_dict(q, |d| {
+                d.remove(b"Contents");
+            })
+            .unwrap();
+        }
+    }
+
+    page(&mut doc, &[("Im", unreachable)], &draw_each(&["Im"]));
+    // A form nothing refers to, drawing it under DefaultGray.
+    let orphan = resources_of(vec![("XObject", Object::Dict(xobject_dict(&[("Im", unreachable)]))), ("ColorSpace", default_gray())]);
+    drawing(&mut doc, Some(Object::Dict(orphan)), &form_entries());
+
+    let grey = [everywhere, shared_resources, resources_object, inherited, form_resources_object, no_resources, spare_name, no_contents, unreachable];
+    assert_eq!(pack_only(&mut doc), (0, grey.len()));
+    for i in grey {
+        let s = stream(&doc, i);
+        assert_eq!((s.dict.get(b"ColorSpace"), s.dict.int(b"BitsPerComponent")), (Some(&Object::name("DeviceGray")), Some(1)), "{i:?}");
+    }
+}
+
+/// LibreOffice writes one resources object for a page and its `/Pages` node, and a transparency
+/// group's form whose `/Resources` is that same object, which the object lists in turn. Black-
+/// and-white RGB in it becomes grey: every reference is one the page walk reads, the cycle
+/// included. Drawn from outside as well, by an appearance under `/DefaultGray` that draws the
+/// form, it stays RGB.
+#[test]
+fn black_and_white_rgb_in_resources_its_page_tree_and_a_form_share_becomes_grey() {
+    for outside in [false, true] {
+        let (mut doc, image) = rgb_page_fixture();
+        let img = image(&mut doc);
+        let res = doc.add(Object::Dict(Dict::new()));
+        let form = drawing(&mut doc, Some(Object::Ref(res)), &form_entries());
+        doc.update_dict(res, |d| d.set(b"XObject".to_vec(), Object::Dict(xobject_dict(&[("Im", img), ("Tr", form)])))).unwrap();
+        let p = page(&mut doc, &[], &draw_each(&["Im", "Tr"]));
+        let pages = doc.root().and_then(|r| doc.get(r).as_dict().and_then(|d| d.reference(b"Pages"))).unwrap();
+        for holder in [p, pages] {
+            doc.update_dict(holder, |d| d.set(b"Resources".to_vec(), Object::Ref(res))).unwrap();
+        }
+        if outside {
+            let gray = resources_of(vec![("XObject", Object::Dict(xobject_dict(&[("Im", form)]))), ("ColorSpace", default_gray())]);
+            let appearance = drawing(&mut doc, Some(Object::Dict(gray)), &form_entries());
+            annotate(&mut doc, p, appearance);
+        }
+        let before = stream(&doc, img);
+        pack_only(&mut doc);
+        let s = stream(&doc, img);
+        if outside {
+            assert_eq!((&s.dict, &s.raw), (&before.dict, &before.raw), "drawn from outside too");
+        } else {
+            assert_eq!((s.dict.get(b"ColorSpace"), s.dict.int(b"BitsPerComponent")), (Some(&Object::name("DeviceGray")), Some(1)));
+        }
+    }
+}
+
 /// Black-and-white images above 450 ppi are averaged down to 300 ppi, by default: 1-bit Flate, CCITT
 /// Group 4 (alone and behind ASCIIHexDecode), an image mask (its inverting decode array stays), and
 /// eight-bit grey and RGB of only black and white (the RGB also the other way round, with a decode
