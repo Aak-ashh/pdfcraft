@@ -4334,6 +4334,29 @@ fn an_open_paragraph_moves_by_its_frame_and_by_the_arrow_keys() {
     assert_eq!(h.state().session.get(id).unwrap().text_lines(0).len(), 1, "moved, not retyped");
 }
 
+/// The open paragraph's frame shows the Move cursor as far out as a press there takes hold of the
+/// box: the cursor reached 4 px past the frame, the press 6.
+#[test]
+fn an_open_paragraphs_frame_shows_move_wherever_a_press_takes_the_box() {
+    let mut h = harness(2, |_| {});
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    let id = h.state().views[0].id;
+    let before = h.state().session.get(id).unwrap().text_blocks(0)[0].clone();
+    let r = h.state().views[0].page_screen_rect(0).expect("on screen");
+    let k = r.width() / 200.0;
+    let screen = |x: f64, y: f64| egui::pos2(r.left() + x as f32 * k, r.top() + (300.0 - y as f32) * k);
+    click_at(&mut h, screen((before.rect[0] + before.rect[2]) / 2.0, (before.rect[1] + before.rect[3]) / 2.0));
+    assert!(h.state().views[0].line_editor.is_some(), "a click on the text opens it for typing");
+    // 7 px above the text: 5 px past the frame drawn 2 px out.
+    let far = screen((before.rect[0] + before.rect[2]) / 2.0, before.rect[3]) - egui::vec2(0.0, 7.0);
+    h.hover_at(far);
+    h.run_steps(3);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Move, "the frame offers to move the box there");
+    click_at(&mut h, far);
+    assert!(h.state().views[0].line_editor.is_none(), "and a click there selects the box");
+}
+
 /// Contributor-original text, with an off-origin CropBox. Keep the moving paragraph last in
 /// source order so an ordinary hit picks it again when two independent boxes fully overlap.
 fn paragraph_drag_fixture(content: &str, rotation: i64, unit: i64) -> Vec<u8> {

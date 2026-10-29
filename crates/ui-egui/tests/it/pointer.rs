@@ -405,7 +405,6 @@ fn narrow_from_left(dx: f32) -> (egui::CursorIcon, usize) {
 }
 
 #[test]
-#[ignore = "step 3 of the page pointer router: one hit test"]
 fn a_paragraph_edge_resizes_wherever_it_shows_the_resize_cursor() {
     let (inside_cursor, inside_lines) = narrow_from_left(1.0);
     assert_eq!(inside_cursor, egui::CursorIcon::ResizeHorizontal);

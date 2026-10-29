@@ -26,6 +26,46 @@ pub(crate) enum Owner {
     PrepareField { field: usize, widget: usize },
     /// Prepare Form: a corner handle of the selected field, to resize it.
     PrepareCorner { left: bool, top: bool },
+    /// Edit text: a paragraph, by its index among the page's, and what of it a press takes.
+    Paragraph { block: usize, part: ParagraphPart },
+    /// Edit text: a picture, by its index among the page's, and what of it a press takes.
+    Picture { index: usize, part: PicturePart },
+    /// Edit text: the objects selected together, or the frame of the paragraph open for typing.
+    Objects { part: ObjectsPart },
+    /// Added text or a picture placed on the page, by its index among the page's, and a corner of
+    /// the selected one (left, top) or the item itself.
+    Added { index: usize, corner: Option<(bool, bool)> },
+}
+
+/// The part of a picture a hit is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PicturePart {
+    /// The picture: a click selects it, a drag moves the selected one.
+    Body,
+    /// A corner of the selected picture (left top, right top, left bottom, right bottom): a drag
+    /// resizes it.
+    Corner(usize),
+    /// The selected picture's rotate knob: a drag turns it.
+    Knob,
+}
+
+/// What of the objects a hit is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ObjectsPart {
+    /// The objects selected together: a drag moves them all.
+    Selection,
+    /// The frame drawn around the paragraph open for typing: a click selects the box, a drag moves it.
+    Frame,
+}
+
+/// The part of a paragraph a hit is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ParagraphPart {
+    /// The paragraph: a drag moves it, a click opens it for typing.
+    Body,
+    /// Its left or right edge (on screen): a drag rewraps it.
+    Left,
+    Right,
 }
 
 /// The part of a comment a hit is on.
