@@ -7,6 +7,7 @@ mod knockout_backdrop;
 mod luminosity_group_space;
 mod named_form_properties;
 mod open_type_cff_simple_font;
+mod nonseparable_gray;
 mod search;
 mod separation_all;
 mod stray_q_in_a_form;
