@@ -713,7 +713,6 @@ fn touch_drag_moves_a_comment_and_leaves_no_gesture_behind() {
 // Ending a gesture.
 
 #[test]
-#[ignore = "step 4 of the page pointer router: press-time capture and cancel"]
 fn escape_cancels_a_signature_rectangle() {
     let mut h = open(link_pdf(), "150", false);
     h.state_mut().quick_tool = QuickTool::SignArea { certify: false };
@@ -731,4 +730,45 @@ fn escape_cancels_a_signature_rectangle() {
     let s = h.state();
     assert_eq!(s.quick_tool, QuickTool::SignArea { certify: false }, "Escape abandons the rectangle; the tool stays");
     assert!(s.dialog.is_none(), "and no signing dialog opens: {:?}", s.dialog);
+}
+
+/// Escape with the button down drops the press: its release places no stamp, and the next click
+/// places one.
+#[test]
+fn escape_mid_press_keeps_its_release_from_placing_a_stamp() {
+    let mut h = open(link_pdf(), "150", false);
+    stamp_tool(&mut h);
+    let p = at(&h, 150.0, 150.0);
+    h.hover_at(p);
+    h.run_steps(1);
+    h.drag_at(p);
+    h.run_steps(1);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(1);
+    h.drop_at(p);
+    h.run_steps(4);
+    assert_eq!(stamps(&h), 0, "the cancelled press places nothing on release");
+    mouse_click(&mut h, p);
+    assert_eq!(stamps(&h), 1, "the next click places a stamp");
+}
+
+/// Escape mid-drag abandons a crop rectangle: the page keeps its boxes.
+#[test]
+fn escape_cancels_a_crop_rectangle() {
+    let mut h = open(text_pdf(), "150", false);
+    h.state_mut().quick_tool = QuickTool::Crop;
+    h.run_steps(4);
+    let (a, b) = (at(&h, 40.0, 360.0), at(&h, 260.0, 60.0));
+    h.hover_at(a);
+    h.run_steps(1);
+    h.drag_at(a);
+    h.run_steps(1);
+    h.hover_at(b);
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(1);
+    h.drop_at(b);
+    h.run_steps(4);
+    let s = h.state();
+    assert_eq!(s.session.get(s.views[0].id).unwrap().can_undo(), None, "no page box was set");
 }

@@ -473,6 +473,9 @@ pub struct DocView {
     pub(crate) signature_drag: crate::signature_drag::SignatureDrag,
     /// What the page modules claim for the cursor this frame; `document_area` sets it once.
     pub(crate) cursor: crate::page_cursor::PageCursor,
+    /// Escape cancelled the press the pages hold: the page ignores it until the button is up, so
+    /// its release neither clicks nor ends a drag.
+    pub(crate) press_cancelled: bool,
     /// A non-edit action requested by the organize toolbar, handled by the app.
     pub pending_action: Option<ViewAction>,
     /// The grid gap the next inserted files go to (set by a "+" between pages); otherwise they
@@ -726,6 +729,7 @@ impl DocView {
             fill_signature_page: None,
             signature_drag: Default::default(),
             cursor: Default::default(),
+            press_cancelled: false,
         }
     }
 
@@ -1737,7 +1741,8 @@ fn draw_page(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<'_>, i
     }
 
     let slot = PageSlot { i, r, xf };
-    let input = page_tool_input(ui, view, frame, &slot);
+    // A cancelled press takes nothing until the button is up.
+    let input = if view.press_cancelled { PageInput { consumed: true, area_tool: false } } else { page_tool_input(ui, view, frame, &slot) };
     let painter = ui.painter();
     let pcx = comments::PageCx { page: i, xf: &xf, ptr, info, tool, prefs, allowed, hidden: comments_hidden, redact_mark };
     let preview_target = (matches!(tool, QuickTool::Select | QuickTool::Fill(_)) && !comments_hidden).then_some(view.comments.selected).flatten();
@@ -1752,6 +1757,20 @@ fn draw_page(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<'_>, i
     }
     text_layer(ui, view, frame, &slot, &input);
     page_overlays(ui, view, frame, &slot, &input);
+}
+
+/// Escape while the pages hold a press abandons the gesture it drives, whichever tool's: nothing is
+/// placed, drawn, moved, resized or opened, and the press is ignored until the button is up. The
+/// frame of the release still belongs to the cancelled press.
+fn cancel_on_escape(ctx: &egui::Context, view: &mut DocView, ptr: &PagePointer) {
+    if view.press_cancelled && !ptr.any_down && ptr.edges.is_empty() {
+        view.press_cancelled = false;
+    }
+    if !view.press_cancelled && ptr.origin.is_some() && ptr.primary_down && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
+        view.cancel_pointer_gestures();
+        view.press_cancelled = true;
+    }
 }
 
 fn draw_pages(
@@ -1833,6 +1852,7 @@ fn draw_pages(
     // The pointer as the pages see it: nothing over them (a dialog from the frame it opens),
     // or a press they hold. The page modules read it rather than egui's raw pointer state.
     let ptr = PagePointer::read(ui, &resp, modal);
+    cancel_on_escape(ui.ctx(), view, &ptr);
     let pointer = ptr.pos;
     // A press on a page makes it the current one (as in Acrobat), so a page command with
     // no selection (Rotate, Delete) acts on the page the reader pointed at, not on a page
