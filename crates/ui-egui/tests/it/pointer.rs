@@ -744,6 +744,27 @@ fn escape_cancels_a_signature_rectangle() {
     assert!(s.dialog.is_none(), "and no signing dialog opens: {:?}", s.dialog);
 }
 
+/// Only the primary button draws a signature rectangle: a right-drag opens no signing dialog.
+#[test]
+fn a_right_drag_draws_no_signature_rectangle() {
+    let mut h = open(link_pdf(), "150", false);
+    h.state_mut().quick_tool = QuickTool::SignArea { certify: false };
+    h.run_steps(4);
+    let (a, b) = (at(&h, 60.0, 200.0), at(&h, 200.0, 120.0));
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+    h.hover_at(a);
+    h.run_steps(1);
+    h.event(button(a, true));
+    h.run_steps(1);
+    h.hover_at(b);
+    h.run_steps(2);
+    h.event(button(b, false));
+    h.run_steps(4);
+    let s = h.state();
+    assert_eq!(s.quick_tool, QuickTool::SignArea { certify: false }, "the tool stays: no rectangle was drawn");
+    assert!(s.dialog.is_none(), "and no signing dialog opens: {:?}", s.dialog);
+}
+
 /// Escape with the button down drops the press: its release places no stamp, and the next click
 /// places one.
 #[test]

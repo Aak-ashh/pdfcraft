@@ -1145,7 +1145,8 @@ fn page_tool_input(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<
         && let Some(p) = ptr.within(xf.rect)
     {
         view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Crosshair);
-        if resp.clicked() {
+        // The tool's own click: nothing drawn over the page here holds the press.
+        if resp.clicked() && view.router.owner(i).is_none() {
             // Centred on the click, upright as the page is shown.
             let (vx, vy) = xf.screen_to_view(p);
             let (w, h) = kind.size();
@@ -1169,7 +1170,8 @@ fn page_tool_input(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<
         && let Some(p) = ptr.within(xf.rect)
     {
         view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Crosshair);
-        if resp.clicked() {
+        // The tool's own click: nothing drawn over the page here holds the press.
+        if resp.clicked() && view.router.owner(i).is_none() {
             // Centred on the click at its natural size (the engine sizes it).
             let (vx, vy) = xf.screen_to_view(p);
             let u = info.pages[i].view_to_user(vx, vy);
