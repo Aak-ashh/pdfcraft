@@ -1796,7 +1796,7 @@ fn two_fields_with_one_name_keep_their_places_in_the_order() {
 #[test]
 fn new_text_fields_fit_their_box() {
     // #1888: a fixed 12 pt was clipped in a short box. New text and date fields take Acrobat's
-    // Auto size: 12 pt where there is room, smaller where there isn't.
+    // Auto size: the size the box's height gives, smaller where the text is too wide.
     let mut doc = one_page();
     let tf_size = |ap: &str| {
         ap.split("/Helv ")
@@ -1815,7 +1815,9 @@ fn new_text_fields_fit_their_box() {
     }
     add_field(&mut doc, 0, [20.0, 50.0, 200.0, 72.0], &NewField::Text { multiline: false }, Some("tall")).unwrap();
     set_value(&mut doc, "tall", &FieldValue::Text("Hello world".into())).unwrap();
-    assert_eq!(tf_size(&ap(&doc, &field(&fields(&doc), "tall").widgets[0])), 12.0, "a box with room keeps the 12 pt look");
+    // 22 pt tall, less a 1 pt border and 2 pt padding each side: 16 / 1.15.
+    let tall = tf_size(&ap(&doc, &field(&fields(&doc), "tall").widgets[0]));
+    assert!((tall - 16.0 / 1.15).abs() < 0.01, "a box with room fills its height, not 12 pt: {tall}");
     // An explicit size still wins.
     set_props(&mut doc, "short", &FieldProps { font_size: Some(12.0), ..FieldProps::default() }).unwrap();
     assert_eq!(tf_size(&ap(&doc, &field(&fields(&doc), "short").widgets[0])), 12.0);
@@ -3225,8 +3227,12 @@ fn auto_text_size_fits_single_and_multiline_text() {
     assert_eq!(auto_text_size("Hi", 94.0, 8.0, false, helvetica_width), 8.0 / 1.15);
     let s = auto_text_size(long, 194.0, 8.0, false, helvetica_width);
     assert!(s > 4.0 && s < 8.0 / 1.15 && helvetica_width(long, s) <= 194.0 + 1e-9, "{s}");
-    // Never past 12 pt or under 4 pt.
-    assert_eq!(auto_text_size("Hi", 500.0, 500.0, false, helvetica_width), 12.0);
+    // A tall single-line box gets text as tall as it allows (Acrobat has no 12 pt cap there),
+    // bounded by the largest page; never under 4 pt.
+    assert_eq!(auto_text_size("Hi", 500.0, 24.0, false, helvetica_width), 24.0 / 1.15);
+    assert_eq!(auto_text_size("", 500.0, 1e300, false, helvetica_width), crate::appearance::MAX_AUTO_HEIGHT / 1.15);
+    let s = auto_text_size("Hi", 500.0, 500.0, false, helvetica_width);
+    assert!(s > 12.0 && helvetica_width("Hi", s) <= 500.0 + 1e-9, "{s}");
     assert_eq!(auto_text_size(&long.repeat(20), 20.0, 8.0, false, helvetica_width), 4.0);
     // Multiline: the largest size whose wrapped lines fit the height.
     let m = auto_text_size(long, 114.0, 44.0, true, helvetica_width);

@@ -2640,6 +2640,29 @@ fn orphan_form_fields_through_tools() {
     assert_ne!(v, "Filled by an agent");
 }
 
+/// An auto-sized (`0 Tf`) single-line field fills to the size its height gives, as Acrobat
+/// draws it, not a 12 pt cap: 30 pt tall, less border and padding, is about 21 pt text.
+#[test]
+fn auto_sized_text_follows_a_tall_field() {
+    let objs: Vec<&str> = vec![
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>",                                     // 1
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 300] >>",                     // 2
+        "<< /Type /Page /Parent 2 0 R /Annots [5 0 R] >>",                                       // 3
+        "<< /Fields [5 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 6 0 R >> >> >>",          // 4
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (tall) /Rect [10 200 290 230] /P 3 0 R >>", // 5
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",     // 6
+    ];
+    let dir = workdir("auto-size-tall");
+    std::fs::write(dir.join("form.pdf"), pdf_of(&objs)).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "form.pdf" }))["doc"].as_u64().unwrap();
+    ok(&mut a, "form_fill", json!({ "doc": doc, "values": { "tall": "Hi" } }));
+    let found = ok(&mut a, "text_find", json!({ "doc": doc, "query": "Hi" }));
+    let r = &found["matches"][0]["rects"][0];
+    let height = r[3].as_f64().unwrap() - r[1].as_f64().unwrap();
+    assert!(height > 16.0, "12 pt text would be about 12 tall, ~21 pt about 21: {height} ({found})");
+}
+
 #[test]
 fn reversing_pages_through_tools() {
     let dir = workdir("reverse");
