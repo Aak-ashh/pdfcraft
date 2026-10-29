@@ -5268,3 +5268,89 @@ fn sorting_keeps_which_of_two_items_with_one_export_value_is_selected() {
     // Alpha, Mid, Zeta: the selection follows Zeta, not the first item exporting "x".
     assert_eq!(selection_indices(&doc, &list), Some(vec![2]));
 }
+
+#[test]
+fn clearing_a_kids_default_does_not_bring_back_its_parents() {
+    let mut doc = fixture();
+    let all = fields(&doc);
+    let city = field(&all, "address.city").clone();
+    let parent = doc.get(city.obj).as_dict().unwrap().reference(b"Parent").unwrap();
+    doc.update_dict(parent, |d| d.set(b"DV".to_vec(), PdfString::text("Main St"))).unwrap();
+    set_props(&mut doc, "address.city", &FieldProps { default_value: Some(Some("Elm".into())), ..FieldProps::default() }).unwrap();
+    assert_eq!(field(&fields(&doc), "address.city").default, ["Elm"]);
+    set_props(&mut doc, "address.city", &FieldProps { default_value: Some(None), ..FieldProps::default() }).unwrap();
+    let mut doc = reopen(&doc);
+    let f = field(&fields(&doc), "address.city").clone();
+    assert!(f.default.iter().all(String::is_empty), "no default, not the parent's: {:?}", f.default);
+    let own = doc.get(f.obj).as_dict().and_then(|d| d.get(b"DV")).and_then(|o| o.as_string()).map(PdfString::to_text);
+    assert_eq!(own.as_deref(), Some(""), "the kid holds an empty default of its own");
+    set_value(&mut doc, "address.city", &FieldValue::Text("Oak".into())).unwrap();
+    reset(&mut doc, None).unwrap();
+    assert!(field(&fields(&doc), "address.city").value.iter().all(String::is_empty), "reset clears it");
+    // Without a parent default, clearing still removes the key.
+    set_props(&mut doc, "name", &FieldProps { default_value: Some(None), ..FieldProps::default() }).unwrap();
+    let name = field(&fields(&doc), "name").clone();
+    assert!(doc.get(name.obj).as_dict().unwrap().get(b"DV").is_none());
+}
+
+#[test]
+fn clearing_a_kids_value_does_not_bring_back_its_parents() {
+    // A text kid, then a list box kid, under a parent with both a value and a default.
+    for (ft, set) in [("/FT /Tx", FieldValue::Text("Oak".into())), ("/FT /Ch /Opt [(Main St) (Oak)]", FieldValue::Choice(vec!["Oak".into()]))] {
+        let mut doc = document(&[
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+            "<< /Type /Page /Parent 2 0 R /Annots [6 0 R] >>".into(),
+            "<< /Fields [5 0 R] /DA (/Helv 0 Tf 0 g) >>".into(),
+            format!("<< /T (address) {ft} /V (Main St) /DV (Main St) /Kids [6 0 R] >>"),
+            "<< /Type /Annot /Subtype /Widget /T (city) /Parent 5 0 R /Rect [10 10 110 60] /P 3 0 R >>".into(),
+        ]);
+        set_props(&mut doc, "address.city", &FieldProps { default_value: Some(None), ..FieldProps::default() }).unwrap();
+        set_value(&mut doc, "address.city", &set).unwrap();
+        assert_eq!(field(&fields(&doc), "address.city").value, ["Oak"], "{ft}");
+        reset(&mut doc, None).unwrap();
+        let doc = reopen(&doc);
+        let f = field(&fields(&doc), "address.city").clone();
+        assert!(f.value.iter().all(String::is_empty), "{ft}: reset leaves it empty, not the parent's: {:?}", f.value);
+        let mut doc = doc;
+        set_value(&mut doc, "address.city", &set).unwrap();
+        let clear = if ft.contains("Ch") { FieldValue::Choice(Vec::new()) } else { FieldValue::Text(String::new()) };
+        set_value(&mut doc, "address.city", &clear).unwrap();
+        let f = field(&fields(&reopen(&doc)), "address.city").clone();
+        if ft.contains("Ch") {
+            assert!(f.value.is_empty(), "{ft}: clearing leaves no choice selected: {:?}", f.value);
+        } else {
+            assert!(f.value.iter().all(String::is_empty), "{ft}: clearing leaves it empty: {:?}", f.value);
+        }
+    }
+}
+
+#[test]
+fn clearing_a_buttons_default_under_a_parent_with_one_leaves_it_off() {
+    // A check box, then a radio button (flags 49152, inherited from the parent).
+    for flags in ["", "/Ff 49152"] {
+        let mut doc = document(&[
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+            "<< /Type /Page /Parent 2 0 R /Annots [6 0 R] >>".into(),
+            "<< /Fields [5 0 R] /DA (/Helv 0 Tf 0 g) >>".into(),
+            format!("<< /T (opts) /FT /Btn {flags} /DV /Yes /Kids [6 0 R] >>"),
+            "<< /Type /Annot /Subtype /Widget /T (a) /Parent 5 0 R /V /Off /AS /Off /Rect [10 10 25 25] /P 3 0 R /AP << /N << /Yes 7 0 R /Off 7 0 R >> >> >>".into(),
+            "<< /Length 0 >>
+stream
+
+endstream".into(),
+        ]);
+        let kind = field(&fields(&doc), "opts.a").kind;
+        assert_eq!(kind == FieldKind::Radio, !flags.is_empty());
+        set_props(&mut doc, "opts.a", &FieldProps { default_value: Some(None), ..FieldProps::default() }).unwrap();
+        let f = field(&fields(&doc), "opts.a").clone();
+        assert_eq!(doc.get(f.obj).as_dict().and_then(|d| d.get(b"DV")).and_then(|o| o.as_name()), Some(&b"Off"[..]), "{kind:?}");
+        let on = if kind == FieldKind::Radio { FieldValue::Radio(Some("Yes".into())) } else { FieldValue::Check(true) };
+        set_value(&mut doc, "opts.a", &on).unwrap();
+        assert_eq!(field(&fields(&doc), "opts.a").value, ["Yes"]);
+        reset(&mut doc, None).unwrap();
+        let f = field(&fields(&doc), "opts.a").clone();
+        assert!(f.value.iter().all(String::is_empty), "{kind:?}: reset leaves it off, not the parent's Yes: {:?}", f.value);
+    }
+}

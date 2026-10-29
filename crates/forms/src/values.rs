@@ -210,8 +210,9 @@ pub(crate) fn write_value(doc: &mut Document, f: &Field, value: &FieldValue, scr
             let t = &af::keystroke(&f.actions.format, &f.name, t).map_err(FormError::Format)?;
             af::validate(&f.actions.validate, t).map_err(FormError::Invalid)?;
             let t = &scripting::accept(doc, f, t, scripts)?;
+            let shadow = t.is_empty() && crate::author::ancestor_sets(doc, f.obj, b"V");
             doc.update_dict(f.obj, |d| {
-                if t.is_empty() {
+                if t.is_empty() && !shadow {
                     d.remove(b"V");
                 } else {
                     d.set(b"V".to_vec(), PdfString::text(t));
@@ -293,8 +294,11 @@ pub(crate) fn write_value(doc: &mut Document, f: &Field, value: &FieldValue, scr
             // in other viewers: a pick below the last visible row would otherwise not show (#1524).
             let picked: Vec<usize> = indices.iter().filter_map(|i| i.as_int()).filter_map(|i| usize::try_from(i).ok()).collect();
             let top = list_scroll(f, &picked, f.options.len());
+            // An empty value of its own keeps a parent field's /V from showing through.
+            let shadow = exports.is_empty() && crate::author::ancestor_sets(doc, f.obj, b"V");
             doc.update_dict(f.obj, |d| {
                 match exports.as_slice() {
+                    [] if shadow => d.set(b"V".to_vec(), PdfString::text("")),
                     [] => {
                         d.remove(b"V");
                     }
