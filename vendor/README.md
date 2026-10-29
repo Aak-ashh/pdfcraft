@@ -140,5 +140,5 @@ is built in memory.
 | #4898 | Preserve non-isolated knockout-group backdrops across blend-mode passes, masks, and shading. | `knockout_backdrop` |
 | #4913 | Discard invalid stroke outlines without losing valid path segments. | `stroke_degenerate_cubic` |
 | #5178 | Read OpenType-wrapped CFF programs for embedded simple fonts. | `open_type_cff_simple_font` |
-| #5199 | Preserve gray under nonseparable Color blending in vello_common. | `nonseparable_gray`, vendored blend tests |
-| #5228 | Blend supported isolated DeviceCMYK groups in their ink space. | `isolated_cmyk_group` |
+| #5199 | Preserve gray under nonseparable Color blending in vello_cpu. | `nonseparable_gray` |
+| #5228 | Blend supported isolated DeviceCMYK groups in their ink space. | `raster::tests::isolated_cmyk_groups` |
