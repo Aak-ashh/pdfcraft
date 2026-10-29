@@ -43,8 +43,10 @@ fn neighbour_left(lines: &[TextLine], block: &TextBlock) -> Option<f64> {
 }
 
 /// Where an alignment picked for a one-row paragraph is measured, as `[left, right]`: the column of
-/// text it sits in (the nearest overlapping paragraph's left edge, to the furthest right
-/// its rows reach) when that column holds it, otherwise its own box. A lone row's own box is no frame
+/// text it sits in (an overlapping paragraph's left edge, to the furthest right its rows reach)
+/// when that column holds it, otherwise its own box. Of the columns that hold it, the narrowest is
+/// its own, the nearest on a tie: a heading across the whole page, even one closer than the body,
+/// is wider than the column the title sits in, and gives it no frame while a narrower one does. A lone row's own box is no frame
 /// to align in: left-aligning a title centred on the page left it where it was, and since a single
 /// row grows to the page's margin, centring it again moved it right each time. `None` when no
 /// alignment is asked for, or when the paragraph is several rows, turned, or given a width or a
@@ -57,22 +59,25 @@ pub(crate) fn alignment_frame(lines: &[TextLine], blocks: &[TextBlock], block: &
     let own = [block.rect[0], block.rect[2]];
     let tolerance = block.size.max(1.0) * 0.5;
     let gap = |other: &TextBlock| (other.rect[1] - block.rect[3]).max(block.rect[1] - other.rect[3]).max(0.0);
-    // Page-wide headers and footers sharing this margin aren't part of the local column.
-    let neighbour = blocks
+    // The column an overlapping paragraph makes, when it holds the row.
+    let column = |other: &TextBlock| -> Option<[f64; 2]> {
+        let left = other.rect[0];
+        let right = other
+            .lines
+            .iter()
+            .filter_map(|i| lines.get(*i))
+            .filter(|line| (line.rect[0] - left).abs() < tolerance)
+            .map(|line| line.rect[2])
+            .fold(f64::NEG_INFINITY, f64::max);
+        (right.is_finite() && right - left > own[1] - own[0] && own[0] >= left - tolerance && own[1] <= right + tolerance).then_some([left, right])
+    };
+    let frame = blocks
         .iter()
         .filter(|other| other.lines.iter().all(|i| !block.lines.contains(i)) && other.rect[2] > own[0] && other.rect[0] < own[1])
-        .min_by(|a, b| gap(a).total_cmp(&gap(b)));
-    let Some(neighbour) = neighbour else { return Some(own) };
-    let left = neighbour.rect[0];
-    let right = neighbour
-        .lines
-        .iter()
-        .filter_map(|i| lines.get(*i))
-        .filter(|line| (line.rect[0] - left).abs() < tolerance)
-        .map(|line| line.rect[2])
-        .fold(f64::NEG_INFINITY, f64::max);
-    let holds = right.is_finite() && right - left > own[1] - own[0] && own[0] >= left - tolerance && own[1] <= right + tolerance;
-    Some(if holds { [left, right] } else { own })
+        .filter_map(|other| column(other).map(|frame| (frame, gap(other))))
+        .min_by(|(a, near_a), (b, near_b)| (a[1] - a[0]).total_cmp(&(b[1] - b[0])).then(near_a.total_cmp(near_b)))
+        .map(|(frame, _)| frame);
+    Some(frame.unwrap_or(own))
 }
 
 /// Whether a block reads as centred, and so must keep its centre when it grows or wraps.

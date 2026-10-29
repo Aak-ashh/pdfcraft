@@ -7255,6 +7255,33 @@ fn a_justified_paragraph_from_the_editor_fills_its_rows() {
     assert!(row("end")[2] < right - 20.0, "the last row isn't");
 }
 
+/// A heading across the whole page sits closer to the title than the title's own column does: the
+/// title is still aligned in its own column, not across the heading's page-wide frame (FredApps's
+/// review of 43f848d5). Centre and right both go by the column.
+#[test]
+fn a_lone_row_aligns_in_its_own_column_not_a_closer_full_width_heading() {
+    let page = "BT /F1 12 Tf 1 0 0 1 50 700 Tm (A heading that runs across both columns of the page, well past the first column, to the far margin.) Tj ET                 BT /F1 18 Tf 1 0 0 1 120 672 Tm (Title) Tj ET                 BT /F1 10 Tf 12 TL 50 610 Td (The first column runs to here.) Tj T* (A second row of it.) Tj ET                 BT /F1 10 Tf 12 TL 320 610 Td (The second column has more rows.) Tj T* (One.) Tj T* (Two.) Tj T* (Three.) Tj ET";
+    let blocks = text::text_blocks(&text_page(page), 0).unwrap();
+    let column = blocks.iter().find(|b| b.text.starts_with("The first")).unwrap().rect;
+    let heading = blocks.iter().find(|b| b.text.starts_with("A heading")).unwrap().rect;
+    let title_block = blocks.iter().find(|b| b.text == "Title").expect("the title is a block of its own").rect;
+    let gap = |other: [f64; 4]| (other[1] - title_block[3]).max(title_block[1] - other[3]).max(0.0);
+    assert!(gap(heading) < gap(column), "the heading is the nearer block: {} vs {}", gap(heading), gap(column));
+    assert!(heading[2] - heading[0] > 2.0 * (column[2] - column[0]), "the heading is page-wide: {heading:?} vs {column:?}");
+    let title_after = |align: added::Align| {
+        let mut doc = text_page(page);
+        let blocks = text::text_blocks(&doc, 0).unwrap();
+        let index = blocks.iter().position(|b| b.text == "Title").unwrap();
+        let style = text::BlockStyle { aligns: vec![Some(align)], ..Default::default() };
+        text::rewrite_block(&mut doc, 0, index, Some("Title"), &style).unwrap();
+        text::text_lines(&doc, 0).unwrap().into_iter().find(|l| l.text == "Title").unwrap().rect
+    };
+    let centred = title_after(added::Align::Center);
+    assert!(((centred[0] + centred[2]) / 2.0 - (column[0] + column[2]) / 2.0).abs() < 1.0, "centred in its own column: {centred:?} vs {column:?}");
+    let right = title_after(added::Align::Right);
+    assert!((right[2] - column[2]).abs() < 1.0, "right: on its own column's right edge, {right:?} vs {column:?}");
+}
+
 /// The same on a page of two columns, where the other column has more rows: a title over the
 /// first column is aligned across the first column, not its own box.
 #[test]
