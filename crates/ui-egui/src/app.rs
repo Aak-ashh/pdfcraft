@@ -198,6 +198,7 @@ impl PdfCraftApp {
             field_table_draft: None,
             form_preview: false,
             window_title: String::new(),
+            page_title: String::new(),
             recovery: None,
             recoverable: Vec::new(),
             recovery_keys: Default::default(),
@@ -547,23 +548,29 @@ impl eframe::App for PdfCraftApp {
             view.begin_render_frame();
         }
         // The window shows the active document's name (or title, if it asks for that), with •
-        // while it has unsaved changes, as the other Craft apps write it (#3640).
-        let view = self.active.and_then(|i| self.views.get(i));
-        let dirty = view.and_then(|v| self.session.get(v.id)).is_some_and(|d| d.dirty);
+        // while it has unsaved changes, as the other Craft apps write it (#3640). Unsaved means
+        // what closing would ask about, so a draft not yet applied counts too.
+        let dirty = self.active.is_some_and(|i| self.has_unsaved_work(i));
         let mark = if dirty { " •" } else { "" };
-        let title = self
-            .active
-            .and_then(|i| crate::canvas::tab_label(self, i))
-            .or_else(|| self.combine_showing().then(|| tl!("Combine files").to_owned()))
-            .map_or_else(|| "PdfCraft".to_owned(), |name| format!("{name}{mark} — PdfCraft"));
+        let titled = |name: Option<String>| {
+            name.or_else(|| self.combine_showing().then(|| tl!("Combine files").to_owned()))
+                .map_or_else(|| "PdfCraft".to_owned(), |name| format!("{name}{mark} — PdfCraft"))
+        };
+        let title = titled(self.active.and_then(|i| crate::canvas::tab_label(self, i)));
+        // The web page's title is what an embedding host reads to tell which file opened, so it
+        // names the file even when the document asks to show its own title.
+        let page_title = titled(self.active.and_then(|i| self.views.get(i)).and_then(|v| self.session.get(v.id)).map(|d| d.name.clone()));
         if title != self.window_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
-            // eframe's web runner ignores Title: set the page's own, which an embedding host reads.
+            self.window_title = title;
+        }
+        if page_title != self.page_title {
+            // eframe's web runner ignores Title: set the page's own.
             #[cfg(target_arch = "wasm32")]
             if let Some(document) = web_sys::window().and_then(|w| w.document()) {
-                document.set_title(&title);
+                document.set_title(&page_title);
             }
-            self.window_title = title;
+            self.page_title = page_title;
         }
         // The accessible window takes the same name, so a screen reader (AT-SPI on Linux, UIA on
         // Windows) can tell it apart (#4614). egui builds the root node afresh every pass.

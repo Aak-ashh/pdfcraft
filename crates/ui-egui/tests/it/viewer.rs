@@ -1010,6 +1010,42 @@ fn the_window_title_marks_unsaved_changes_until_saved() {
     assert_eq!(s.window_title, "b.pdf — PdfCraft", "saved");
 }
 
+/// #3640: text typed but not yet applied is unsaved work too, as closing the tab says, so the
+/// title marks it.
+#[test]
+fn the_window_title_marks_a_draft_that_is_not_applied_yet() {
+    use pdfcraft_ui_egui::fill_sign::TypeBox;
+    let mut h = harness();
+    h.run_steps(2);
+    assert_eq!(h.state().window_title, "b.pdf — PdfCraft");
+    let i = h.state().active.unwrap();
+    h.state_mut().views[i].fill_text = Some(TypeBox { page: 0, at: [40.0, 200.0], text: "Typed".into(), size: 10.0, focus: false });
+    h.run_steps(2);
+    let s = h.state();
+    assert!(!s.session.get(s.views[i].id).unwrap().dirty, "nothing applied to the document yet");
+    assert_eq!(s.window_title, "b.pdf • — PdfCraft");
+    assert_eq!(s.page_title, "b.pdf • — PdfCraft");
+}
+
+/// #3640: a document that asks to show its own title shows it in the window, but the web page's
+/// title, which an embedding host reads to tell which file opened, keeps the file's name.
+#[test]
+fn the_web_page_title_names_the_file_when_the_document_shows_its_title() {
+    use pdfcraft_engine::Edit;
+    let mut h = harness();
+    {
+        let s = h.state_mut();
+        let id = s.views[s.active.unwrap()].id;
+        s.session.apply(id, Edit::SetInfo { key: "Title".into(), value: "Budget 2026".into() }).unwrap();
+        let mut v = s.session.get(id).unwrap().initial_view();
+        v.display_title = true;
+        s.session.apply(id, Edit::SetInitialView(Box::new(v))).unwrap();
+    }
+    h.run_steps(2);
+    assert_eq!(h.state().window_title, "Budget 2026 • — PdfCraft");
+    assert_eq!(h.state().page_title, "b.pdf • — PdfCraft");
+}
+
 #[test]
 fn a_placeholder_title_leaves_the_file_name_on_the_tab_and_window() {
     // A browser's "Save as PDF" of a blank page or pop-up titles the document "about:blank"
