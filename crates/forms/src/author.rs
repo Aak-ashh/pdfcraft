@@ -11,6 +11,7 @@ use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
 use crate::{Field, FieldKind, FormError, Widget, appearance, fields, flags, page_refs};
 
 mod edit;
+mod join;
 mod lifecycle;
 mod look;
 mod tree;

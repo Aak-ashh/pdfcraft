@@ -1,3 +1,4 @@
+use super::join::{check_join, join_radio_group};
 use super::look::{BorderStyle, da_string, patch_da, patch_widget_look, redraw_widgets};
 use super::tree::{attach, check_place, child_named, clash, detach, ensure_form, inherited, name_parts, own_inherited};
 use super::{Dict, Document, Field, FieldKind, FieldProps, FormError, MIN_FIELD_SIDE, ObjRef, Object, PdfString, fields, flags, invalid};
@@ -70,7 +71,9 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
     if let Some(acts) = &props.actions {
         crate::set_field_actions(doc, name, acts)?;
     }
-    let new_name = rename_field(doc, &all, &f, name, props)?;
+    // A radio button renamed to another radio group's name joins that group (#4949). The other
+    // properties are written first, to this field, and its buttons then move.
+    let (new_name, join) = rename_field(doc, &all, &f, name, props)?;
     // The new default appearance when the size or the look changes.
     let size = props.font_size.unwrap_or_else(|| crate::appearance::parse_da(&f.da).size);
     let new_da = match &props.look {
@@ -246,15 +249,19 @@ pub fn set_props(doc: &mut Document, name: &str, props: &FieldProps) -> Result<S
         })?;
     }
     let only = apply_late_widget_props(doc, &f, props, &new_da, rotated_rect)?;
-    redraw_widgets(doc, &new_name, only)?;
+    redraw_or_join(doc, &f, name, &new_name, join.as_ref(), only)?;
     if props.calculate.is_some() {
         crate::recalculate(doc)?;
     }
     Ok(new_name)
 }
 
-fn rename_field(doc: &mut Document, all: &[Field], f: &Field, name: &str, props: &FieldProps) -> Result<String, FormError> {
+/// Apply a new name from `props`: rename the field, move it under the parents a full name
+/// names, or, for a radio button named after another radio group, pick that group to join.
+/// Returns the field's new full name and the group it joins.
+fn rename_field(doc: &mut Document, all: &[Field], f: &Field, name: &str, props: &FieldProps) -> Result<(String, Option<Field>), FormError> {
     let mut new_name = name.to_string();
+    let mut join = None;
     if let Some(n) = props.name.as_deref().map(str::trim).filter(|n| *n != f.name) {
         // A full name under the same parents only renames the field's own part (the editor
         // shows nested fields by their full name): it isn't moved, so it keeps its place and
@@ -263,7 +270,16 @@ fn rename_field(doc: &mut Document, all: &[Field], f: &Field, name: &str, props:
             (Some((parents, own)), Some((current, _))) if parents == current => own,
             _ => n,
         };
-        if n.contains('.') {
+        let full = match f.name.rsplit_once('.') {
+            Some((parents, _)) if !n.contains('.') => format!("{parents}.{n}"),
+            _ => n.to_string(),
+        };
+        let group = all.iter().find(|x| x.obj != f.obj && x.kind == FieldKind::Radio && x.name == full);
+        if let Some(group) = group.filter(|_| f.kind == FieldKind::Radio) {
+            check_join(doc, f, group)?;
+            join = Some(group.clone());
+            new_name = full;
+        } else if n.contains('.') {
             // A full name: the field moves under the parent fields it names (#2696).
             let parts = name_parts(n)?;
             if let Some(why) = all.iter().filter(|x| x.obj != f.obj).find_map(|x| clash(n, &x.name)) {
@@ -307,7 +323,7 @@ fn rename_field(doc: &mut Document, all: &[Field], f: &Field, name: &str, props:
             rename_in_calculations(doc, all, &f.name, &new_name)?;
         }
     }
-    Ok(new_name)
+    Ok((new_name, join))
 }
 
 fn apply_widget_style_props(doc: &mut Document, f: &Field, name: &str, props: &FieldProps) -> Result<(), FormError> {
@@ -357,6 +373,27 @@ fn apply_widget_style_props(doc: &mut Document, f: &Field, name: &str, props: &F
         doc.update_dict(w.obj, |d| d.set(b"Rect".to_vec(), Object::Array(r.iter().map(|v| Object::Real(*v)).collect())))?;
     }
     Ok(())
+}
+
+/// Redraw the edited widgets. A radio button joining another group (`join`) is redrawn under its
+/// old name `name` first; then its buttons move, and only they are redrawn as `new_name`, so the
+/// group's own buttons keep their appearances.
+fn redraw_or_join(doc: &mut Document, f: &Field, name: &str, new_name: &str, join: Option<&Field>, only: Option<usize>) -> Result<(), FormError> {
+    if let Some(group) = join {
+        redraw_widgets(doc, name, only)?;
+        join_radio_group(doc, f, group)?;
+        let moved: Vec<usize> = fields(doc)
+            .into_iter()
+            .find(|g| g.name == new_name)
+            .map(|g| g.widgets.iter().enumerate().filter(|(_, w)| f.widgets.iter().any(|m| m.obj == w.obj)).map(|(i, _)| i).collect())
+            .unwrap_or_default();
+        for index in moved {
+            redraw_widgets(doc, new_name, Some(index))?;
+        }
+        Ok(())
+    } else {
+        redraw_widgets(doc, new_name, only)
+    }
 }
 
 fn apply_late_widget_props(
