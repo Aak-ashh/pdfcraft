@@ -1577,7 +1577,7 @@ fn ambiguous_monochrome_text_is_recompressed_without_lossy_reduction() {
     for i in [flate, fax, mask, eight, hex_fax, rgb] {
         let s = stream(&doc, i);
         assert_eq!((size(&doc, i), s.dict.int(b"BitsPerComponent")), ((1200, 480), if i == mask { None } else { Some(1) }));
-        assert!(matches!(s.dict.name(b"Filter"), Some(b"CCITTFaxDecode" | b"FlateDecode")), "{i:?}");
+        assert!(matches!(s.filters().as_slice(), [(Filter::CcittFax | Filter::Flate, _)]), "{i:?}");
         assert_eq!(doc.decoded_image(&s).unwrap(), text.clone(), "{i:?}");
     }
     assert_eq!(stream(&doc, mask).dict.get(b"Decode"), Some(&decode), "the decode array stays");
