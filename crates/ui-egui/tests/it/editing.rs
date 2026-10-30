@@ -7137,7 +7137,6 @@ fn selected_existing_rows_keep_alignment_disabled_and_the_complete_paragraph() {
     assert_eq!(row_rect(&h, "nine"), last);
 }
 
-
 /// Clearing the selection restores ordinary whole-paragraph alignment and its undo step.
 #[test]
 fn whole_paragraph_alignment_stays_available_without_a_row_selection() {
@@ -7155,7 +7154,6 @@ fn whole_paragraph_alignment_stays_available_without_a_row_selection() {
     h.run_steps(3);
     assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().can_undo(), None);
 }
-
 
 /// Redo after Undo in the box puts the typing back, in the box: it doesn't reach the document,
 /// whose own Redo (a formatting change waiting here) must stay waiting.
@@ -7188,7 +7186,6 @@ fn redo_after_undoing_typing_puts_the_typing_back() {
     let doc = s.session.get(s.views[0].id).unwrap();
     assert_eq!((doc.can_redo(), doc.text_blocks(0)[0].base_font.as_str()), (Some("Edit text"), "Helvetica"), "the document's Redo still waits");
 }
-
 
 /// Redo from the menu or toolbar with typing in the box the page doesn't have yet. Closing the
 /// box first applied the typing, a new edit that dropped the document's waiting Redo, and the

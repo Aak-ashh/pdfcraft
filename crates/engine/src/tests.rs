@@ -9294,7 +9294,9 @@ fn repeated_backdrop_artwork_survives_background_undo_redo_and_both_save_modes()
          5 0 obj << /Length {} >> stream\n{rectangle}\nendstream endobj\n\
          6 0 obj << /Length {} >> stream\n{artwork}\nendstream endobj\n\
          7 0 obj << /Length 1 >> stream\nQ\nendstream endobj\ntrailer << /Root 1 0 R >>\n%%EOF",
-        white.len(), rectangle.len(), artwork.len()
+        white.len(),
+        rectangle.len(),
+        artwork.len()
     );
     // Start with a conventional xref, so the first save can exercise incremental output.
     let source = pdfcraft_cos::Document::open(Arc::new(raw.into_bytes())).unwrap();
@@ -9308,12 +9310,7 @@ fn repeated_backdrop_artwork_survives_background_undo_redo_and_both_save_modes()
     black(&s, id);
     s.apply(
         id,
-        Edit::AddBackground {
-            pages: vec![0],
-            settings: Background { color: [1.0, 0.0, 0.0], ..Background::default() },
-            replace: false,
-            file: None,
-        },
+        Edit::AddBackground { pages: vec![0], settings: Background { color: [1.0, 0.0, 0.0], ..Background::default() }, replace: false, file: None },
     )
     .unwrap();
     black(&s, id);

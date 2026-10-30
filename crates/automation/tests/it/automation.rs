@@ -6770,7 +6770,7 @@ fn doc_optimize_stores_black_and_white_images_as_ccitt_group_4() {
 fn doc_optimize_averages_black_and_white_scans_down() {
     let dir = workdir("optimize-mono-downsample");
     // 1000 × 400 samples on 120 × 48 pt: 600 ppi.
-    std::fs::write(dir.join("scan.pdf"), scan_drawn(b"q 120 0 0 48 50 500 cm /Scan Do Q")).unwrap();
+    std::fs::write(dir.join("scan.pdf"), simple_rule_scan_drawn(b"q 120 0 0 48 50 500 cm /Scan Do Q")).unwrap();
     let mut a = auto(&dir);
     let doc = ok(&mut a, "doc_open", json!({ "path": "scan.pdf" }))["doc"].as_u64().unwrap();
     let sizes = |name: &str| image_sizes(&dir.join(name));
@@ -6807,7 +6807,7 @@ fn image_sizes(path: &std::path::Path) -> Vec<(Option<i64>, Option<i64>)> {
 fn batch_ppi_bounds_how_far_black_and_white_scans_are_resampled() {
     let dir = workdir("batch-mono-ppi");
     // 1000 × 400 samples on 120 × 48 pt: 600 ppi.
-    std::fs::write(dir.join("scan.pdf"), scan_drawn(b"q 120 0 0 48 50 500 cm /Scan Do Q")).unwrap();
+    std::fs::write(dir.join("scan.pdf"), simple_rule_scan_drawn(b"q 120 0 0 48 50 500 cm /Scan Do Q")).unwrap();
     let mut a = auto(&dir);
     for (ppi, size) in [(None, (500, 200)), (Some(600), (1000, 400)), (Some(96), (500, 200))] {
         let out = format!("out-{ppi:?}");
@@ -10170,4 +10170,26 @@ fn a_shared_text_object_keeps_both_paragraphs_through_tools() {
     assert_eq!(paragraph_texts(&mut a, again), ["Alpha first row. Two Four", "Neighbor stays. Neighbor next."]);
     let extracted = page_text(&mut a, again);
     assert!(extracted[0].contains("Four") && extracted[0].contains("Neighbor stays."), "{extracted:?}");
+}
+
+/// Unambiguous separated one-pixel rules test the requested scale independently of the
+/// conservative local-tone guard. Ragged text can legitimately be retained by that guard.
+fn simple_rule_scan_drawn(content: &[u8]) -> Vec<u8> {
+    use pdfcraft_cos::{Document, Object, SaveOptions, Stream, write_full};
+    let mut doc = Document::open(std::sync::Arc::new(scan_drawn(content))).unwrap();
+    for number in doc.object_numbers() {
+        let reference = pdfcraft_cos::ObjRef::new(number, doc.generation(number));
+        let object = doc.get(reference);
+        let Object::Stream(image) = &*object else { continue };
+        if image.dict.name(b"Subtype") != Some(b"Image") {
+            continue;
+        }
+        let mut data = vec![0xFF; 125 * 400];
+        for y in 0..400 {
+            data[y * 125] &= 0x7F;
+            data[y * 125 + 124] &= 0xFE;
+        }
+        doc.set(reference, Object::Stream(Stream::flate(image.dict.clone(), &data)));
+    }
+    write_full(&doc, &SaveOptions::default()).unwrap()
 }
