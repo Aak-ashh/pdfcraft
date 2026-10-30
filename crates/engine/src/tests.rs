@@ -9304,7 +9304,14 @@ fn repeated_backdrop_artwork_survives_background_undo_redo_and_both_save_modes()
     let mut s = Session::new();
     let id = s.open("shared-backdrop.pdf", None, Arc::new(bytes), None).unwrap();
     let black = |s: &Session, id| {
-        let rgba = pixel(s, id, 0, 30, 70);
+        let doc = s.get(id).unwrap();
+        let mut renderer = pdfcraft_render::PageRenderer::new(doc.bytes.clone(), doc.config.clone());
+        let out = renderer.render(pdfcraft_render::RenderRequest { page: 0, scale: 1.0, ..Default::default() });
+        assert!(out.error.is_none(), "{:?}", out.error);
+        assert_eq!((out.width, out.height), (100, 100));
+        // PDF point (30, 30), inside the later black square, in top-down raster coordinates.
+        let i = ((70 * out.width + 30) * 4) as usize;
+        let rgba = &out.rgba[i..i + 4];
         assert!(rgba[0] < 20 && rgba[1] < 20 && rgba[2] < 20, "later artwork survives: {rgba:?}");
     };
     black(&s, id);

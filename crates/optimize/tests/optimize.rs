@@ -1450,16 +1450,11 @@ fn black_and_white_rgb_in_resources_its_page_tree_and_a_form_share_becomes_grey(
     }
 }
 
-/// Black-and-white images above 450 ppi are averaged down to 300 ppi, by default: 1-bit Flate, CCITT
-/// Group 4 (alone and behind ASCIIHexDecode), an image mask (its inverting decode array stays), and
-/// eight-bit grey and RGB of only black and white (the RGB also the other way round, with a decode
-/// array that inverts it, so its ties are 1s), all drawn at 600 ppi, are stored at half the size (as
-/// Group 4, or 1-bit Flate when that is smaller, as it is on this clean text), each new pixel the
-/// majority of the 2 × 2 it covers (a tie black, or for the mask painted). Left at their size: an image at 400 ppi (stored
-/// again as Group 4), a Group 4 one at 400 ppi (not even decoded), one behind ASCIIHexDecode at
-/// 400 ppi (stored again as Group 4 alone), and one with a soft mask. The page looks the same at
-/// screen size. With `downsample` off nothing is resampled; with Retain, Flate stays Flate, CCITT
-/// stays CCITT, and eight-bit grey and RGB are left to the grey and colour settings.
+/// Dense local mixed-sample patches are retained conservatively by the monochrome settings.
+/// One-bit Flate, CCITT and masks preserve samples; eight-bit bilevel inputs may be packed
+/// losslessly. Disable the independent gray/color reduction for the exact-render comparison:
+/// those settings can otherwise choose smaller grayscale/JPEG output for eight-bit sources.
+/// The Retain case separately checks that gray/color reduction remains available.
 #[test]
 fn ambiguous_monochrome_text_is_recompressed_without_lossy_reduction() {
     let mut doc = Document::new_empty();
@@ -1576,7 +1571,7 @@ fn ambiguous_monochrome_text_is_recompressed_without_lossy_reduction() {
 
     let untouched = [fax_at_400].map(|r| raw(&doc, r));
     let hex_len = raw(&doc, hex_at_400).len();
-    let r = optimize(&mut doc, &Settings::default()).unwrap();
+    let r = optimize(&mut doc, &Settings { gray: keep, color: keep, ..Settings::default() }).unwrap();
     assert_eq!((r.images_resampled, r.images_recompressed), (0, 9), "{r:?}");
     assert_eq!(stream(&doc, rgb).dict.get(b"ColorSpace"), Some(&Object::name("DeviceGray")));
     for i in [flate, fax, mask, eight, hex_fax, rgb] {
@@ -1607,9 +1602,8 @@ fn ambiguous_monochrome_text_is_recompressed_without_lossy_reduction() {
 /// Monochrome downsampling leaves a halftone or a dither at its resolution, as most new pixels
 /// would cover both black and white and taking the sample covering more would turn its tones
 /// solid: a 50% checkerboard, a 25% ordered dither and an error-diffused one, each at 600 ppi.
-/// Text at 600 ppi, which covers both only along its edges, is averaged down. Rows no wider than
-/// a fax row (`MAX_CCITT_COLUMNS`) are averaged down too, but not one column wider: the averaging
-/// keeps a counter for each column.
+/// Dense ragged text is retained too. Rows wider than a fax row (`MAX_CCITT_COLUMNS`)
+/// are never averaged: the averaging keeps a counter for each column.
 #[test]
 fn monochrome_downsampling_leaves_halftones_and_overwide_rows_at_their_resolution() {
     let (w, h) = (1200u32, 480u32);
@@ -1721,8 +1715,8 @@ fn g4_image(doc: &mut Document, bits: &[u8], (w, h): (u32, u32), hex: bool) -> O
 
 /// What Monochrome Images leaves alone and what it may still do. A Group 4 halftone above 450 ppi
 /// isn't resampled, so it stays byte for byte: alone, by default; behind ASCIIHexDecode, with
-/// Retain (by default it is stored again as Group 4 alone). Under Retain a resampled Flate scan
-/// stays Flate though Group 4 would be smaller. A busy Group 4 image behind ASCIIHexDecode, whose
+/// Retain (by default it is stored again as Group 4 alone). Under Retain an ambiguous Flate scan
+/// keeps its bytes and resolution though Group 4 would be smaller. A busy Group 4 image behind ASCIIHexDecode, whose
 /// code is more than three times its raster, decodes within a fax code's bound and is stored
 /// again as Group 4 alone. Sixteen-bit grey of only 0x0000 and 0xFFFF isn't eight-bit black and
 /// white, and keeps its bytes.
@@ -1789,7 +1783,8 @@ fn monochrome_images_keep_what_they_should() {
     let r = optimize(&mut doc, &Settings { mono: RETAIN, ..Settings::default() }).unwrap();
     assert_eq!(raw(&doc, wrapped), before, "Retain: a wrapped Group 4 halftone stays as it is");
     let s = stream(&doc, scan);
-    assert_eq!((s.dict.int(b"Width"), s.dict.name(b"Filter")), (Some(600), Some(&b"FlateDecode"[..])), "Retain: Flate stays Flate: {r:?}");
+    assert_eq!((s.dict.int(b"Width"), s.dict.name(b"Filter")), (Some(1200), Some(&b"FlateDecode"[..])), "Retain: {r:?}");
+    assert_eq!(doc.decoded_image(&s).unwrap(), ragged, "Retain preserves every sample");
 }
 
 /// `rows` coded as CCITT Group 3, one-dimensional (`/K 0`): each row its runs in turn, white first,
