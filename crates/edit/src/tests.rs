@@ -8539,11 +8539,7 @@ fn q_inside_a_text_object_restores_the_text_matrices() {
 #[test]
 fn wrapped_rows_keep_alignment_separate_from_hard_break_markers() {
     let mut doc = text_page("BT /F1 10 Tf 12 TL 72 700 Td (Old) Tj ET");
-    let style = text::BlockStyle {
-        width: Some(60.0),
-        aligns: vec![Some(added::Align::Left), Some(added::Align::Right)],
-        ..Default::default()
-    };
+    let style = text::BlockStyle { width: Some(60.0), aligns: vec![Some(added::Align::Left), Some(added::Align::Right)], ..Default::default() };
     text::rewrite_block(&mut doc, 0, 0, Some("One two three four five six\nTail"), &style).unwrap();
     let doc = reopen(&doc);
     let lines = text::text_lines(&doc, 0).unwrap();
