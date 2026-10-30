@@ -353,8 +353,6 @@ fn typed_font_size(text: &str) -> Option<f64> {
     (value.is_finite() && (1.0..=500.0).contains(&value)).then_some(value)
 }
 
-
-
 #[cfg(test)]
 mod tests {
     #[test]
