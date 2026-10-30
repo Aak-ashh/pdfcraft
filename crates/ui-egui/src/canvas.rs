@@ -927,7 +927,7 @@ struct PageFrame<'a> {
     current_overlap: f32,
     current_height: f32,
     pressed_page: Option<usize>,
-    calc_hover: Option<String>,
+    calc_hover: Option<crate::calc_order_ui::Focus>,
 }
 
 /// Visible heights (points) closer than this are equal: one page size can meet the viewport a
@@ -1732,8 +1732,8 @@ fn page_overlays(ui: &mut egui::Ui, view: &mut DocView, frame: &mut PageFrame<'_
         }
         if calc_order {
             let selected = view.prepare.selected.as_ref().map(|(name, _)| name.as_str());
-            if let Some(name) = crate::calc_order_ui::paint_page(tool_cx, form, &view.calc_order, generation, selected) {
-                frame.calc_hover = Some(name);
+            if let Some(field) = crate::calc_order_ui::paint_page(tool_cx, form, &view.calc_order, generation, selected) {
+                frame.calc_hover = Some(field);
             }
         }
     } else {

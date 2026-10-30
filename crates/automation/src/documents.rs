@@ -319,9 +319,9 @@ impl Automation {
         settings.color = images("color", settings.color)?;
         settings.gray = images("gray", settings.gray)?;
         if let Some(mono) = a.get("mono") {
-            let unknown = |c: &Value| ToolError::InvalidArgs(format!("unknown mono compression {c} (ccitt_g4, retain)"));
+            let unknown = |c: &Value| ToolError::InvalidArgs(format!("unknown mono compression {c} (ccitt_g4, jbig2, retain)"));
             let mono = mono.as_object().ok_or_else(|| {
-                ToolError::InvalidArgs("mono must be an object: { downsample, ppi, above_ppi, compression: ccitt_g4|retain }".into())
+                ToolError::InvalidArgs("mono must be an object: { downsample, ppi, above_ppi, compression: ccitt_g4|jbig2|retain }".into())
             })?;
             // A misspelled key would otherwise leave the preset's setting in place unnoticed.
             if let Some(key) = mono.keys().find(|k| !MONO_KEYS.contains(&k.as_str())) {
@@ -344,6 +344,7 @@ impl Automation {
             if let Some(c) = mono.get("compression") {
                 m.compression = match c.as_str() {
                     Some("ccitt_g4" | "ccitt" | "g4") => MonoCompression::CcittG4,
+                    Some("jbig2") => MonoCompression::Jbig2,
                     Some("retain") => MonoCompression::Retain,
                     _ => return Err(unknown(c)),
                 };
@@ -388,7 +389,9 @@ impl Automation {
                 let pw = self.doc(a).ok().and_then(|d| d.password.as_deref());
                 let doc = pdfcraft_cos::Document::open_with_password(bytes.clone(), pw).ok()?;
                 let root = doc.root()?;
-                doc.get(root).as_dict()?.name(b"Version").and_then(valid_version).map(str::to_owned)
+                // Through a reference too, as the optimizer reads it.
+                let version = doc.get(root).as_dict()?.get(b"Version")?.clone();
+                doc.resolve(&version).as_name().and_then(valid_version).map(str::to_owned)
             })
             .flatten();
         let header_version = bytes.strip_prefix(b"%PDF-").and_then(|b| b.get(..3)).and_then(valid_version);

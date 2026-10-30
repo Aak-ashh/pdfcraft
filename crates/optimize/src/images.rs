@@ -1010,7 +1010,7 @@ fn mono(doc: &Document, s: &Stream, ppi: f64, defaults: bool, settings: &MonoSet
     // Group 4 alone is only worth decoding to resample it. Group 3, or Group 4 behind
     // ASCII85Decode, say, can be smaller stored again as Group 4 alone.
     let g4_alone = fax.is_some_and(|p| p.k < 0) && s.filters().len() == 1;
-    if (retain || g4_alone) && !downsample {
+    if (retain || (g4_alone && settings.compression == MonoCompression::CcittG4)) && !downsample {
         return None;
     }
     let (data, w, h, packed) = one_bit(doc, s, !retain, defaults)?;
@@ -1039,7 +1039,7 @@ fn mono(doc: &Document, s: &Stream, ppi: f64, defaults: bool, settings: &MonoSet
         Some(out) => (out, nw, nh),
         None => (data, w, h),
     };
-    if (retain || g4_alone) && !resampled {
+    if (retain || (g4_alone && settings.compression == MonoCompression::CcittG4)) && !resampled {
         return None;
     }
     let mut dict = packed.unwrap_or_else(|| d.clone());
@@ -1062,9 +1062,18 @@ fn mono(doc: &Document, s: &Stream, ppi: f64, defaults: bool, settings: &MonoSet
     } else {
         None
     };
+    let jbig = if settings.compression == MonoCompression::Jbig2 {
+        pdfcraft_filters::encode_jbig2(&data, nw, nh).ok().map(|coded| {
+            let mut dict = dict.clone();
+            dict.set(b"Filter".to_vec(), Object::name("JBIG2Decode"));
+            Stream::from_raw(dict, coded)
+        })
+    } else {
+        None
+    };
     let flate = ((resampled || packed_from_more) && !(retain && ccitt)).then(|| Stream::flate(dict, &data));
     // Smaller as stored, counting the dictionary: a tiny image can lose by Group 4's parameters.
-    let best = [g4, flate].into_iter().flatten().filter_map(|c| Some((crate::stored_len(&c)?, c))).min_by_key(|(len, _)| *len)?;
+    let best = [g4, jbig, flate].into_iter().flatten().filter_map(|c| Some((crate::stored_len(&c)?, c))).min_by_key(|(len, _)| *len)?;
     (best.0 < crate::stored_len(s)?).then_some((best.1, resampled))
 }
 
@@ -1092,6 +1101,7 @@ pub(crate) fn run(
     let mut refs: Vec<(ObjRef, f64)> = ppi.into_iter().filter(|(r, _)| !masks.contains(r)).collect();
     refs.sort_by_key(|(r, _)| r.num);
     let total = refs.len();
+    let mut jbig2 = false;
     for (done, (r, ppi)) in refs.into_iter().enumerate() {
         if !progress(Stage::Images { done, total }) {
             return Err(OptimizeError::Cancelled);
@@ -1114,6 +1124,7 @@ pub(crate) fn run(
             } else {
                 report.images_recompressed += 1;
             }
+            jbig2 |= new.dict.name(b"Filter") == Some(b"JBIG2Decode");
             doc.set(r, Object::Stream(new));
             continue;
         }
@@ -1133,6 +1144,7 @@ pub(crate) fn run(
             processed.as_ref().is_none_or(|(new, smask)| total(p, None).zip(total(new, smask.as_ref())).is_some_and(|(a, b)| a <= b))
         });
         if let Some((new, resampled)) = packed.filter(|_| packed_wins) {
+            jbig2 |= new.dict.name(b"Filter") == Some(b"JBIG2Decode");
             report.image_bytes_before += s.raw.len();
             report.image_bytes_after += new.raw.len();
             if resampled {
@@ -1159,6 +1171,23 @@ pub(crate) fn run(
     }
     if !progress(Stage::Images { done: total, total }) {
         return Err(OptimizeError::Cancelled);
+    }
+    if jbig2 {
+        at_least_pdf_1_4(doc)?;
+    }
+    Ok(())
+}
+
+/// JBIG2Decode is PDF 1.4: a document whose header says less, and whose catalog doesn't say 1.4
+/// or more already (directly or by reference), gets `/Version /1.4` in its catalog (ISO 32000-2
+/// §7.7.2). A full save with object streams writes a 1.5 header anyway.
+fn at_least_pdf_1_4(doc: &mut Document) -> Result<(), OptimizeError> {
+    let below = |v: &[u8]| v.len() < 3 || v < &b"1.4"[..];
+    let Some(root) = doc.root() else { return Ok(()) };
+    let version = doc.get(root).as_dict().and_then(|c| c.get(b"Version").cloned());
+    let catalog = version.and_then(|v| doc.resolve(&v).as_name().map(<[u8]>::to_vec));
+    if below(doc.version().as_bytes()) && catalog.as_deref().is_none_or(below) {
+        doc.update_dict(root, |c| c.set(b"Version".to_vec(), Object::name("1.4")))?;
     }
     Ok(())
 }

@@ -2732,6 +2732,7 @@ version = "0.3.0"
 dependencies = [
  "fearless_simd",
  "hayro-ccitt",
+ "image",
 ]
 
 [[package]]
@@ -4335,6 +4336,7 @@ version = "0.15.0"
 dependencies = [
  "encoding_rs",
  "hayro-ccitt",
+ "hayro-jbig2",
  "hayro-syntax",
  "image",
  "pdfcraft-cos",
@@ -4432,6 +4434,7 @@ dependencies = [
  "fax",
  "flate2",
  "hayro-ccitt",
+ "hayro-jbig2",
  "proptest",
  "thiserror 2.0.21",
  "weezl 0.2.1",

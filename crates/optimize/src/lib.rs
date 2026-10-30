@@ -13,7 +13,7 @@
 //!   and `/ColorTransform` disagree). Black-and-white images (1-bit, image masks and CCITT fax,
 //!   Group 3 among them; and eight-bit grey and RGB of only black and white, and indexed images
 //!   that use only palette entries 0 and 1, packed to one bit) above a threshold are averaged down to a
-//!   target resolution, halftones and dithers aside, and are stored as CCITT Group 4, or 1-bit
+//!   target resolution, halftones and dithers aside, and are stored as CCITT Group 4 or lossless JBIG2, or 1-bit
 //!   Flate once resampled or packed, when that is smaller.
 //! - **Discard objects:** page thumbnails, alternate images, document tags (structure tree),
 //!   print settings.
@@ -127,6 +127,10 @@ pub enum Compression {
 pub enum MonoCompression {
     /// CCITT Group 4 (lossless), when smaller than the image as it is.
     CcittG4,
+    /// JBIG2, lossless (a generic region, or symbols when the image's marks repeat), when smaller
+    /// than the image as it is. JBIG2Decode is PDF 1.4: an older document gets `/Version /1.4` in
+    /// its catalog.
+    Jbig2,
     /// Keep each image's own compression.
     Retain,
 }

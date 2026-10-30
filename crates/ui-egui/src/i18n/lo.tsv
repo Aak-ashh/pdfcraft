@@ -567,6 +567,7 @@
 	Grayscale Images	ຮູບພາບລະດັບສີເທົາ
 	Monochrome Images	ຮູບພາບຂາວດຳ
 	CCITT Group 4	CCITT ກຸ່ມ 4
+	JBIG2 (lossless)	JBIG2 (ບໍ່ສູນເສຍ)
 	Bicubic downsampling to	ຫຼຸດຄວາມລະອຽດແບບ Bicubic ລົງເປັນ:
 	for images above	ສຳລັບຮູບພາບທີ່ເກີນ:
 	Compression	ການບີບອັດ
@@ -2478,3 +2479,10 @@ animation effects	Off	ປິດ
 
 # Comments panel: each reply's own "…" menu (AI-assisted, not separately native-reviewed)
 	Options for this reply	ຕົວເລືອກຂອງການຕອບກັບນີ້
+# Untranslated: English text until a translator fills these in.
+	Reads {name}, which the form doesn't have, so it gets no value there.	Reads {name}, which the form doesn't have, so it gets no value there.
+	Its script also reads fields whose names it builds as it runs, so those reads can't be checked.	Its script also reads fields whose names it builds as it runs, so those reads can't be checked.
+	Missing field	Missing field
+	Unchecked reads	Unchecked reads
+	{field} reads fields named as it runs	{field} reads fields named as it runs
+	Some names are built as it runs	Some names are built as it runs

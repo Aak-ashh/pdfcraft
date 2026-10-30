@@ -327,6 +327,7 @@ fn a_refused_text_box_is_put_back_whole() {
         text: "Typed".into(),
         style,
         focus: false,
+        selection: None,
         typing_from: None,
     });
     app.undo();
@@ -351,6 +352,7 @@ fn save_commits_the_open_text_box() {
         text: "Typed text".into(),
         style,
         focus: true,
+        selection: None,
         typing_from: None,
     });
 

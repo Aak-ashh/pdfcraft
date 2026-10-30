@@ -3668,6 +3668,228 @@ fn a_paragraph_editor_opens_at_full_opacity() {
     }
 }
 
+/// One US Letter page of Helvetica, for driving the live editor on a known baseline.
+fn letter_text(body: &str) -> Vec<u8> {
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
+        format!("<< /Length {} >>\nstream\n{body}\nendstream", body.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, object) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for offset in offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+    out
+}
+
+fn open_letter(name: &'static str, bytes: Vec<u8>) -> Harness<'static, PdfCraftApp> {
+    let mut h = Harness::builder().with_size(egui::vec2(1100.0, 1400.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes(name, None, bytes).unwrap();
+        app
+    });
+    h.run_steps(4);
+    h
+}
+
+fn click_page(h: &mut Harness<'static, PdfCraftApp>, x: f32, y: f32) {
+    let page = h.state().views[0].page_screen_rect(0).expect("the page is on screen");
+    let at = egui::pos2(page.left() + x / 612.0 * page.width(), page.top() + (792.0 - y) / 792.0 * page.height());
+    h.hover_at(at);
+    h.run_steps(1);
+    h.drag_at(at);
+    h.run_steps(1);
+    h.drop_at(at);
+    h.run_steps(4);
+}
+
+fn save_live_shot(h: &mut Harness<'static, PdfCraftApp>, name: &str) {
+    for _ in 0..40 {
+        h.run_steps(2);
+        if !h.state().render_pending() {
+            break;
+        }
+    }
+    let dir = std::path::Path::new("/tmp/pdfcraft-visual");
+    let _ = std::fs::create_dir_all(dir);
+    if let Ok(image) = h.render() {
+        let _ = image.save(dir.join(name));
+    }
+}
+
+/// Live editor: a repeated step with no TL opens as one paragraph, and adding a row
+/// beside a kept first row leaves the neighbour as its own paragraph on screen.
+#[test]
+fn the_live_editor_groups_a_repeated_step_and_keeps_the_neighbour() {
+    let step = 27.6_f32;
+    let repeated = format!(
+        "BT /F1 12 Tf 72 700 Td (One) Tj ET BT /F1 12 Tf 72 {} Td (Two) Tj ET BT /F1 12 Tf 72 {} Td (Three) Tj ET",
+        700.0 - step,
+        700.0 - 2.0 * step
+    );
+    let mut h = open_letter("repeated.pdf", letter_text(repeated.as_str()));
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    click_page(&mut h, 90.0, 700.0 - step + 4.0);
+    let editor = h.state().views[0].line_editor.clone().expect("the middle row opens");
+    assert!(editor.text.contains("One") && editor.text.contains("Two") && editor.text.contains("Three"), "{}", editor.text);
+    save_live_shot(&mut h, "live-repeated-step.png");
+
+    let partial = "BT /F1 12 Tf 14.4 TL 1 0 0 1 72 700 Tm (Alpha first row.) Tj T* (Alpha next row.) Tj ET \
+                   BT /F1 12 Tf 14.4 TL 1 0 0 1 72 656.8 Tm (Neighbor stays.) Tj ET";
+    let mut h = open_letter("partial.pdf", letter_text(partial));
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    click_page(&mut h, 120.0, 704.0);
+    let editor = h.state().views[0].line_editor.clone().expect("the first paragraph opens");
+    assert!(editor.text.contains("Alpha first row.") && editor.text.contains("Alpha next row."), "{}", editor.text);
+    assert!(!editor.text.contains("Neighbor"), "{}", editor.text);
+    h.state_mut().views[0].line_editor.as_mut().unwrap().text = "Alpha first row.\nTwo\nThree".into();
+    h.run_steps(1);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    h.run_steps(6);
+    let blocks = {
+        let s = h.state();
+        let doc = s.session.get(s.views[0].id).unwrap();
+        doc.text_blocks(0).iter().map(|b| b.text.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(blocks, ["Alpha first row. Two Three", "Neighbor stays."]);
+    save_live_shot(&mut h, "live-after-adding-a-row.png");
+    click_page(&mut h, 120.0, 660.0);
+    let neighbour = h.state().views[0].line_editor.clone().expect("the neighbour opens on its own");
+    assert_eq!(neighbour.text, "Neighbor stays.");
+    save_live_shot(&mut h, "live-neighbour-open.png");
+}
+
+/// Widening example 1 must not pull the heading into that box or split the paragraph under example 2.
+#[test]
+fn widening_example_one_keeps_the_heading_and_the_next_paragraph() {
+    let body = "BT /F1 14 Tf 72 740 Td (1. Repeated step, no TL. Click Two.) Tj ET \
+                BT /F1 12 Tf 72 700 Td (One) Tj ET \
+                BT /F1 12 Tf 72 672.4 Td (Two) Tj ET \
+                BT /F1 12 Tf 72 644.8 Td (Three) Tj ET \
+                BT /F1 14 Tf 72 590 Td (2. Blank line. Edit the first paragraph.) Tj ET \
+                BT /F1 12 Tf 14.4 TL 1 0 0 1 72 550 Tm (First paragraph, first row.) Tj T* (First paragraph, second row.) Tj ET \
+                BT /F1 12 Tf 14.4 TL 1 0 0 1 72 506.8 Tm (Second paragraph, first row.) Tj T* (Second paragraph, second row.) Tj ET \
+                BT /F1 14 Tf 72 450 Td (3. Add a row under Alpha. Neighbor stays.) Tj ET \
+                BT /F1 12 Tf 14.4 TL 1 0 0 1 72 410 Tm (Alpha first row.) Tj T* (Alpha next row.) Tj ET \
+                BT /F1 12 Tf 14.4 TL 1 0 0 1 72 366.8 Tm (Neighbor stays.) Tj ET";
+    let mut h = open_letter("letter.pdf", letter_text(body));
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    click_page(&mut h, 90.0, 690.0);
+    h.state_mut().views[0].line_editor.as_mut().unwrap().text = "One\nTwo\nThree\nfour".into();
+    h.run_steps(1);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    h.run_steps(8);
+    let (edge, page_id) = {
+        let s = h.state();
+        let id = s.views[0].id;
+        let blocks = s.session.get(id).unwrap().text_blocks(0);
+        let texts: Vec<_> = blocks.iter().map(|b| b.text.clone()).collect();
+        assert!(texts.iter().any(|t| t == "1. Repeated step, no TL. Click Two."), "commit already joined the heading: {texts:?}");
+        assert!(
+            texts.iter().any(|t| t.contains("First paragraph, first row") && t.contains("second row")),
+            "commit already split the next paragraph: {texts:?}"
+        );
+        let block = blocks.iter().find(|b| b.text.contains("four")).expect("the edited paragraph");
+        let page = s.views[0].page_screen_rect(0).unwrap();
+        let edge = egui::pos2(
+            page.left() + block.rect[2] as f32 / 612.0 * page.width(),
+            page.top() + (792.0 - (block.rect[1] + block.rect[3]) as f32 / 2.0) / 792.0 * page.height(),
+        );
+        (edge, id)
+    };
+    let to = edge + egui::vec2(280.0, 0.0);
+    h.hover_at(edge);
+    h.run_steps(1);
+    h.drag_at(edge);
+    h.run_steps(1);
+    for k in 1..=6 {
+        h.hover_at(edge + (to - edge) * (k as f32 / 6.0));
+        h.run_steps(1);
+    }
+    h.drop_at(to);
+    h.run_steps(8);
+    let texts: Vec<_> = {
+        let s = h.state();
+        s.session.get(page_id).unwrap().text_blocks(0).iter().map(|b| b.text.clone()).collect()
+    };
+    let edited = {
+        let s = h.state();
+        s.session
+            .get(page_id)
+            .unwrap()
+            .text_blocks(0)
+            .iter()
+            .find(|b| b.editor_text.contains("four"))
+            .expect("the widened paragraph")
+            .editor_text
+            .clone()
+    };
+    assert_eq!(edited, "One\nTwo\nThree\nfour", "the width handle flattened the line breaks: {edited:?}");
+    assert!(texts.iter().any(|t| t == "1. Repeated step, no TL. Click Two."), "the width handle joined the heading: {texts:?}");
+    assert!(
+        texts.iter().any(|t| t.contains("First paragraph, first row") && t.contains("First paragraph, second row")),
+        "the width handle split the next paragraph: {texts:?}"
+    );
+    save_live_shot(&mut h, "live-example-one-widened.png");
+}
+
+/// The live width handle, after a row was added on top of the neighbour.
+#[test]
+fn resizing_the_live_box_keeps_the_neighbour() {
+    let partial = "BT /F1 12 Tf 14.4 TL 1 0 0 1 72 410 Tm (Alpha first row.) Tj T* (Alpha next row.) Tj ET \
+                   BT /F1 12 Tf 14.4 TL 1 0 0 1 72 366.8 Tm (Neighbor stays.) Tj ET";
+    let mut h = open_letter("partial.pdf", letter_text(partial));
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    click_page(&mut h, 120.0, 414.0);
+    h.state_mut().views[0].line_editor.as_mut().unwrap().text = "Alpha first row.\nthis is another\nalpha test\nAlpha next row.".into();
+    h.run_steps(1);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    h.run_steps(6);
+    let before = {
+        let s = h.state();
+        s.session.get(s.views[0].id).unwrap().text_blocks(0).iter().map(|b| b.text.clone()).collect::<Vec<_>>()
+    };
+    assert!(before.iter().any(|t| t.contains("Neighbor stays.")), "the edit already dropped it: {before:?}");
+    let page = h.state().views[0].page_screen_rect(0).unwrap();
+    let rect = h.state().session.get(h.state().views[0].id).unwrap().text_blocks(0)[0].rect;
+    let edge = egui::pos2(
+        page.left() + rect[2] as f32 / 612.0 * page.width(),
+        page.top() + (792.0 - (rect[1] + rect[3]) as f32 / 2.0) / 792.0 * page.height(),
+    );
+    let to = edge + egui::vec2(80.0, 0.0);
+    h.hover_at(edge);
+    h.run_steps(1);
+    h.drag_at(edge);
+    h.run_steps(1);
+    for k in 1..=4 {
+        h.hover_at(edge + (to - edge) * (k as f32 / 4.0));
+        h.run_steps(1);
+    }
+    h.drop_at(to);
+    h.run_steps(6);
+    let after = {
+        let s = h.state();
+        s.session.get(s.views[0].id).unwrap().text_blocks(0).iter().map(|b| b.text.clone()).collect::<Vec<_>>()
+    };
+    assert!(after.iter().any(|t| t.contains("Neighbor stays.")), "resize removed the neighbour: {after:?}");
+    save_live_shot(&mut h, "live-after-resize.png");
+}
+
 #[test]
 fn editing_existing_text_in_place() {
     let mut h = harness(1, |_| {});
@@ -6869,6 +7091,122 @@ fn undo_while_typing_takes_back_the_typing_first() {
     assert_eq!(s.session.get(s.views[0].id).unwrap().can_undo(), None, "the document is untouched");
 }
 
+/// A paragraph of a short, a wide and a short row, opened in the paragraph editor.
+fn three_row_paragraph() -> Harness<'static, PdfCraftApp> {
+    let bytes = paragraph_drag_fixture("BT /F1 10 Tf 12 TL 60 400 Td (One two) Tj T* (three four five six seven eight) Tj T* (nine ten) Tj ET", 0, 1);
+    let mut h = paragraph_drag_harness(bytes, 0);
+    let (at, _) = paragraph_drag_points(&h, "One two three four five six seven eight nine ten", [0.0, 0.0]);
+    click_at(&mut h, at);
+    assert!(h.state().views[0].line_editor.is_some(), "the paragraph opens for typing");
+    h
+}
+
+/// Format text's alignment flyout, by pointer.
+fn align_by_pointer(h: &mut Harness<'static, PdfCraftApp>, choice: &str) {
+    let button = h.get_by_label("Alignment").rect().center();
+    click_at(h, button);
+    let item = h.get_by_label(choice).rect().center();
+    click_at(h, item);
+}
+
+fn row_rect(h: &Harness<'static, PdfCraftApp>, starts: &str) -> [f64; 4] {
+    let s = h.state();
+    s.session.get(s.views[0].id).unwrap().text_lines(0).into_iter().find(|l| l.text.starts_with(starts)).expect("the row").rect
+}
+
+/// Bug A: with one row of a paragraph selected, an alignment applies to that row only.
+/// Bug C: Undo then puts the paragraph back and closes the editor, instead of leaving it open on
+/// a text the page no longer has.
+#[test]
+fn aligning_a_selected_row_aligns_only_that_row_and_undo_puts_it_back() {
+    let mut h = three_row_paragraph();
+    let first = row_rect(&h, "One");
+    let wide = row_rect(&h, "three");
+    let last = row_rect(&h, "nine");
+    // Select the last row.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    align_by_pointer(&mut h, "Align right");
+    {
+        let s = h.state();
+        assert_eq!(s.session.get(s.views[0].id).unwrap().can_undo(), Some("Edit text"));
+        assert!(s.views[0].line_editor.is_some(), "the paragraph stays open");
+    }
+    let moved = row_rect(&h, "nine");
+    assert!((row_rect(&h, "One")[0] - first[0]).abs() < 0.5, "the first row stays put");
+    assert!((moved[2] - wide[2]).abs() < 1.0 && moved[0] > last[0] + 20.0, "the last row is right-aligned: {moved:?}");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(4);
+    let s = h.state();
+    assert_eq!(s.session.get(s.views[0].id).unwrap().can_undo(), None, "the alignment is undone");
+    assert!(s.views[0].line_editor.is_none(), "the editor closed with the step it showed");
+    assert!((row_rect(&h, "nine")[0] - last[0]).abs() < 0.5, "the last row is back");
+}
+
+/// Format text's alignment flyout by keyboard or screen reader: each control is focused, then
+/// pressed, with no pointer anywhere.
+fn align_by_focus(h: &mut Harness<'static, PdfCraftApp>, choice: &str) {
+    for label in ["Alignment", choice] {
+        h.get_by_label(label).focus();
+        h.run_steps(2);
+        h.get_by_label(label).click();
+        h.run_steps(3);
+    }
+}
+
+/// The same as by pointer, with the alignment controls reached by keyboard or a screen reader:
+/// the paragraph stays open when the focus leaves it for the Format text panel, the selected row
+/// takes the alignment, and a second choice is for that row again.
+#[test]
+fn aligning_a_selected_row_by_keyboard_keeps_the_paragraph_open() {
+    let mut h = three_row_paragraph();
+    let first = row_rect(&h, "One");
+    let wide = row_rect(&h, "three");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    align_by_focus(&mut h, "Align right");
+    assert!(h.state().views[0].line_editor.is_some(), "the paragraph stays open");
+    let moved = row_rect(&h, "nine");
+    assert!((moved[2] - wide[2]).abs() < 1.0, "the last row is right-aligned: {moved:?}");
+    align_by_focus(&mut h, "Centre");
+    assert!(h.state().views[0].line_editor.is_some(), "the paragraph is still open");
+    assert!((row_rect(&h, "One")[0] - first[0]).abs() < 0.5, "the first row stays put: {:?}", row_rect(&h, "One"));
+    let last = row_rect(&h, "nine");
+    assert!((((last[0] + last[2]) - (wide[0] + wide[2])) / 2.0).abs() < 1.0, "the last row is centred: {last:?} in {wide:?}");
+}
+
+/// A row aligned on its own, deleted by typing, then brought back with Undo from the menu: it
+/// comes back with its alignment, and Redo deletes it again. The box's history keeps only text,
+/// so the restored row took the alignment of the row before it.
+#[test]
+fn undo_brings_a_deleted_row_back_with_its_alignment() {
+    let mut h = three_row_paragraph();
+    // Right-align the last row on its own.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    align_by_pointer(&mut h, "Align right");
+    let ed = |h: &Harness<'static, PdfCraftApp>| h.state().views[0].line_editor.clone().expect("the paragraph stays open");
+    let (three_rows, aligned) = (ed(&h).text, ed(&h).look.aligns);
+    assert_eq!(aligned.last(), Some(&Some(pdfcraft_engine::TextAlign::Right)), "{aligned:?}");
+    // Delete the last row with the line break before it.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowLeft);
+    h.key_press(Key::Backspace);
+    h.run_steps(2);
+    let (two_rows, after_delete) = (ed(&h).text, ed(&h).look.aligns);
+    assert_eq!(pdfcraft_engine::paragraph_align::count(&two_rows), 2, "{two_rows:?}");
+    assert!(h.state_mut().execute("edit.undo"));
+    h.run_steps(3);
+    assert_eq!((ed(&h).text, ed(&h).look.aligns), (three_rows, aligned), "Undo brings the row back right-aligned");
+    assert!(h.state_mut().execute("edit.redo"));
+    h.run_steps(3);
+    assert_eq!((ed(&h).text, ed(&h).look.aligns), (two_rows, after_delete), "Redo deletes it again");
+}
+
 /// Redo after Undo in the box puts the typing back, in the box: it doesn't reach the document,
 /// whose own Redo (a formatting change waiting here) must stay waiting.
 #[test]
@@ -6899,6 +7237,48 @@ fn redo_after_undoing_typing_puts_the_typing_back() {
     assert_eq!(ed.text, typed, "Redo puts the typing back");
     let doc = s.session.get(s.views[0].id).unwrap();
     assert_eq!((doc.can_redo(), doc.text_blocks(0)[0].base_font.as_str()), (Some("Edit text"), "Helvetica"), "the document's Redo still waits");
+}
+
+/// A row aligned on its own keeps its alignment when the whole paragraph is then made bold: the
+/// rewrite for the bold carries the rows' alignments too, as nothing in the page records them.
+#[test]
+fn a_row_aligned_on_its_own_keeps_it_through_more_formatting() {
+    let mut h = three_row_paragraph();
+    let wide = row_rect(&h, "three");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    align_by_pointer(&mut h, "Align right");
+    // Nothing selected: the bold is for the whole paragraph.
+    h.key_press(Key::End);
+    h.run_steps(2);
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().selection, None);
+    h.get_by_label("Bold").click();
+    h.run_steps(4);
+    assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().text_blocks(0)[0].base_font, "Helvetica-Bold");
+    let last = row_rect(&h, "nine");
+    assert!(
+        (last[2] - row_rect(&h, "three")[2].max(wide[2])).abs() < 1.0 && last[0] > wide[0] + 20.0,
+        "the last row is still right-aligned: {last:?}"
+    );
+}
+
+/// A second alignment picked while the same row is still selected applies to that row again, not
+/// the whole paragraph.
+#[test]
+fn a_second_alignment_for_a_selected_row_stays_on_that_row() {
+    let mut h = three_row_paragraph();
+    let first = row_rect(&h, "One");
+    let wide = row_rect(&h, "three");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    align_by_pointer(&mut h, "Align right");
+    align_by_pointer(&mut h, "Centre");
+    assert!((row_rect(&h, "One")[0] - first[0]).abs() < 0.5, "the first row stays put: {:?}", row_rect(&h, "One"));
+    let last = row_rect(&h, "nine");
+    let (mid, centre) = ((last[0] + last[2]) / 2.0, (wide[0] + wide[2]) / 2.0);
+    assert!((mid - centre).abs() < 1.0, "the last row is centred: {last:?} in {wide:?}");
 }
 
 /// Redo from the menu or toolbar with typing in the box the page doesn't have yet. Closing the
@@ -6961,7 +7341,13 @@ fn undo_from_the_menu_takes_back_typing_in_the_box() {
     h.key_press_modifiers(Modifiers::COMMAND, Key::End);
     h.event(egui::Event::Text(" more".into()));
     h.run_steps(2);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    assert!(h.state().views[0].line_editor.as_ref().unwrap().selection.is_some());
+    h.event(egui::Event::PointerMoved(egui::pos2(10.0, 10.0)));
+    h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("test-menu")));
     assert!(h.state_mut().execute("edit.undo"), "Undo is enabled for the box's typing");
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().selection, None, "menu history clears the old byte range before the next frame");
     h.run_steps(3);
     let s = h.state();
     let ed = s.views[0].line_editor.as_ref().expect("the box stays open");
@@ -6988,7 +7374,12 @@ fn redo_from_the_menu_is_enabled_for_the_boxs_own_typing() {
     h.run_steps(3);
     assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().text, original, "the typing is taken back");
     assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().can_redo(), None, "the document has nothing to redo");
+    // A range retained while the unfocused editor still showed its previous text.
+    h.state_mut().views[0].line_editor.as_mut().unwrap().selection = Some(0..1);
+    h.event(egui::Event::PointerMoved(egui::pos2(10.0, 10.0)));
+    h.ctx.memory_mut(|m| m.request_focus(egui::Id::unique("test-menu")));
     assert!(h.state_mut().execute("edit.redo"), "Redo is enabled for the box's own step");
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().selection, None, "menu history clears the old byte range before the next frame");
     h.run_steps(3);
     assert_eq!(h.state().views[0].line_editor.as_ref().expect("still open").text, typed, "Redo puts the typing back");
 }
@@ -7148,7 +7539,8 @@ fn redo_in_the_frame_of_a_tab_switch_never_brings_another_tabs_typing() {
 
 /// Two copies of a document, the same paragraph open in each. The paragraph boxes share one text
 /// box, and so one Undo history: a box opened on the same text as another tab's didn't clear it.
-/// Typing in one tab, taken back with Undo, then came back with Redo in the other tab.
+/// Typing in one tab, taken back with Undo, then came back with Redo (the key or the menu) in the
+/// other tab.
 #[test]
 fn typing_in_one_tab_never_reaches_another_tabs_paragraph() {
     let mut h = harness(1, |app| {
@@ -7179,9 +7571,16 @@ fn typing_in_one_tab_never_reaches_another_tabs_paragraph() {
     assert!(h.state().views[1].line_editor.is_some(), "the copy's paragraph is still open");
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     h.run_steps(3);
-    let s = h.state();
-    let text = &s.views[1].line_editor.as_ref().expect("the copy's paragraph stays open through Redo").text;
+    let text = h.state().views[1].line_editor.as_ref().expect("the copy's paragraph stays open through Redo").text.clone();
     assert!(!text.contains("secret"), "the other tab's typing came in: {text:?}");
+    // Nor through what the menu's Redo runs, which reads the box's history itself (the menu item
+    // is off here, as the copy's document has nothing to redo). With no Redo of its own, the box
+    // passes the step to the document and closes, so the page's text is checked too.
+    h.state_mut().redo();
+    h.run_steps(3);
+    let s = h.state();
+    let text = s.views[1].line_editor.as_ref().map(|ed| ed.text.clone());
+    assert!(!text.as_deref().unwrap_or_default().contains("secret"), "the other tab's typing came in from the menu: {text:?}");
     assert_eq!(s.session.get(s.views[1].id).unwrap().text_blocks(0)[0].text, s.session.get(s.views[0].id).unwrap().text_blocks(0)[0].text);
 }
 

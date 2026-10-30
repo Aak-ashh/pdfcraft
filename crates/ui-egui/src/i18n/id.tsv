@@ -2065,6 +2065,7 @@ comment menu	Edit	Edit
 	Grayscale Images	Gambar Skala Abu-abu
 	Monochrome Images	Gambar Monokrom
 	CCITT Group 4	CCITT Grup 4
+	JBIG2 (lossless)	JBIG2 (tanpa kehilangan)
 	Green	Hijau
 	Green on black	Hijau di atas hitam
 	H / Space (hold)	H / Space (tahan)
@@ -2732,6 +2733,12 @@ theme	Appearance	Tampilan
 	Links on page	Links on page
 	Loop	Loop
 	Missing from the calculation order saved in the PDF: other PDF viewers may not calculate it.	Missing from the calculation order saved in the PDF: other PDF viewers may not calculate it.
+	Reads {name}, which the form doesn't have, so it gets no value there.	Reads {name}, which the form doesn't have, so it gets no value there.
+	Its script also reads fields whose names it builds as it runs, so those reads can't be checked.	Its script also reads fields whose names it builds as it runs, so those reads can't be checked.
+	Missing field	Missing field
+	Unchecked reads	Unchecked reads
+	{field} reads fields named as it runs	{field} reads fields named as it runs
+	Some names are built as it runs	Some names are built as it runs
 	Move only what must move, so every field calculates after the fields it reads.	Move only what must move, so every field calculates after the fields it reads.
 	Moves only what must move	Moves only what must move
 	No field reads it	No field reads it

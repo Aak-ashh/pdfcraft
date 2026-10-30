@@ -83,6 +83,10 @@ let report = optimize_with_progress(&mut doc, &settings, &mut |stage| keep_going
     art Flate can be smaller. Not yet: JBIG2, inline images, an image's own `/SMask` or `/Mask`
     image (only images drawn on a page are visited), and Group 4 for rows wider than 32,767
     samples.
+
+Lossless JBIG2 is also available as Monochrome Images compression, with a bounded generic-region encoder and no symbol substitution. Export reads its embedded images and bounded shared globals.
+
+The JBIG2 choice now uses a bounded exact-copy symbol dictionary when smaller than the generic-region result; lossy symbol substitution is not used.
 - **Discard objects:** thumbnails, alternate images, document tags, print settings.
 - **Clean up:** Flate for streams with no filter; for streams with an outer ASCII85 or ASCIIHex
   layer, that layer is removed when the result is smaller (the inner filters keep their encoded

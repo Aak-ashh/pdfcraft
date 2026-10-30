@@ -231,13 +231,17 @@ impl PdfCraftApp {
         if let Some(ed) = view.line_editor.as_mut().filter(|ed| ed.has_unsaved_text()) {
             ed.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, true) else { return false };
-            ed.text = text;
+            let before = std::mem::replace(&mut ed.text, text);
+            ed.selection = None;
+            ed.follow_typed_rows(&ctx, &before);
             return true;
         }
         if let Some(d) = view.content.draft.as_mut().filter(|d| d.has_unapplied_typing()) {
             d.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, true) else { return false };
-            d.text = text;
+            let before = std::mem::replace(&mut d.text, text);
+            d.selection = None;
+            crate::edit_text_ui::follow_typing(&ctx, crate::content_ui::input_id(), &before, &d.text, &mut [&mut d.style.aligns]);
             return true;
         }
         false
@@ -262,13 +266,17 @@ impl PdfCraftApp {
         if let Some(ed) = view.line_editor.as_mut() {
             ed.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::edit_text_ui::input_id(), &ed.text, false) else { return ed.has_unsaved_text() };
-            ed.text = text;
+            let before = std::mem::replace(&mut ed.text, text);
+            ed.selection = None;
+            ed.follow_typed_rows(&ctx, &before);
             return true;
         }
         if let Some(d) = view.content.draft.as_mut() {
             d.claim_typing(&ctx, doc);
             let Some(text) = typing_step(&ctx, crate::content_ui::input_id(), &d.text, false) else { return d.has_unapplied_typing() };
-            d.text = text;
+            let before = std::mem::replace(&mut d.text, text);
+            d.selection = None;
+            crate::edit_text_ui::follow_typing(&ctx, crate::content_ui::input_id(), &before, &d.text, &mut [&mut d.style.aligns]);
             return true;
         }
         false
@@ -1037,6 +1045,7 @@ mod revert_draft_tests {
             text: text.into(),
             style: default_style(),
             focus: true,
+            selection: None,
             typing_from: None,
         };
         assert!(!app.has_unsaved_work(0));
@@ -1063,8 +1072,16 @@ mod revert_draft_tests {
             let mut app = PdfCraftApp::new();
             app.open_bytes("source.pdf", Some(path.clone()), bytes).unwrap();
             let rect = [72.0, 72.0, 272.0, 92.0];
-            app.views[0].content.draft =
-                Some(TextDraft { page: 0, index: None, rect, text: "Typed".into(), style: default_style(), focus: true, typing_from: None });
+            app.views[0].content.draft = Some(TextDraft {
+                page: 0,
+                index: None,
+                rect,
+                text: "Typed".into(),
+                style: default_style(),
+                focus: true,
+                selection: None,
+                typing_from: None,
+            });
             let ctx = egui::Context::default();
             if quit {
                 assert!(!app.request_quit(&ctx));

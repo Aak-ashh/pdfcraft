@@ -1911,6 +1911,190 @@ fn group_3_fax_images_become_group_4() {
     }
 }
 
+/// The images of a document that are images, by object number.
+fn image_refs(doc: &Document) -> Vec<ObjRef> {
+    doc.object_numbers()
+        .into_iter()
+        .map(|num| ObjRef { num, generation: doc.generation(num) })
+        .filter(|r| matches!(&*doc.get(*r), Object::Stream(s) if s.dict.name(b"Subtype") == Some(b"Image")))
+        .collect()
+}
+
+/// Black-and-white images as lossless JBIG2: the page looks the same to the pixel (so
+/// JBIG2Decode gives black as 0, as the encoder assumes), and scan-like text comes out smaller
+/// than as Group 4. JBIG2Decode is PDF 1.4, so a PDF 1.3 document gets `/Version /1.4` in its
+/// catalog.
+#[test]
+fn black_and_white_images_become_jbig2() {
+    let mut doc = Document::new_empty();
+    let (w, h) = (1200, 480);
+    let text = bilevel(w, h, false);
+    let gray = mono_image(&mut doc, w, h, &text, None, &[("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+    let decode = Object::Array(vec![1.into(), 0.into()]);
+    let mask = mono_image(&mut doc, w, h, &text, None, &[("ImageMask", Object::Bool(true)), ("Decode", decode.clone())]);
+    let indexed_cs = Object::Array(vec![
+        Object::name("Indexed"),
+        Object::name("DeviceRGB"),
+        1.into(),
+        Object::String(pdfcraft_cos::PdfString::literal(vec![0xC0, 0x10, 0x10, 0xF8, 0xF0, 0xE0])),
+    ]);
+    let indexed = mono_image(&mut doc, w, h, &text, None, &[("BitsPerComponent", 1.into()), ("ColorSpace", indexed_cs.clone())]);
+    page(
+        &mut doc,
+        &[("G", gray), ("M", mask), ("I", indexed)],
+        "q 300 0 0 120 20 660 cm /G Do Q q 0 0.4 0.8 rg 300 0 0 120 320 660 cm /M Do Q q 300 0 0 120 20 520 cm /I Do Q",
+    );
+    // The same document, as PDF 1.3.
+    let mut bytes = write_full(&doc, &SaveOptions { object_streams: false, ..SaveOptions::default() }).unwrap();
+    bytes[..8].copy_from_slice(b"%PDF-1.3");
+    let doc = Document::open(Arc::new(bytes)).unwrap();
+    assert_eq!(doc.version(), "1.3");
+    let before = render(&doc);
+
+    let mut g4 = doc.clone();
+    let as_g4 = optimize(&mut g4, &Settings::default()).unwrap();
+    let mut jbig2 = doc.clone();
+    let settings = Settings { mono: MonoSettings { compression: MonoCompression::Jbig2, ..MonoSettings::REDUCE }, ..Settings::default() };
+    let r = optimize(&mut jbig2, &settings).unwrap();
+    assert_eq!(r.images_recompressed, 3);
+    assert!(r.image_bytes_after < as_g4.image_bytes_after, "JBIG2 {} bytes, Group 4 {}", r.image_bytes_after, as_g4.image_bytes_after);
+    let images: Vec<Stream> = image_refs(&jbig2).into_iter().map(|i| stream(&jbig2, i)).collect();
+    assert_eq!(images.len(), 3);
+    for s in &images {
+        assert_eq!((s.dict.name(b"Filter"), s.dict.contains(b"DecodeParms")), (Some(&b"JBIG2Decode"[..]), false));
+    }
+    assert!(images.iter().any(|s| s.dict.get(b"Decode") == Some(&decode)), "the decode array stays");
+    let indexed_kept =
+        |s: &Stream| s.dict.get(b"ColorSpace").and_then(Object::as_array).and_then(|a| a.first()).and_then(Object::as_name) == Some(b"Indexed");
+    assert!(images.iter().any(indexed_kept), "the colour space stays");
+    let catalog = jbig2.root().and_then(|r| jbig2.get(r).as_dict().cloned()).unwrap();
+    assert_eq!(catalog.name(b"Version"), Some(&b"1.4"[..]));
+    assert!(g4.root().and_then(|r| g4.get(r).as_dict().cloned()).is_some_and(|c| !c.contains(b"Version")), "Group 4 is PDF 1.0");
+    assert!(render(&jbig2) == before, "the page looks the same");
+    // The integration also supports changing an already-CCITT image to lossless JBIG2.
+    let mut from_g4 = g4.clone();
+    let converted = optimize(&mut from_g4, &settings).unwrap();
+    assert_eq!(converted.images_recompressed, 3);
+    assert!(render(&from_g4) == before, "CCITT decoded and re-encoded as JBIG2 keeps the picture");
+}
+
+/// A catalog `/Version` given by reference is read through it: a PDF 1.3 file whose catalog says
+/// 1.7 by reference keeps 1.7 when its images become JBIG2, rather than being lowered to 1.4; one
+/// whose catalog says 1.3 by reference gets 1.4.
+#[test]
+fn a_catalog_version_given_by_reference_is_read() {
+    for (catalog, after) in [("1.7", "1.7"), ("1.3", "1.4")] {
+        let mut doc = Document::new_empty();
+        let (w, h) = (1200, 480);
+        let text = bilevel(w, h, false);
+        let im = mono_image(&mut doc, w, h, &text, None, &[("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+        page(&mut doc, &[("Im", im)], "q 300 0 0 120 20 660 cm /Im Do Q");
+        let version = doc.add(Object::name(catalog));
+        let root = doc.root().unwrap();
+        doc.update_dict(root, |c| c.set(b"Version".to_vec(), Object::Ref(version))).unwrap();
+        let mut bytes = write_full(&doc, &SaveOptions { object_streams: false, ..SaveOptions::default() }).unwrap();
+        bytes[..8].copy_from_slice(b"%PDF-1.3");
+        let mut doc = Document::open(Arc::new(bytes)).unwrap();
+        let settings = Settings { mono: MonoSettings { compression: MonoCompression::Jbig2, ..MonoSettings::REDUCE }, ..Settings::default() };
+        let r = optimize(&mut doc, &settings).unwrap();
+        assert_eq!(r.images_recompressed, 1);
+        let root = doc.root().unwrap();
+        let v = doc.get(root).as_dict().and_then(|c| c.get(b"Version").cloned()).unwrap();
+        assert_eq!(doc.resolve(&v).as_name(), Some(after.as_bytes()), "catalog {catalog} by reference");
+    }
+}
+
+/// Text as a renderer draws it at 300 dpi: lines 48 rows apart of a few letter shapes, each
+/// `#` a 3 × 3 block, three columns apart with a wider gap between words, every copy of a letter
+/// the same to the pixel.
+fn rendered_text(w: u32, h: u32) -> Vec<u8> {
+    const LETTERS: [&[&str]; 5] = [
+        &["##", "##", "##", "##", "##", "##", "##", "##", "##", "##"],
+        &["......", ".####.", "##..##", "##..##", "##..##", "##..##", ".####."],
+        &["##....", "##....", "##....", "#####.", "##..##", "##..##", "##..##", "#####."],
+        &["##..##", "##..##", "##..##", "##..##", ".#####"],
+        &["##", "##", "..", "##", "##", "##", "##", "##"],
+    ];
+    let stride = (w as usize).div_ceil(8);
+    let mut data = vec![0xFF; stride * h as usize];
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for baseline in (32..h as usize).step_by(48) {
+        let mut x = 8;
+        while x + 20 < w as usize {
+            let letter = LETTERS[(next() % 5) as usize];
+            for (dy, row) in letter.iter().enumerate() {
+                for (dx, c) in row.bytes().enumerate() {
+                    for (py, px) in (0..9).map(|k| (baseline + 1 + 3 * dy + k / 3 - 3 * letter.len(), x + 3 * dx + k % 3)) {
+                        if c == b'#' {
+                            data[py * stride + px / 8] &= !(0x80 >> (px % 8));
+                        }
+                    }
+                }
+            }
+            x += 3 * letter[0].len() + 3 + if next() % 5 == 0 { 12 } else { 0 };
+        }
+    }
+    data
+}
+
+/// Text whose letters repeat exactly, as rendered text does, becomes JBIG2 symbols: each letter
+/// stored once and its copies placed, several times smaller than JBIG2's generic coding of the
+/// same image, and the page looks the same.
+#[test]
+fn rendered_text_becomes_jbig2_symbols() {
+    let mut doc = Document::new_empty();
+    let (w, h) = (600, 480);
+    let text = rendered_text(w, h);
+    let im = mono_image(&mut doc, w, h, &text, None, &[("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+    // One image pixel a device pixel at scale 1, so a wrong pixel shows.
+    page(&mut doc, &[("Im", im)], "q 600 0 0 480 6 300 cm /Im Do Q");
+    let before = render(&doc);
+    let settings = Settings { mono: MonoSettings { compression: MonoCompression::Jbig2, ..MonoSettings::REDUCE }, ..Settings::default() };
+    let r = optimize(&mut doc, &settings).unwrap();
+    assert_eq!(r.images_recompressed, 1);
+    let s = stream(&doc, im);
+    assert_eq!(s.dict.name(b"Filter"), Some(&b"JBIG2Decode"[..]));
+    let generic = pdfcraft_filters::encode_jbig2_generic(&text, w, h).unwrap();
+    assert!(s.raw.len() * 2 < generic.len(), "symbols {} bytes, generic {}", s.raw.len(), generic.len());
+    assert!(render(&doc) == before, "the page looks the same");
+}
+
+/// A whole 300 dpi letter page of rendered text, more marks than one JBIG2 text region of the
+/// decoder PdfCraft renders with takes, still looks the same as JBIG2 symbols.
+#[test]
+fn a_dense_page_of_rendered_text_looks_the_same_as_jbig2_symbols() {
+    let mut doc = Document::new_empty();
+    let (w, h) = (2550, 3300);
+    let text = rendered_text(w, h);
+    let im = mono_image(&mut doc, w, h, &text, None, &[("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+    page(&mut doc, &[("Im", im)], "q 612 0 0 792 0 0 cm /Im Do Q");
+    let before = render(&doc);
+    let settings = Settings { mono: MonoSettings { compression: MonoCompression::Jbig2, ..MonoSettings::REDUCE }, ..Settings::default() };
+    let r = optimize(&mut doc, &settings).unwrap();
+    assert_eq!(r.images_recompressed, 1);
+    let s = stream(&doc, im);
+    assert_eq!(s.dict.name(b"Filter"), Some(&b"JBIG2Decode"[..]));
+    assert!(s.raw.len() * 2 < pdfcraft_filters::encode_jbig2_generic(&text, w, h).unwrap().len(), "symbol coded");
+    // The copies take several text regions (segment type 7, ISO/IEC 14492 7.3), read from the
+    // segment headers (7.2): number, flags, referred-to count and numbers, page, data length.
+    let mut regions = 0;
+    let mut at = 0;
+    while let Some(header) = s.raw.get(at..at + 6) {
+        let refers = usize::from(header[5] >> 5);
+        let length = u32::from_be_bytes(s.raw[at + 7 + refers..at + 11 + refers].try_into().unwrap()) as usize;
+        regions += usize::from(header[4] & 0x3F == 7);
+        at += 11 + refers + length;
+    }
+    assert!(regions > 1, "{regions} text regions");
+    assert!(render(&doc) == before, "the page looks the same");
+}
+
 #[test]
 fn settings_choose_what_happens() {
     let mut doc = Document::new_empty();

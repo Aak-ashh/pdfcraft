@@ -3,7 +3,7 @@
 Base: 1d1cbc4ec92012767f5b48c92b451e15eb401c42
 
 Validation: pending combined GitHub CI. No fresh manual GUI pass has been performed.
-All included source heads are preserved as merge parents, retaining original authorship. No upstream PR was merged. No conflicts were manually resolved.
+All included source heads are preserved as merge parents, retaining original authorship. No upstream PR was merged. Conflicts were resolved after the user requested inclusion despite merge conflicts.
 
 ## Included
 - [#4304](https://github.com/storytold/pdfcraft/pull/4304): M11: PDF Optimizer stores black-and-white images as CCITT Group 4 (optimize.mono-compression) (1b7164cab1fc187c5385c30f94449542fe284280)
@@ -28,14 +28,16 @@ All included source heads are preserved as merge parents, retaining original aut
 - [#2133](https://github.com/storytold/pdfcraft/pull/2133): Fix Pages sidebar select-all keyboard shortcut (#2052) (7227eb68ab383e47413f1a980f340f5132cf4144)
 - [#2635](https://github.com/storytold/pdfcraft/pull/2635): Allow typed font sizes and Fill & Sign text colours (4b319bb3835709626c663b8d41b72d2f9574acc0)
 
-## Excluded
-- [#4320](https://github.com/storytold/pdfcraft/pull/4320): conflict.
-- [#4805](https://github.com/storytold/pdfcraft/pull/4805): conflict.
-- [#4325](https://github.com/storytold/pdfcraft/pull/4325): conflict.
-- [#4180](https://github.com/storytold/pdfcraft/pull/4180): conflict.
-- [#1952](https://github.com/storytold/pdfcraft/pull/1952): conflict.
-- [#2529](https://github.com/storytold/pdfcraft/pull/2529): conflict with main.
+## Added after conflict resolution
+- [#4320](https://github.com/storytold/pdfcraft/pull/4320): M11: lossless JBIG2 for black-and-white images (optimize.mono-compression) (e18d1bfed38272a33fad1b79b7452494a9f4dfd6).
+- [#4805](https://github.com/storytold/pdfcraft/pull/4805): M11: JBIG2 symbol coding for black-and-white images (optimize.mono-compression) (c7f39a4d9a341dcbdacaf3bc131ea2825f030b13).
+- [#4325](https://github.com/storytold/pdfcraft/pull/4325): M6: calculation checks: formulas reading missing fields, scripts building names, shown on the Calculation order page (ebad7f849d9dc04f8aa819efd4cfb06460de3d79).
+- [#4180](https://github.com/storytold/pdfcraft/pull/4180): M7: align the selected lines of a paragraph or text box on their own (5a86f35210ca98adb23ba53ff9d0871593b0cfdb).
+- [#1952](https://github.com/storytold/pdfcraft/pull/1952): feat(forms): edit checkbox and radio export values (#231) (e19f9646906df51c287f9b049feb8199cd645996).
+- [#2529](https://github.com/storytold/pdfcraft/pull/2529): M7: keep a blank line as a paragraph break (#2517) (55a933800b94b89c0caae001ec48609cd5f70256).
 
-Additional previously reviewed parity fixes: #2133 and #2635. #1952 was considered but conflicts.
+Additional previously reviewed parity fixes: #2133, #2635 and #1952.
 Excluded held PRs #4648, #2877 and #3762 were not included.
 Source reviews and individual hosted CI do not establish combined-build safety; the integration gate must pass.
+
+Integration-specific changes: preserve hard/soft wrap metadata together with per-row alignment; share CCITT/JBIG2 export paths with the 32 MiB globals cap retained; keep downsampling and RGB ownership guards with JBIG2 encoding; retain all translation keys and both sets of regression tests.

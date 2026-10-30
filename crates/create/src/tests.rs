@@ -1934,3 +1934,278 @@ fn group_3_ccitt_masks_and_parameters_by_reference_export_as_their_picture() {
     assert_eq!(exported[0].1.1.get(..8), Some(&[255, 0, 0, 255, 0, 0, 255, 255][..]), "red, then blue");
     assert_eq!(exported[1], exported[0], "by reference as direct");
 }
+
+/// An image whose PNG predictor is given by reference exports as its picture: its `/DecodeParms`
+/// dictionary given by reference, as an array's entry, or direct with its numbers by reference. So
+/// do an indexed image whose lookup table is a stream with its `/DecodeParms` given by reference,
+/// and a JBIG2 image whose `/JBIG2Globals` stream has them so. `Stream::decoded` reads only a
+/// direct `/DecodeParms` with direct numbers: the row tags stayed in the samples, and the picture
+/// came out shifted.
+#[test]
+fn images_whose_predictor_is_given_by_reference_export_as_their_picture() {
+    // PNG predictor parameters for `columns` one-byte samples a row.
+    let parms = |columns: i64| {
+        let mut p = Dict::new();
+        p.set(b"Predictor".to_vec(), Object::Int(15));
+        p.set(b"Colors".to_vec(), Object::Int(1));
+        p.set(b"BitsPerComponent".to_vec(), Object::Int(8));
+        p.set(b"Columns".to_vec(), Object::Int(columns));
+        p
+    };
+    // Two rows of four grey samples, each behind a PNG "None" row tag.
+    let predicted = pdfcraft_filters::encode_flate(&[0, 10, 20, 30, 40, 0, 50, 60, 70, 80]);
+    let grey: Vec<u8> = [10u8, 20, 30, 40, 50, 60, 70, 80].iter().flat_map(|v| [*v, *v, *v, 255]).collect();
+    for form in ["a reference", "an array of a reference", "numbers by reference"] {
+        let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+        with_image(&mut doc, |doc| {
+            let mut d = image_dict(4, 2, "DeviceGray", 8);
+            d.set(b"Filter".to_vec(), Object::name("FlateDecode"));
+            let decode_parms = match form {
+                "numbers by reference" => {
+                    let mut p = parms(4);
+                    for key in [&b"Predictor"[..], b"Columns"] {
+                        let v = p.get(key).cloned().unwrap();
+                        p.set(key.to_vec(), Object::Ref(doc.add(v)));
+                    }
+                    Object::Dict(p)
+                }
+                "a reference" => Object::Ref(doc.add(Object::Dict(parms(4)))),
+                _ => Object::Array(vec![Object::Ref(doc.add(Object::Dict(parms(4))))]),
+            };
+            d.set(b"DecodeParms".to_vec(), decode_parms);
+            Stream::from_raw(d, predicted.clone())
+        });
+        assert_eq!(exported_rgba(&doc), ("png", grey.clone()), "/DecodeParms as {form}");
+    }
+    // An indexed image's lookup table, red then blue, as a stream behind a "None" row tag.
+    let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+    with_image(&mut doc, |doc| {
+        let mut t = Dict::new();
+        t.set(b"Filter".to_vec(), Object::name("FlateDecode"));
+        t.set(b"DecodeParms".to_vec(), Object::Ref(doc.add(Object::Dict(parms(6)))));
+        let table = doc.add(Object::Stream(Stream::from_raw(t, pdfcraft_filters::encode_flate(&[0, 255, 0, 0, 0, 0, 255]))));
+        let mut d = image_dict(4, 1, "DeviceGray", 8);
+        d.set(b"ColorSpace".to_vec(), Object::Array(vec![Object::name("Indexed"), Object::name("DeviceRGB"), Object::Int(1), Object::Ref(table)]));
+        Stream::from_raw(d, vec![0, 1, 0, 1])
+    });
+    let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+    assert_eq!(exported_rgba(&doc), ("png", [red, blue, red, blue].concat()), "the lookup table's /DecodeParms by reference");
+    // A JBIG2 image whose globals hold one extension segment (ISO/IEC 14492 7.4.14) a decoder
+    // ignores, behind a "None" row tag. With the tag left in, the globals can't be read and the
+    // image is skipped.
+    let segment = [0, 0, 0, 0, 0x3E, 0, 0, 0, 0, 0, 4, 0, 0, 0, 1];
+    let bits = [0xF0u8, 0x0F, 0xAA, 0x55];
+    let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+    with_image(&mut doc, |doc| {
+        let mut g = Dict::new();
+        g.set(b"Filter".to_vec(), Object::name("FlateDecode"));
+        g.set(b"DecodeParms".to_vec(), Object::Ref(doc.add(Object::Dict(parms(segment.len() as i64)))));
+        let tagged: Vec<u8> = [0].iter().chain(&segment).copied().collect();
+        let globals = doc.add(Object::Stream(Stream::from_raw(g, pdfcraft_filters::encode_flate(&tagged))));
+        let mut decode_parms = Dict::new();
+        decode_parms.set(b"JBIG2Globals".to_vec(), Object::Ref(globals));
+        let mut d = image_dict(16, 2, "DeviceGray", 1);
+        d.set(b"Filter".to_vec(), Object::name("JBIG2Decode"));
+        d.set(b"DecodeParms".to_vec(), Object::Dict(decode_parms));
+        Stream::from_raw(d, pdfcraft_filters::encode_jbig2_generic(&bits, 16, 2).unwrap())
+    });
+    let picture: Vec<u8> = (0..32).flat_map(|i| if bits[i / 8] & (0x80 >> (i % 8)) != 0 { [255, 255, 255, 255] } else { [0, 0, 0, 255] }).collect();
+    assert_eq!(exported_rgba(&doc), ("png", picture), "the JBIG2 globals' /DecodeParms by reference");
+}
+
+/// An image the optimizer stored as JBIG2 symbols (a symbol dictionary and text regions, rather
+/// than one generic region) exports as its picture.
+#[test]
+fn symbol_coded_jbig2_images_export_as_their_picture() {
+    const LETTERS: [[&str; 7]; 3] = [
+        ["#####", "#....", "####.", "#....", "#....", "#....", "#####"],
+        [".###.", "#...#", "#....", "#....", "#....", "#...#", ".###."],
+        ["#...#", "#...#", "#####", "#...#", "#...#", "#...#", "#...#"],
+    ];
+    let (w, h) = (400usize, 40usize);
+    let stride = w.div_ceil(8);
+    // 1 samples white, as a grey image's are; the letters' pixels 0.
+    let mut bits = vec![0xFFu8; stride * h];
+    for (line, top) in [2usize, 12, 22, 32].into_iter().enumerate() {
+        for (k, x) in (3..w - 6).step_by(7).enumerate() {
+            for (dy, row) in LETTERS[(k + line) % 3].iter().enumerate() {
+                for (dx, c) in row.bytes().enumerate() {
+                    if c == b'#' {
+                        bits[(top + dy) * stride + (x + dx) / 8] &= !(0x80 >> ((x + dx) % 8));
+                    }
+                }
+            }
+        }
+    }
+    let jbig2 = pdfcraft_filters::encode_jbig2(&bits, w as u32, h as u32).unwrap();
+    let generic = pdfcraft_filters::encode_jbig2_generic(&bits, w as u32, h as u32).unwrap();
+    assert!(jbig2.len() < generic.len(), "symbol coded: {} bytes, generic {}", jbig2.len(), generic.len());
+    let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+    with_image(&mut doc, |_| {
+        let mut d = image_dict(w as i64, h as i64, "DeviceGray", 1);
+        d.set(b"Filter".to_vec(), Object::name("JBIG2Decode"));
+        Stream::from_raw(d, jbig2)
+    });
+    let picture: Vec<u8> = (0..w * h)
+        .flat_map(|i| if bits[i / w * stride + i % w / 8] & (0x80 >> (i % w % 8)) != 0 { [255, 255, 255, 255] } else { [0, 0, 0, 255] })
+        .collect();
+    assert_eq!(exported_rgba(&doc), ("png", picture));
+}
+
+/// Export ▸ Images reads JBIG2 images (ISO 32000-2 §7.4.7), JBIG2 black as 0: as the image, and as
+/// a stencil `/Mask` of another. Their `/JBIG2Globals` are read, from a dictionary or the one in
+/// an array, so globals that can't be read skip the image rather than being ignored. Rows past the
+/// image's height are left out; a JBIG2 page of another width, or with fewer rows than the image,
+/// or larger than an exported image may be (however small the image's `/Height`), or data that
+/// isn't JBIG2, skips the image.
+#[test]
+fn jbig2_images_export_as_their_picture() {
+    let (w, h) = (203i64, 41i64);
+    let stride = 26;
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let bits: Vec<u8> = (0..stride * h as usize)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed as u8
+        })
+        .collect();
+    // The first `rows` rows as RGBA: a 1 sample white, a 0 black.
+    let picture = |rows: i64| -> Vec<u8> {
+        (0..rows as usize)
+            .flat_map(|y| (0..w as usize).map(move |x| (x, y)))
+            .flat_map(|(x, y)| {
+                let v = if bits[y * stride + x / 8] & (0x80 >> (x % 8)) != 0 { 255 } else { 0 };
+                [v, v, v, 255]
+            })
+            .collect()
+    };
+    let jbig2 = pdfcraft_filters::encode_jbig2_generic(&bits, w as u32, h as u32).unwrap();
+    // A page whose image is `data` as JBIG2, `width` × `height`. With `globals`, its /DecodeParms
+    // (an array when `.1`) name a globals stream; with `mask`, it is the stencil /Mask of a grey
+    // image.
+    let page = |width: i64, height: i64, data: &[u8], globals: Option<(&[u8], bool)>, mask: bool| {
+        let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+        with_image(&mut doc, |doc| {
+            let mut d = image_dict(width, height, "DeviceGray", 1);
+            d.set(b"Filter".to_vec(), Object::name("JBIG2Decode"));
+            if let Some((g, in_array)) = globals {
+                let g = doc.add(Object::Stream(Stream::from_raw(Dict::new(), g.to_vec())));
+                let mut parms = Dict::new();
+                parms.set(b"JBIG2Globals".to_vec(), Object::Ref(g));
+                d.set(b"DecodeParms".to_vec(), if in_array { Object::Array(vec![Object::Dict(parms)]) } else { Object::Dict(parms) });
+            }
+            if !mask {
+                return Stream::from_raw(d, data.to_vec());
+            }
+            d.remove(b"ColorSpace");
+            d.set(b"ImageMask".to_vec(), Object::Bool(true));
+            let m = doc.add(Object::Stream(Stream::from_raw(d, data.to_vec())));
+            let mut image = image_dict(width, height, "DeviceGray", 8);
+            image.set(b"Mask".to_vec(), Object::Ref(m));
+            Stream::from_raw(image, vec![128; (width * height) as usize])
+        });
+        doc
+    };
+    let skipped = |doc: &Document| {
+        let out = extract_images(doc, &[0], 0);
+        out.images.is_empty() && out.skipped.len() == 1
+    };
+
+    assert_eq!(exported_rgba(&page(w, h, &jbig2, None, false)), ("png", picture(h)));
+    assert_eq!(exported_rgba(&page(w, h, &jbig2, Some((&[][..], false)), false)).1, picture(h), "empty globals");
+    for in_array in [false, true] {
+        assert!(skipped(&page(w, h, &jbig2, Some((&b"not JBIG2"[..], in_array)), false)), "unreadable globals, in an array: {in_array}");
+    }
+    assert_eq!(exported_rgba(&page(w, h - 5, &jbig2, None, false)).1, picture(h - 5), "rows past the height");
+    for (width, height, data) in [(w + 8, h, &jbig2[..]), (w - 1, h, &jbig2[..]), (w, h + 1, &jbig2[..]), (w, h, &b"not JBIG2"[..])] {
+        assert!(skipped(&page(width, height, data, None, false)), "{width} × {height}, {} bytes", data.len());
+    }
+    // The same stream with its page information (the first segment's data, after its 11-byte
+    // header: width, then height) claiming a 20,000 × 10,000 page: 200 million pixels, over the
+    // export's 100 million, behind an image of 20,000 × 4. The decoder would decode the whole page
+    // (it takes pages of up to about 2^28 pixels), so it is refused first.
+    let mut large = jbig2.clone();
+    large[11..15].copy_from_slice(&20_000u32.to_be_bytes());
+    large[15..19].copy_from_slice(&10_000u32.to_be_bytes());
+    assert!(skipped(&page(20_000, 4, &large, None, false)), "a page over the export's size");
+    // Refused the same ways as a stencil /Mask, it is left out: the image exports opaque.
+    for (width, height, mask) in [(w + 8, h, &jbig2), (20_000, 4, &large)] {
+        let rgba = exported_rgba(&page(width, height, mask, None, true)).1;
+        assert_eq!(rgba.len() as i64, width * height * 4, "a {width}-wide mask");
+        assert!(alphas(&rgba).iter().all(|a| *a == 255), "a refused {width}-wide mask is left out");
+    }
+    // A page of exactly the budget, 20,000 × 5,000, is decoded; one row more is refused.
+    for (rows, refused) in [(5_000u32, false), (5_001, true)] {
+        large[15..19].copy_from_slice(&rows.to_be_bytes());
+        let doc = page(20_000, 4, &large, None, false);
+        assert_eq!(skipped(&doc), refused, "a page of 20,000 × {rows}");
+        if !refused {
+            assert_eq!(exported_rgba(&doc).1.len(), 20_000 * 4 * 4);
+        }
+    }
+    // Damaged data never panics.
+    for end in [0, 1, 10, 20, 30, jbig2.len() / 2] {
+        let _ = extract_images(&page(w, h, &jbig2[..end], None, false), &[0], 0);
+    }
+
+    // As a stencil /Mask, its 1 samples (JBIG2 white) hide the image.
+    let alpha: Vec<u8> = picture(h).as_chunks::<4>().0.iter().map(|p| 255 - p[0]).collect();
+    assert_eq!(alphas(&exported_rgba(&page(w, h, &jbig2, None, true)).1), alpha);
+}
+
+/// A JBIG2 image's `/JBIG2Globals` are decoded before its JBIG2 page's size is known, so they have
+/// a limit of their own, 32 MiB, far below the 1 GiB of any stream: globals that Flate-decode to
+/// one byte more skip the image, with the limit in the reason, though they take a few kilobytes
+/// in the file. Globals of exactly the limit are read, and the limit is the same through an
+/// indirect `/DecodeParms`, in an array or not.
+#[test]
+fn jbig2_globals_are_decoded_within_a_limit_of_their_own() {
+    const LIMIT: usize = 32 << 20;
+    let bits = [0xF0u8, 0x0F, 0xAA, 0x55];
+    let jbig2 = pdfcraft_filters::encode_jbig2_generic(&bits, 16, 2).unwrap();
+    let picture: Vec<u8> = (0..32).flat_map(|i| if bits[i / 8] & (0x80 >> (i % 8)) != 0 { [255; 4] } else { [0, 0, 0, 255] }).collect();
+    // Globals of `len` bytes, Flate-encoded: one extension segment (ISO/IEC 14492 7.4.14), which a
+    // decoder skips; its 11-byte header gives the length of the data after it.
+    let globals = |len: usize| {
+        let mut g = vec![0, 0, 0, 0, 0x3E, 0, 0];
+        g.extend_from_slice(&u32::try_from(len - 11).unwrap().to_be_bytes());
+        g.extend_from_slice(&[0, 0, 0, 1]);
+        g.resize(len, 0);
+        pdfcraft_filters::encode_flate(&g)
+    };
+    // The image, its /DecodeParms naming `flated` as its globals: direct (0), by reference (1), or
+    // by reference in an array (2).
+    let page = |flated: &[u8], form: usize| {
+        let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
+        with_image(&mut doc, |doc| {
+            let mut g = Dict::new();
+            g.set(b"Filter".to_vec(), Object::name("FlateDecode"));
+            let g = doc.add(Object::Stream(Stream::from_raw(g, flated.to_vec())));
+            let mut parms = Dict::new();
+            parms.set(b"JBIG2Globals".to_vec(), Object::Ref(g));
+            let parms = match form {
+                0 => Object::Dict(parms),
+                1 => Object::Ref(doc.add(Object::Dict(parms))),
+                _ => Object::Array(vec![Object::Ref(doc.add(Object::Dict(parms)))]),
+            };
+            let mut d = image_dict(16, 2, "DeviceGray", 1);
+            d.set(b"Filter".to_vec(), Object::name("JBIG2Decode"));
+            d.set(b"DecodeParms".to_vec(), parms);
+            Stream::from_raw(d, jbig2.clone())
+        });
+        doc
+    };
+
+    let (small, full, over) = (globals(15), globals(LIMIT), globals(LIMIT + 1));
+    assert!(over.len() < 64 << 10, "the oversized globals take {} bytes in the file", over.len());
+    assert_eq!(exported_rgba(&page(&full, 0)).1, picture, "globals of exactly the limit");
+    for form in 0..3 {
+        assert_eq!(exported_rgba(&page(&small, form)).1, picture, "small globals, form {form}");
+        let out = extract_images(&page(&over, form), &[0], 0);
+        assert!(out.images.is_empty(), "globals over the limit, form {form}");
+        let why = &out.skipped.first().expect("the image is skipped").2;
+        assert!(why.starts_with("the JBIG2 globals can't be read") && why.contains(&format!("limit of {LIMIT} bytes")), "{why}");
+    }
+}

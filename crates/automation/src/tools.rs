@@ -391,7 +391,7 @@ pub fn tools() -> Vec<ToolDef> {
             }),
             &["doc", "from", "to"],
         )),
-        t("form_fields", "List form fields", "Every interactive form field: name, type (text, checkbox, radio, combo, list, button, signature), value, options, page, rect (top-left-origin points) and rotation (0, 90, 180 or 270 degrees counterclockwise), read-only and required flags. Push buttons include caption (first widget's normal label) and captions [{widget, caption}] for all widgets (1-based).")
+        t("form_fields", "List form fields", "Every interactive form field: name, type (text, checkbox, radio, combo, list, button, signature), value, options, page, rect (top-left-origin points) and rotation (0, 90, 180 or 270 degrees counterclockwise), read-only and required flags. A calculated field includes calculate: {op, fields} or {notation} as form_set_props takes them, or {script} for a custom Calculate script (set with form_set_script). Push buttons include caption (first widget's normal label) and captions [{widget, caption}] for all widgets (1-based).")
             .ro()
             .with(schema(json!({ "doc": doc() }), &["doc"])),
         t(
@@ -475,8 +475,9 @@ pub fn tools() -> Vec<ToolDef> {
                 "fields": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 1000, "uniqueItems": true, "description": "Apply the same changes to these fields in one atomic edit. Use either field or fields." },
                 "name": { "type": "string" },
                 "tooltip": { "type": "string" },
+                "export_value": { "type": "string", "description": "Checkbox/radio export value; preserves appearance states and selection. Requires a single field." },
                 "caption": { "type": "string", "description": "Normal push-button label; an empty string clears it. Requires a single field." },
-                "widget": { "type": "integer", "minimum": 1, "description": "Widget whose caption changes (1-based, default 1). Requires caption. See form_fields.captions." },
+                "widget": { "type": "integer", "minimum": 1, "description": "Widget whose caption or export value changes (1-based, default 1). Requires caption or export_value. See form_fields.captions and export_values." },
                 "read_only": { "type": "boolean" },
                 "required": { "type": "boolean" },
                 "multiline": { "type": "boolean" },
@@ -492,7 +493,7 @@ pub fn tools() -> Vec<ToolDef> {
                 "rotation": { "type": "integer", "enum": [0, 90, 180, 270], "description": "Widget rotation in degrees, counterclockwise. Changing between horizontal and vertical swaps the rectangle around its center." },
                 "appearance": { "type": "object", "description": "Appearance tab: border, fill, text_color (#RRGGBB, a name or \"none\"), width (0–12 points; 1 thin, 2 medium, 3 thick), style (solid, dashed, beveled, inset, underline), font (helvetica, times, courier)." },
                 "format": { "description": "Format tab: {\"type\": \"number\", \"decimals\": 2, \"currency\": \"$\", \"separator\": 0-4, \"negative\": 0-3}, {\"type\": \"percent\"}, {\"type\": \"date\"|\"time\", \"pattern\": \"mm/dd/yyyy\"}, {\"type\": \"zip\"|\"zip4\"|\"phone\"|\"ssn\"}, {\"type\": \"mask\", \"mask\": \"AA-9999\"}, or \"none\"." },
-                "validate": { "description": "Validate tab: {\"min\": 0, \"max\": 100} (either may be left out) or \"none\"." },
+                "validate": { "description": "Validate tab: {\"min\": 0, \"max\": 100} (either may be left out, or null) or \"none\"." },
                 "calculate": { "description": "Calculate tab: {\"op\": \"sum\"|\"product\"|\"average\"|\"min\"|\"max\", \"fields\": [\"a\", \"b\"]}, {\"notation\": \"Price * Qty\"} (simplified field notation), or \"none\"." },
             }),
             &["doc"],
@@ -502,7 +503,7 @@ pub fn tools() -> Vec<ToolDef> {
                 json!({ "doc": doc(), "order": { "type": "string", "enum": ["row", "column", "structure", "annotations"] }, "pages": pages("to set (default: all)"), "field": { "type": "string" }, "move": { "type": "string", "enum": ["earlier", "later"] } }),
                 &["doc"],
             )),
-        t("form_calculation_order", "Read or set the calculation order", "The calculated fields in the order they calculate (Acrobat: Set Field Calculation Order), each with the fields its formula reads (`reads`; a script's names built at run time aren't known) and its `issues`: runs_too_early (it reads `field`, which calculates after it, so it shows a stale value), cycle (it reads `fields`, which read it back: no order fixes that, a formula has to change) and not_in_order (the PDF's order leaves it out, so other viewers may not calculate it). `extra` lists entries of the PDF's order that calculate nothing. Without a change it only reads. Changes, one at a time: `order` (these fields first, in this order, then the other calculated fields in their order), `field` with `move` earlier|later (one place), or `fix` true (only what must move moves, so every field calculates after the fields it reads, and the extra entries go). A change recalculates the form. Undoable.")
+        t("form_calculation_order", "Read or set the calculation order", "The calculated fields in the order they calculate (Acrobat: Set Field Calculation Order), each with its `formula` (as form_fields shows calculate), the fields it reads (`reads`; a script's names built at run time aren't known) and its `issues`: missing_field (it reads `field`, which the form doesn't have, so it gets no value there), runs_too_early (it reads `field`, which calculates after it, so it shows a stale value), cycle (it reads `fields`, which read it back: no order fixes that, a formula has to change) and not_in_order (the PDF's order leaves it out, so other viewers may not calculate it) and built_names (its script also reads fields by names it builds at run time, which aren't checked). `extra` lists entries of the PDF's order that calculate nothing. Without a change it only reads. Changes, one at a time: `order` (these fields first, in this order, then the other calculated fields in their order), `field` with `move` earlier|later (one place), or `fix` true (only what must move moves, so every field calculates after the fields it reads, and the extra entries go). A change recalculates the form. Undoable.")
             .cmd("form.calculation_order")
             .with(schema(
                 json!({ "doc": doc(), "order": { "type": "array", "items": { "type": "string" } }, "field": { "type": "string" }, "move": { "type": "string", "enum": ["earlier", "later"] }, "fix": { "type": "boolean" } }),
@@ -636,6 +637,7 @@ pub fn tools() -> Vec<ToolDef> {
                 "font": { "type": "string", "enum": ["helvetica", "times", "courier"] }, "size": { "type": "number", "minimum": 1, "maximum": 500 },
                 "bold": { "type": "boolean" }, "italic": { "type": "boolean" }, "color": { "type": "string" },
                 "align": { "type": "string", "enum": ["left", "center", "right", "justify"] },
+                "aligns": { "type": "array", "maxItems": 4096, "items": { "enum": ["left", "center", "right", "justify", null] }, "description": "Each paragraph's (line's) own alignment, by index; null follows align." },
                 "char_spacing": { "type": "number", "minimum": -500, "maximum": 500, "description": "Points after each character." },
             }),
             &["doc", "page", "text"],
@@ -658,6 +660,7 @@ pub fn tools() -> Vec<ToolDef> {
                     "font": { "type": "string", "enum": ["helvetica", "times", "courier"] }, "size": { "type": "number", "minimum": 1, "maximum": 500 },
                     "bold": { "type": "boolean" }, "italic": { "type": "boolean" }, "color": { "type": "string" },
                     "align": { "type": "string", "enum": ["left", "center", "right", "justify"] },
+                    "aligns": { "type": "array", "maxItems": 4096, "items": { "enum": ["left", "center", "right", "justify", null] }, "description": "Each paragraph's (line's) own alignment, by index; null follows align." },
                     "char_spacing": { "type": "number", "minimum": -500, "maximum": 500, "description": "Points after each character." },
                     "rotate": { "type": "integer" }, "flip_h": { "type": "boolean" }, "flip_v": { "type": "boolean" },
                     "crop": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 0.95 }, "minItems": 4, "maxItems": 4, "description": "Fractions trimmed: left, bottom, right, top. Left and right together, and bottom and top together, trim at most 0.95." },
@@ -1278,7 +1281,7 @@ pub fn tools() -> Vec<ToolDef> {
             .ro()
             .cmd("ocr.recognize")
             .with(schema(json!({}), &[])),
-        t("doc_export_all_images", "Export all images", "Write the images that pages use into a folder (`<name>_Page_<n>_Image_<k>.jpg|png`, n zero-padded to the page count's digits), each once: JPEG images unchanged, others as PNG with their soft mask as alpha. min_size skips images with fewer pixels on their shorter side. Images that can't be decoded yet (JPEG 2000, JBIG2, separations) are listed under skipped. Includes unsaved edits.")
+        t("doc_export_all_images", "Export all images", "Write the images that pages use into a folder (`<name>_Page_<n>_Image_<k>.jpg|png`, n zero-padded to the page count's digits), each once: JPEG images unchanged, others as PNG with their soft mask as alpha. min_size skips images with fewer pixels on their shorter side. Images that can't be decoded yet (JPEG 2000, JBIG2 inside other filters, separations) are listed under skipped. Includes unsaved edits.")
             .cmd("export.all_images")
             .with(schema(
                 json!({
@@ -1425,6 +1428,7 @@ pub fn tools() -> Vec<ToolDef> {
                     "size": { "type": "number", "exclusiveMinimum": 0 },
                     "color": { "type": "string", "description": "#rrggbb" },
                     "align": { "type": "string", "enum": ["left", "center", "right", "justify"] },
+                    "aligns": { "type": "array", "maxItems": 4096, "items": { "enum": ["left", "center", "right", "justify", null] }, "description": "Each paragraph's (line's) own alignment, by index; null follows align." },
                     "underline": { "type": "boolean" },
                     "line_spacing": { "type": "number", "description": "Multiple of the font size (1.2 is ordinary)." },
                     "dx": { "type": "number", "description": "Paragraph only: move right by this many points (negative: left)." },
@@ -1438,7 +1442,7 @@ pub fn tools() -> Vec<ToolDef> {
             .with(schema(json!({ "doc": doc() }), &["doc"])),
         t("doc_open_revision", "Open a revision", "Open saved revision `revision` (1 = the oldest) of a document as a new, unsaved document, to see the file as it was then.")
             .with(schema(json!({ "doc": doc(), "revision": { "type": "integer", "minimum": 1 } }), &["doc", "revision"])),
-        t("doc_optimize", "Optimize PDF", "Write an optimized copy to `path` (Acrobat's PDF Optimizer). preset: standard (default; Reduce File Size's choices) or mobile (images to 96 ppi above 144, JPEG high quality); the options below change it. compatibility: retain (default; keeps the document's version, or 1.5 when object streams are written), 1.4, 1.5, 1.6, 1.7 or 2.0. merge_fragments (default true) first puts a page picture drawn as many stacked image strips (as some PDF printers write it) back together into one image, so it can be resampled (merged_images, fragments_merged). color / gray: { downsample, ppi, above_ppi, compression: jpeg|zip|retain, quality 1–100 } (defaults: downsample to 150 ppi above 225, JPEG 60). mono: { downsample, ppi, above_ppi, compression: ccitt_g4|retain } for black-and-white images and image masks (default: averaged down to 300 ppi above 450 ppi, counted in images_resampled; stored losslessly as CCITT Group 4 (or 1-bit Flate, once resampled or packed from more bits) when that is smaller, Group 3 fax images, black-and-white RGB and indexed images using only palette entries 0 and 1 among them, counted in images_recompressed; retain resamples only, a CCITT image staying CCITT and any other becoming Flate). Images are measured where pages draw them and replaced only when smaller. discard_*: thumbnails (default true), alternate_images (true), tags, print_settings; flate_unencoded (true); object_streams (default true; always off for 1.4); lzw_to_flate (true) decodes LZW streams and stores them with Flate instead, leaving any it cannot decode unchanged (lzw_streams counts the streams converted); remove_invalid_links and remove_unreferenced_dests (true); images and forms the pages list but never draw are always dropped (unused_xobjects). discard: Remove Hidden Information categories (metadata, attachments, comments, form-fields, hidden-text, hidden-layers, bookmarks, links-actions-scripts, private-data). Signed documents are refused. The open document is unchanged.")
+        t("doc_optimize", "Optimize PDF", "Write an optimized copy to `path` (Acrobat's PDF Optimizer). preset: standard (default; Reduce File Size's choices) or mobile (images to 96 ppi above 144, JPEG high quality); the options below change it. compatibility: retain (default; keeps the document's version, or 1.5 when object streams are written), 1.4, 1.5, 1.6, 1.7 or 2.0. merge_fragments (default true) first puts a page picture drawn as many stacked image strips (as some PDF printers write it) back together into one image, so it can be resampled (merged_images, fragments_merged). color / gray: { downsample, ppi, above_ppi, compression: jpeg|zip|retain, quality 1–100 } (defaults: downsample to 150 ppi above 225, JPEG 60). mono: { downsample, ppi, above_ppi, compression: ccitt_g4|jbig2|retain } for black-and-white images and image masks (default: averaged down to 300 ppi above 450 ppi, counted in images_resampled; stored losslessly as CCITT Group 4 or JBIG2 (or 1-bit Flate, once resampled or packed from more bits) when that is smaller, Group 3 fax images, black-and-white RGB and indexed images using only palette entries 0 and 1 among them, counted in images_recompressed; retain resamples only, a CCITT image staying CCITT and any other becoming Flate). Images are measured where pages draw them and replaced only when smaller. discard_*: thumbnails (default true), alternate_images (true), tags, print_settings; flate_unencoded (true); object_streams (default true; always off for 1.4); lzw_to_flate (true) decodes LZW streams and stores them with Flate instead, leaving any it cannot decode unchanged (lzw_streams counts the streams converted); remove_invalid_links and remove_unreferenced_dests (true); images and forms the pages list but never draw are always dropped (unused_xobjects). discard: Remove Hidden Information categories (metadata, attachments, comments, form-fields, hidden-text, hidden-layers, bookmarks, links-actions-scripts, private-data). Signed documents are refused. The open document is unchanged.")
             .cmd("optimize.advanced")
             .with(schema(
                 json!({
