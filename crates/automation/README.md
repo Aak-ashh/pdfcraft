@@ -181,6 +181,12 @@ working document unchanged.
 `content_list` or `object_list`. It removes only that item in a read-only preview and is
 mutually exclusive with `hide_text_block`.
 
+When the renderer reports a warning for the page, `page_render` and `render_preview` return a
+JSON part after the PNG, `{ "page": 1, "warnings": [...] }`, with the sentences
+`pdfcraft-cli render` prints: "content past the page's safety budget was skipped" and "a colour
+that could not be computed was painted in a fallback colour". A page without warnings returns
+the PNG alone.
+
 
 ## Existing text and document fonts
 
@@ -229,3 +235,10 @@ behavior. Back/Forward
 returns to page tops, does not restore zoom, does not switch documents, and is not saved across
 restarts. Standalone engine/MCP sessions have no viewport, so they do not have a separate
 navigation-history tool; use the opt-in UI control channel to navigate the displayed document.
+
+## Fill & Sign text appearance
+
+`fill_sign_add` accepts `font_size` (4–300 pt, default 10) and `color`
+(`#RRGGBB`, default black) for `text` and `date`. The colour is saved in the
+FreeText appearance and survives reopening. Other mark/signature types reject
+`color`; their appearance controls are separate.

@@ -9,7 +9,7 @@ use pdfcraft_render::DocInfo;
 
 use crate::canvas::{DocView, PageToolContext, PageXform};
 use crate::page_cursor::Layer;
-use crate::page_pointer::PagePointer;
+use crate::page_router::{Hit, Owner};
 use crate::theme::Tokens;
 use crate::widgets;
 
@@ -68,8 +68,24 @@ pub struct TextDraft {
     /// Display space.
     pub rect: [f64; 4],
     pub text: String,
+    /// The box's formatting; its `text` is what the page has (empty for new text).
     pub style: AddedText,
     pub focus: bool,
+    /// The text the box's own Undo history starts from ([`crate::edit_text_ui::forget_typing_before`]).
+    pub typing_from: Option<String>,
+}
+
+impl TextDraft {
+    /// Take the shared text box for this box ([`crate::edit_text_ui::forget_typing_before`]): its
+    /// own history, or none once the page has its text.
+    pub(crate) fn claim_typing(&mut self, ctx: &egui::Context, doc: pdfcraft_engine::DocId) {
+        crate::edit_text_ui::forget_typing_before(ctx, input_id(), doc, &mut self.typing_from, &self.style.text);
+    }
+
+    /// Typing the page doesn't have yet: Undo takes it back in the box before touching the document.
+    pub(crate) fn has_unapplied_typing(&self) -> bool {
+        self.text != self.style.text
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -330,18 +346,22 @@ fn dragged(r: Rect, grab: Grab, d: egui::Vec2, keep_aspect: bool) -> Rect {
     }
 }
 
-/// Added text and images keep pointer ownership over a form field while editing content.
-pub(crate) fn select_grabs(xf: &PageXform, ptr: &PagePointer, page: usize, info: &DocInfo, added: &[Added], view: &DocView) -> bool {
-    let cv = &view.content;
-    if cv.grab.is_some_and(|(grab_page, _, _)| grab_page == page) {
-        return true;
+/// What of the added text and pictures lies under `p` on `page`: the selected item's corners, then
+/// the topmost item. Placed on the page, over a form field under it.
+pub(crate) fn hit(xf: &PageXform, info: &DocInfo, page: usize, added: &[Added], view: &DocView, p: Pos2) -> Option<Hit> {
+    if !xf.rect.contains(p) {
+        return None;
     }
-    let Some(p) = ptr.within(xf.rect) else { return false };
-    on_page(added, page).into_iter().any(|(index, item)| {
-        let rect = screen_rect(xf, info, page, item.content.rect());
-        rect.expand(2.0).contains(p)
-            || cv.selected == Some((page, index)) && handles(rect).into_iter().any(|(corner, _, _)| corner.distance(p) <= 6.0)
-    })
+    let items = on_page(added, page);
+    let selected = view.content.selected.filter(|s| s.0 == page).and_then(|(_, si)| items.iter().find(|(i, _)| *i == si));
+    if let Some((index, a)) = selected
+        && let Some((_, left, top)) = handles(screen_rect(xf, info, page, a.content.rect())).into_iter().find(|(c, ..)| c.distance(p) <= 6.0)
+    {
+        let icon = if left == top { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw };
+        return Some(Hit::new(Owner::Added { index: *index, corner: Some((left, top)) }, Layer::Handle, icon));
+    }
+    let (index, _) = items.iter().rev().find(|(_, a)| screen_rect(xf, info, page, a.content.rect()).expand(2.0).contains(p))?;
+    Some(Hit::new(Owner::Added { index: *index, corner: None }, Layer::Placed, egui::CursorIcon::Move))
 }
 
 /// Pointer input on one page in Edit mode (`adding_text` with the Text tool). `true` when it
@@ -396,7 +416,8 @@ pub(crate) fn page_input(
     let corner = selected_rect.and_then(|r| handles(r).into_iter().find(|(c, ..)| c.distance(p) <= 6.0));
     if adding_text && hit.is_none() {
         view.cursor.claim(Layer::ToolArea, egui::CursorIcon::Text);
-        if resp.clicked() {
+        // A new box where nothing drawn over the page holds the press.
+        if resp.clicked() && view.router.owner(page).is_none() {
             // Text that can't be drawn stays where it is being typed (#125).
             if cv.hold_blocked() {
                 return true;
@@ -412,7 +433,7 @@ pub(crate) fn page_input(
             let page_width = info.pages.get(page).map_or(f64::INFINITY, |p| p.width as f64);
             let rect = [at[0], at[1] - style.size * 1.2, (at[0] + 200.0).min(page_width), at[1]];
             style.rect = rect;
-            cv.draft = Some(TextDraft { page, index: None, rect, text: String::new(), style, focus: true });
+            cv.draft = Some(TextDraft { page, index: None, rect, text: String::new(), style, focus: true, typing_from: None });
             consumed = true;
             if typed.is_some() {
                 view.pending_edit = typed;
@@ -420,20 +441,21 @@ pub(crate) fn page_input(
         }
         return consumed;
     }
-    if let Some((_, left, top)) = corner {
-        view.cursor.claim(Layer::Handle, if left == top { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw });
-    } else if hit.is_some() {
-        view.cursor.claim(Layer::Placed, egui::CursorIcon::Move);
-    }
+    // A drag on what the press was on ([`hit`]): a corner resizes the selected item, the item
+    // itself moves.
     if resp.drag_started() {
         let origin = ptr.origin.unwrap_or(p);
-        if let Some((_, left, top)) = selected_rect.and_then(|r| handles(r).into_iter().find(|(c, ..)| c.distance(origin) <= 6.0)) {
-            cv.grab = Some((page, Grab::Corner(left, top), origin));
-            consumed = true;
-        } else if let Some((i, _)) = items.iter().rev().find(|(_, a)| screen_rect(xf, info, page, a.content.rect()).expand(2.0).contains(origin)) {
-            cv.selected = Some((page, *i));
-            cv.grab = Some((page, Grab::Move, origin));
-            consumed = true;
+        match view.router.owner(page) {
+            Some(Owner::Added { corner: Some((left, top)), .. }) => {
+                cv.grab = Some((page, Grab::Corner(left, top), origin));
+                consumed = true;
+            }
+            Some(Owner::Added { index, corner: None }) => {
+                cv.selected = Some((page, index));
+                cv.grab = Some((page, Grab::Move, origin));
+                consumed = true;
+            }
+            _ => {}
         }
         return consumed;
     }
@@ -450,7 +472,7 @@ pub(crate) fn page_input(
         if let Some(edit) = cv.finish_draft(added) {
             view.pending_edit = Some(edit);
         }
-        cv.draft = Some(TextDraft { page, index: Some(i), rect: t.rect, text: t.text.clone(), style: t.clone(), focus: true });
+        cv.draft = Some(TextDraft { page, index: Some(i), rect: t.rect, text: t.text.clone(), style: t.clone(), focus: true, typing_from: None });
         cv.selected = Some((page, i));
         consumed = true;
         return consumed;
@@ -534,6 +556,7 @@ pub(crate) fn after_refresh(view: &mut DocView, added: &[Added]) {
 /// committed (a click away, or Done), and whether Done finished adding text. Discard or Escape
 /// throws the draft away.
 pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, added: &[Added]) -> (Option<Edit>, bool) {
+    let doc_id = view.id;
     let Some(page) = view.content.draft.as_ref().map(|d| d.page) else { return (None, false) };
     let Some(xf) = view.page_xform(page) else { return (None, false) };
     let zoom = xf.zoom();
@@ -609,6 +632,8 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
                 let job = spaced_job(text.as_str(), &font, Color32::from_rgb(cr, cg, cb), letter_spacing, wrap_width, halign);
                 ui.fonts_mut(|f| f.layout_job(job))
             };
+            let input = input_id();
+            t.claim_typing(ui.ctx(), doc_id);
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let mut edit = egui::TextEdit::multiline(&mut t.text)
@@ -622,7 +647,7 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
                     .background_color(if background_ready { Color32::TRANSPARENT } else { Color32::WHITE })
                     .text_color(Color32::from_rgb(cr, cg, cb))
                     .hint_text(tl!("Type text"))
-                    .id_salt("added-text-edit");
+                    .id(input);
                 if letter_spacing != 0.0 {
                     edit = edit.layouter(&mut spaced);
                 }
@@ -682,10 +707,19 @@ fn finish(cv: &mut ContentView, d: TextDraft, added: &[Added]) -> Option<Edit> {
         Some(i) => {
             let (_, a) = on_page(added, d.page).into_iter().find(|(k, _)| *k == i)?;
             let AddedContent::Text(old) = &a.content else { return None };
+            // Unchanged is no edit, even for text saved with trailing spaces the trim would drop.
+            if *old == (AddedText { text: d.text.clone(), rect: d.rect, ..d.style.clone() }) {
+                return None;
+            }
             let updated = AddedText { text, rect: d.rect, ..d.style };
             (*old != updated).then_some(Edit::UpdateContent { page: d.page, index: i, content: AddedContent::Text(updated) })
         }
     }
+}
+
+/// The added-text box's text field.
+pub(crate) fn input_id() -> egui::Id {
+    egui::Id::unique("added-text-input")
 }
 
 /// How to use the tools, under the Add content list.

@@ -438,6 +438,14 @@
 	Applies to 1 page	Εφαρμόζεται σε 1 σελίδα
 	Applies to {n} pages	Εφαρμόζεται σε {n} σελίδες
 	Replaces the existing one on those pages.	Αντικαθιστά το υπάρχον στοιχείο στις συγκεκριμένες σελίδες.
+	Checking pages…	Έλεγχος σελίδων…
+	Page {pages} paints its own white backdrop, which would hide the background. Replace it	Η σελίδα {pages} έχει δική της λευκή γέμιση, που θα έκρυβε το φόντο. Αντικατάσταση
+	Pages {pages} paint their own white backdrop, which would hide the background. Replace it	Οι σελίδες {pages} έχουν δική τους λευκή γέμιση, που θα έκρυβε το φόντο. Αντικατάσταση
+	Removing the background puts the page's own backdrop back.	Η αφαίρεση του φόντου επαναφέρει τη λευκή γέμιση της σελίδας.
+	A picture covers page {pages} (a scan?), so the background won't show there.	Μια εικόνα καλύπτει τη σελίδα {pages} (σάρωση;), οπότε το φόντο δεν θα φαίνεται εκεί.
+	Pictures cover pages {pages} (scans?), so the background won't show there.	Εικόνες καλύπτουν τις σελίδες {pages} (σαρώσεις;), οπότε το φόντο δεν θα φαίνεται εκεί.
+	Page {pages} changed after the background was added, so its own white backdrop stays off. It looks the same on white paper.	Η σελίδα {pages} άλλαξε μετά την προσθήκη του φόντου, οπότε η δική της λευκή γέμιση μένει απενεργοποιημένη. Σε λευκό χαρτί φαίνεται ίδια.
+	Pages {pages} changed after the background was added, so their own white backdrops stay off. They look the same on white paper.	Οι σελίδες {pages} άλλαξαν μετά την προσθήκη του φόντου, οπότε οι δικές τους λευκές γεμίσεις μένουν απενεργοποιημένες. Σε λευκό χαρτί φαίνονται ίδιες.
 	PDF or image	PDF ή εικόνα
 	No file chosen	Δεν έχει επιλεγεί αρχείο
 	Scale relative to target page	Κλίμακα ως προς τη σελίδα προορισμού
@@ -1906,6 +1914,8 @@
 	Clean Up	Εκκαθάριση
 	Color Images	Έγχρωμες εικόνες
 	Grayscale Images	Εικόνες σε κλίμακα του γκρι
+	Monochrome Images	Μονόχρωμες εικόνες
+	CCITT Group 4	CCITT Ομάδα 4
 	Bicubic downsampling to	Δικυβική μείωση ανάλυσης σε
 	for images above	για εικόνες πάνω από
 	ZIP	ZIP
@@ -2563,3 +2573,6 @@ animation effects	Off	Ανενεργά
 	Rotate the selected pages clockwise	Περιστροφή των επιλεγμένων σελίδων δεξιόστροφα
 	Extract the selected pages…	Εξαγωγή των επιλεγμένων σελίδων…
 	Delete the selected pages	Διαγραφή των επιλεγμένων σελίδων
+
+# Comments panel: each reply's own "…" menu (AI-assisted, not separately native-reviewed)
+	Options for this reply	Επιλογές για αυτήν την απάντηση

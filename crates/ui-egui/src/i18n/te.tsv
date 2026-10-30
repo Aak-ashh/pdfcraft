@@ -574,6 +574,8 @@ comment menu	Edit	సవరించు
 	Clean Up	చక్కదిద్దడం
 	Color Images	రంగు చిత్రాలు
 	Grayscale Images	గ్రేస్కేల్ చిత్రాలు
+	Monochrome Images	మోనోక్రోమ్ చిత్రాలు
+	CCITT Group 4	CCITT గ్రూప్ 4
 	Bicubic downsampling to	బైక్యూబిక్ డౌన్‌శాంప్లింగ్, లక్ష్యం:
 	for images above	ఈ రిజల్యూషన్ మించిన చిత్రాలకు:
 	Compression	కుదింపు
@@ -840,6 +842,14 @@ comment menu	Edit	సవరించు
 	Applies to 1 page	1 పేజీకి వర్తిస్తుంది
 	Applies to {n} pages	{n} పేజీలకు వర్తిస్తుంది
 	Replaces the existing one on those pages.	ఆ పేజీలలో ఇప్పటికే ఉన్నదాన్ని భర్తీ చేస్తుంది.
+	Checking pages…	పేజీలను తనిఖీ చేస్తోంది…
+	Page {pages} paints its own white backdrop, which would hide the background. Replace it	పేజీ {pages}కి సొంత తెల్లని నింపు ఉంది, అది నేపథ్యాన్ని దాచేస్తుంది. భర్తీ చేయండి
+	Pages {pages} paint their own white backdrop, which would hide the background. Replace it	పేజీలు {pages}కి సొంత తెల్లని నింపు ఉంది, అది నేపథ్యాన్ని దాచేస్తుంది. భర్తీ చేయండి
+	Removing the background puts the page's own backdrop back.	నేపథ్యాన్ని తీసివేస్తే పేజీ సొంత తెల్లని నింపు తిరిగి వస్తుంది.
+	A picture covers page {pages} (a scan?), so the background won't show there.	పేజీ {pages}ని ఒక చిత్రం కప్పుతోంది (స్కాన్?), కాబట్టి అక్కడ నేపథ్యం కనిపించదు.
+	Pictures cover pages {pages} (scans?), so the background won't show there.	పేజీలు {pages}ని చిత్రాలు కప్పుతున్నాయి (స్కాన్‌లు?), కాబట్టి అక్కడ నేపథ్యం కనిపించదు.
+	Page {pages} changed after the background was added, so its own white backdrop stays off. It looks the same on white paper.	నేపథ్యాన్ని జోడించిన తర్వాత పేజీ {pages} మారింది, కాబట్టి దాని సొంత తెల్లని నింపు ఆపివేయబడే ఉంటుంది. తెల్ల కాగితంపై అది అలాగే కనిపిస్తుంది.
+	Pages {pages} changed after the background was added, so their own white backdrops stay off. They look the same on white paper.	నేపథ్యాన్ని జోడించిన తర్వాత పేజీలు {pages} మారాయి, కాబట్టి వాటి సొంత తెల్లని నింపులు ఆపివేయబడే ఉంటాయి. తెల్ల కాగితంపై అవి అలాగే కనిపిస్తాయి.
 	PDF or image	PDF లేదా చిత్రం
 	No file chosen	ఫైల్ ఏదీ ఎంచుకోలేదు
 	Page number	పేజీ సంఖ్య
@@ -2466,3 +2476,6 @@ animation effects	Off	ఆఫ్
 	Rotate the selected pages clockwise	ఎంచుకున్న పేజీలను సవ్య దిశలో తిప్పు
 	Extract the selected pages…	ఎంచుకున్న పేజీలను సంగ్రహించు…
 	Delete the selected pages	ఎంచుకున్న పేజీలను తొలగించు
+
+# Comments panel: each reply's own "…" menu (AI-assisted, not separately native-reviewed)
+	Options for this reply	ఈ ప్రత్యుత్తరం ఎంపికలు
