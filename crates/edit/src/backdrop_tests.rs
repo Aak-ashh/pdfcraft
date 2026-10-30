@@ -556,3 +556,16 @@ fn graphics_state_set_back_before_the_fill_still_finds_the_backdrop() {
         assert_eq!(page_backdrop(&doc, 0).unwrap(), Some(Backdrop::Fill), "{state}");
     }
 }
+
+#[test]
+fn an_undecodable_stream_before_a_white_fill_keeps_the_backdrop_unknown() {
+    let objs = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 300 200] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Contents [4 0 R 5 0 R] >>".into(),
+        stream("/Filter /FlateDecode", "not a deflate stream"),
+        stream("", &format!("1 g 0 0 300 200 re f {TEXT}")),
+    ];
+    let doc = build(&objs);
+    assert_eq!(page_backdrop(&doc, 0).unwrap(), None, "unknown earlier paint must not be treated as an empty stream");
+}

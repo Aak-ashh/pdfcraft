@@ -1,10 +1,8 @@
 # PdfCraft parity with Adobe Acrobat Pro
 
+> Integration update 2026-10-30: lossless JBIG2 generic and exact-copy symbol coding are included; no lossy substitution. Combined tests passed at bdf5620; the subsequent review fixes require fresh CI.
+
 > **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-26 · **Change:** minor (K Optimize and standards no longer lists monochrome downsampling as missing; scores and estimates unchanged)
-
-Lossless JBIG2 encoding and image export are included alongside CCITT decoding and monochrome downsampling; combined validation is pending.
-
-JBIG2 exact-copy symbol dictionaries and text regions are included; lossy substitution is not supported.
 > **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-26 · **Change:** minor (`optimize.mono-compression` partial (CCITT Group 4): K Optimize and standards 15 shipped and 11 partial of 58, 35.3%; breadth 57.0% unweighted (423 + 75 of 808), mainstream 63.3% (292 + 45 of 497); estimates unchanged)
 > **Last reviewed:** 2026-10-25 · **Last updated:** 2026-10-25 · **Change:** minor (localization current state: Arabic logical catalog, explicit RTL direction and mirrored stock chrome; native/browser RTL workflows unqualified. Native release Hans face via LXGW WenKai Lite. Scores and estimates unchanged)
 
@@ -214,11 +212,7 @@ full parity in that area.
 | H Digital signatures | 45 | 23 | 10 | 62.2% | 45% | 40–70 | PAdES B-B signing and validation (PKCS #12, macOS Keychain, Windows store with PIN prompts), certification, encrypted documents, certificate usage checks; B-T, LTV, OCSP/CRL with caller-supplied evidence. Missing: PKCS #11 and smart cards outside Windows, timestamp-server preferences, online revocation fetching, FieldMDP and field locking, OS trust store, EU Trusted Lists, compare signed version |
 | I Scan and OCR | 26 | 5 | 2 | 23.1% | 15% | 40–75 | Searchable image (ocrs, Latin script without accents) on pages, ranges and many files. Missing: every other language (#744 Dutch; accents, CJK, Cyrillic, Arabic), editable-text output, deskew, rotation, despeckle, camera images beyond straightening (found or placed corners): orientation, clean-up, MRC compression, scanners |
 | J Create and export | 34 | 12 | 3 | 39.7% | 25% | 55–100 | Create from images, multipage TIFF, text, clipboard, blank, many files at once; export PNG/JPEG/TIFF, text, RTF; Word and HTML partial. Missing: Office/HTML/web/PostScript to PDF, Excel and PowerPoint export, Word layout fidelity (#773), SVG/XML/EPS/PS/JPEG 2000 export, accessible text |
-| K Optimize and standards | 58 | 15 | 11 | 35.3% | 20% | 65–115 | Reduce File Size and the Optimizer (images, discards, clean-up, space audit); PDF/A-2b/3b verify and convert (partial). Missing: Preflight (profiles, fixups, reports), PDF/A-1/4 and a/u levels, PDF/X, PDF/UA, PDF/E, PDF/VT, transparency flattening, font unembedding, monochrome JBIG2 |
-
-Lossless JBIG2 encoding and image export are included alongside CCITT decoding and monochrome downsampling; combined validation is pending.
-
-JBIG2 exact-copy symbol dictionaries and text regions are included; lossy substitution is not supported.
+| K Optimize and standards | 58 | 15 | 11 | 35.3% | 20% | 65–115 | Reduce File Size and the Optimizer (images, CCITT and lossless JBIG2 monochrome compression, discards, clean-up, space audit); PDF/A-2b/3b verify and convert (partial). Missing: Preflight (profiles, fixups, reports), PDF/A-1/4 and a/u levels, PDF/X, PDF/UA, PDF/E, PDF/VT, transparency flattening, font unembedding, lossy/refinement JBIG2 |
 | L Print | 39 | 15 | 1 | 39.7% | 35% | 30–55 | Acrobat's sizing, n-up, booklet, poster, comments & forms, preview, print-ready PDF, CUPS on macOS/Linux, the Windows spooler (#756) and the browser's print dialog on the web. Missing: print as image, PostScript, all print-production tools (output preview, separations, ink manager, printer marks, colour conversion) |
 | M Accessibility | 61 | 38 | 1 | 63.1% | 30% | 40–70 | Accessibility Checker (all 32 rules, report, fixes), alternate text, title and language. Missing: autotag, Tags/Order/Content panels, Reading Order tool, artifact marking, table editor, Read Out Loud, full keyboard operation of the app, screen-reader audit |
 | N Automation, preferences, misc | 75 | 20 | 5 | 30.0% | 35% | 25–45 | CLI, MCP, UI control channel, 141 automation tools, Action Wizard (run, create), compare (text, visual, report, side by side, Text/Visual filter). Missing: most Preferences pages, Acrobat's finer compare filters, Action Wizard management, custom commands, AI providers, rich media/3D, hosted web app |
@@ -305,10 +299,6 @@ licensed OCR or AI model.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-26 | minor | K Optimize and standards no longer lists monochrome downsampling as missing (black-and-white images above 450 ppi are averaged down to 300). Scores and estimates unchanged. |
-
-Lossless JBIG2 encoding and image export are included alongside CCITT decoding and monochrome downsampling; combined validation is pending.
-
-JBIG2 exact-copy symbol dictionaries and text regions are included; lossy substitution is not supported.
 | 2026-10-26 | minor | `optimize.mono-compression` became partial (CCITT Group 4), counted on the table's own measurement: K Optimize and standards 15 shipped and 11 partial of 58 (35.3%), no longer listing CCITT as missing; breadth 57.0% unweighted (423 + 75 of 808), mainstream 63.3% (292 + 45 of 497). Estimates unchanged. |
 | 2026-10-25 | minor | Localization current state: Arabic catalogs stay logical, Arabic/Kurdish labels take an explicit RTL direction, and stock chrome mirrors; native/browser RTL input, IME and complex workflows remain unqualified. Native Simplified Chinese uses LXGW WenKai Lite; the web build has no Hans face. Scores and estimates unchanged. |
 | 2026-10-20 | minor | M12 #3673: the Character encoding rule accepts Identity-H/V fonts with Adobe CJK collections, or a predefined non-Identity CMap, while rejecting unknown names and foreign registries. Synthetic checker and read-only automation regressions passed after failing before the fix; per-glyph mapping validation and embedded-font extraction remain separate. Breadth, readiness and hours unchanged. |

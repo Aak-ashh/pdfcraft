@@ -8552,3 +8552,28 @@ fn wrapped_rows_keep_alignment_separate_from_hard_break_markers() {
     let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
     assert!(content.contains("/PCSoft") && content.contains("/PCHard"), "both break kinds survive: {content}");
 }
+
+#[test]
+fn hostile_soft_wrap_counts_fail_before_reflow_allocates() {
+    for marker in [
+        "/PCSoft << /N 9223372036854775807 >> BDC EMC",
+        "/PCSoft << /N 16777217 >> BDC EMC",
+        "/PCSoft << /N 8388608 >> BDC EMC /PCSoft << /N 8388609 >> BDC EMC",
+    ] {
+        let doc = text_page(&format!("BT /F1 12 Tf 20 700 Td (First) Tj {marker} 0 -14 Td (Second) Tj ET"));
+        let error = text::text_lines(&doc, 0).unwrap_err();
+        assert!(error.to_string().contains("too large"), "{marker}: {error}");
+    }
+}
+
+#[test]
+fn ordinary_soft_wrap_counts_keep_their_spaces() {
+    for gap in [0, 1, 2, 8] {
+        let doc = text_page(&format!("BT /F1 12 Tf 20 700 Td (First) Tj /PCSoft << /N {gap} >> BDC EMC 0 -14 Td (Second) Tj ET"));
+        let lines = text::text_lines(&doc, 0).unwrap();
+        assert_eq!(lines.len(), 2);
+        let blocks = text::text_blocks(&doc, 0).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].reflow_text, format!("First{}Second", " ".repeat(gap)));
+    }
+}

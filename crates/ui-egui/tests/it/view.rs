@@ -2310,3 +2310,22 @@ fn the_pages_panel_tools_are_off_without_page_editing_permission() {
     assert!(h.query_by_label("Delete the selected pages").is_none(), "its menu doesn't open");
     assert_eq!(h.state().session.get(id).unwrap().info.pages.len(), 3);
 }
+
+#[test]
+fn a_document_press_releases_pages_keyboard_focus_without_escape() {
+    let mut h = harness(&[("panel", "pages")]);
+    h.get_by_label("Page 2").click();
+    h.run_steps(3);
+    let focused = h.ctx.memory(|m| m.focused());
+    assert!(focused.is_some(), "the thumbnail owns keyboard input");
+    let pos = rect(&h, 1).unwrap().center();
+    h.event(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    assert_ne!(h.ctx.memory(|m| m.focused()), focused, "pressing the document relinquishes Pages focus without Escape");
+    sidebar_key(&mut h, Key::A, Modifiers::COMMAND);
+    assert!(h.state().views[0].selected.is_empty(), "Ctrl+A now belongs to the viewer, not page thumbnails");
+}

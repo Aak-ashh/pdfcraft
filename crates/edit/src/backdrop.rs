@@ -379,7 +379,7 @@ fn scan(doc: &Document, p: &pdfcraft_model::Page, swap: Option<(ObjRef, &[u8])>)
         }
         let bytes = match swap {
             Some((with, b)) if with == *r => b.to_vec(),
-            _ => s.decoded().unwrap_or_default(),
+            _ => s.decoded().ok()?,
         };
         starts.push(total);
         total = total.saturating_add(bytes.len()).saturating_add(1);

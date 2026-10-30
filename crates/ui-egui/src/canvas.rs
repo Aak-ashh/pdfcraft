@@ -2019,6 +2019,11 @@ fn draw_pages(
     // its owner; in the gap between pages it has none).
     if ptr.pressed().is_some() {
         view.router.cancel();
+        // The page widget is not focusable. Explicitly return keyboard ownership from Pages
+        // when the user presses the document, without stealing focus through a modal.
+        if let Some(id) = view.pages_focus_id {
+            ui.memory_mut(|m| m.surrender_focus(id));
+        }
     }
     let pointer = ptr.pos;
     // A press on a page makes it the current one (as in Acrobat), so a page command with

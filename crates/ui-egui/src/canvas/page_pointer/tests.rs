@@ -410,12 +410,7 @@ fn page_modules_take_presses_from_the_router_without_repeating_hit_tests() {
         ("tools/comments/input.rs", "select_input"),
     ] {
         let source = std::fs::read_to_string(src.join(file)).expect("page input module");
-        let body = source
-            .lines()
-            .skip_while(|line| declares(line) != Some(function))
-            .take_while(|line| *line != "}")
-            .collect::<Vec<_>>()
-            .join("\n");
+        let body = source.lines().skip_while(|line| declares(line) != Some(function)).take_while(|line| *line != "}").collect::<Vec<_>>().join("\n");
         // Forms reuse their hit test for hover text and to require release over the captured
         // widget. Neither chooses the press owner. Pin both calls to the current pointer `p`,
         // not the press origin, and reject an additional call or a changed argument.
