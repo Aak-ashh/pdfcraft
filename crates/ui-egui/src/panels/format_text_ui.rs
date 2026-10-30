@@ -320,32 +320,40 @@ fn colour_button(ui: &mut egui::Ui, t: &Tokens, color: [f64; 3]) -> egui::Respon
 /// Commit a typed size once (Enter or leaving the field), rather than one undo step per key.
 /// The bounds match AddedText validation, so the panel also accepts coloured text below 8 pt.
 fn font_size_input(ui: &mut egui::Ui, size: &mut f64) {
-    let id = ui.make_persistent_id("font-size-input");
-    let (previous, mut text) = ui.data(|d| d.get_temp::<(u64, String)>(id)).unwrap_or_else(|| (size.to_bits(), size.to_string()));
-    if previous != size.to_bits() {
-        text = size.to_string();
-    }
-    let response = ui.add(egui::TextEdit::singleline(&mut text).id(id).desired_width(44.0)).accessible_name(tl!("Font size:"));
-    let cancel = (response.has_focus() || response.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Escape));
-    if cancel {
-        text = size.to_string();
-        response.surrender_focus();
-    } else if response.lost_focus() || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-        if let Some(value) = typed_font_size(&text) {
-            *size = value;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let id = ui.make_persistent_id("font-size-input");
+        let (previous, mut text) = ui.data(|d| d.get_temp::<(u64, String)>(id)).unwrap_or_else(|| (size.to_bits(), size.to_string()));
+        if previous != size.to_bits() {
+            text = size.to_string();
         }
-        text = size.to_string();
-    }
-    let before = *size;
-    craft_ui::ComboBox::from_id_salt("font-size").selected_text("pt").width(28.0).show_ui(ui, |ui| {
-        for value in SIZES {
-            ui.selectable_value(size, value, format!("{value} pt"));
+        let field = egui::TextEdit::singleline(&mut text).id(id).desired_width(40.0);
+        let response = ui.add_sized([40.0, ui.spacing().interact_size.y], field).accessible_name(tl!("Font size:"));
+        let cancel = (response.has_focus() || response.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if cancel {
+            text = size.to_string();
+            response.surrender_focus();
+        } else if response.lost_focus() || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+            if let Some(value) = typed_font_size(&text) {
+                *size = value;
+            }
+            text = size.to_string();
         }
+        let before = *size;
+        let list = icons::button(ui, "chevron-down", PRESET_LIST, false, tl!("Font size"));
+        egui::Popup::menu(&list).show(|ui| {
+            for value in SIZES {
+                if ui.selectable_label(*size == value, format!("{value} pt")).clicked() {
+                    *size = value;
+                    ui.close();
+                }
+            }
+        });
+        if *size != before {
+            text = size.to_string();
+        }
+        ui.data_mut(|d| d.insert_temp(id, (size.to_bits(), text)));
     });
-    if *size != before {
-        text = size.to_string();
-    }
-    ui.data_mut(|d| d.insert_temp(id, (size.to_bits(), text)));
 }
 
 fn typed_font_size(text: &str) -> Option<f64> {

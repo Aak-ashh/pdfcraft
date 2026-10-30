@@ -4166,6 +4166,8 @@ fn typed_small_coloured_text_size_survives_save_and_reopen() {
     h.event(egui::Event::Text("6.5".into()));
     h.key_press(Key::Enter);
     h.run_steps(4);
+    h.get_by_label("Colour").click();
+    h.run_steps(2);
     h.get_by_label("Blue").click();
     h.run_steps(4);
     let id = h.state().views[0].id;

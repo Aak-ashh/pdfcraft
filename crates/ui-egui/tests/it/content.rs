@@ -699,7 +699,7 @@ fn format_text_rows_line_up_and_fit_the_panel() {
     let combo = |h: &Harness<'static, PdfCraftApp>, value: &str| {
         h.query_all_by_role(Role::ComboBox).find(|n| n.value().as_deref() == Some(value)).map(|n| n.rect()).expect(value)
     };
-    let (font, size) = (combo(&h, "Helvetica"), combo(&h, "12"));
+    let (font, size) = (combo(&h, "Helvetica"), h.get_by_label("Font size:").rect());
     let middle = |r: egui::Rect| r.center().y;
     for label in ["Colour", "Alignment"] {
         let other = h.get_by_label(label).rect();
@@ -716,7 +716,7 @@ fn format_text_rows_line_up_and_fit_the_panel() {
     for r in &scale_row {
         assert!((middle(*r) - middle(scale_row[0])).abs() < 0.5, "{scale_row:?}");
     }
-    for r in h.query_all_by_role(Role::ComboBox).map(|n| n.rect()).chain(scale_row) {
+    for r in h.query_all_by_role(Role::ComboBox).map(|n| n.rect()).chain(scale_row).chain([size, h.get_by_label("Font size").rect()]) {
         assert!(r.right() <= font.right() + 0.5, "{r:?} reaches past the panel ({font:?})");
     }
 }
