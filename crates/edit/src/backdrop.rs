@@ -379,7 +379,9 @@ fn scan(doc: &Document, p: &pdfcraft_model::Page, swap: Option<(ObjRef, &[u8])>)
         }
         let bytes = match swap {
             Some((with, b)) if with == *r => b.to_vec(),
-            _ => s.decoded().ok()?,
+            // Tolerant decoding can return an empty or partial stream after corruption.
+            // That cannot prove which paint preceded the candidate backdrop.
+            _ => s.decoded_strict().ok()?,
         };
         starts.push(total);
         total = total.saturating_add(bytes.len()).saturating_add(1);
