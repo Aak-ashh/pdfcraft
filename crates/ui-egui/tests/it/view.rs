@@ -57,6 +57,7 @@ fn sidebar_key(h: &mut Harness<'static, PdfCraftApp>, key: Key, modifiers: Modif
 fn pages_sidebar_select_all_keeps_current_page_and_keyboard_scope() {
     use egui_kittest::kittest::Queryable;
     let mut h = harness(&[("panel", "pages")]);
+    let _ = h.get_by_role_and_label(egui::accesskit::Role::Group, "Pages");
     h.get_by_label("Page 2").click();
     h.run_steps(3);
     assert_eq!(h.state().views[0].current, 1);

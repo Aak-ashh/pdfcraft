@@ -91,6 +91,7 @@ pub(super) fn pages(ui: &mut egui::Ui, t: &Tokens, info: &DocInfo, view: &mut cr
     let focus_id = ui.make_persistent_id(("pages-keyboard", view.id));
     view.pages_focus_id = Some(focus_id);
     let keyboard = ui.interact(ui.clip_rect(), focus_id, Sense::focusable_noninteractive());
+    keyboard.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Group, ui.is_enabled(), tl!("Pages")));
     let owns_keyboard = keyboard.has_focus();
     // Escape remains with the panel after the pointer moves away.
     ui.memory_mut(|m| m.set_focus_lock_filter(focus_id, egui::EventFilter { escape: true, ..Default::default() }));
