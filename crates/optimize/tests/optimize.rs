@@ -3413,3 +3413,87 @@ fn lzw_streams_that_cannot_be_read_or_are_not_asked_for_stay_unchanged() {
     assert_eq!(optimize(&mut doc, &Settings::default()).unwrap().lzw_streams, 1);
     assert_eq!(stream(&doc, c).decoded_strict().unwrap(), ops);
 }
+
+/// Unknown palette polarity is never guessed. Both palette orders and Decode directions
+/// retain the original thin rule and exact samples through a full save and render.
+#[test]
+fn indexed_thin_rules_keep_their_samples_for_both_palette_orders_and_decodes() {
+    let (w, h) = (1200u32, 480u32);
+    let stride = (w as usize).div_ceil(8);
+    let mut gray_data = vec![0xFF; stride * h as usize];
+    for y in 0..h as usize {
+        gray_data[y * stride + 101 / 8] &= !(0x80 >> (101 % 8));
+    }
+    let mut gray = Document::new_empty();
+    let gray_image = mono_image(&mut gray, w, h, &gray_data, None, &[("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+    page(&mut gray, &[("Im", gray_image)], "q 144 0 0 57.6 20 600 cm /Im Do Q");
+    let gray_render = render(&gray);
+    optimize(&mut gray, &Settings::default()).unwrap();
+    let gray_stream = stream(&gray, gray_image);
+    let gray_samples = gray.decoded_image(&gray_stream).unwrap();
+    assert!(gray_samples.iter().any(|b| *b != 0xFF), "the DeviceGray thin rule survives");
+    for white_first in [false, true] {
+        for inverted in [false, true] {
+            let mut data = vec![0xFF; stride * h as usize];
+            for y in 0..h as usize {
+                data[y * stride + 101 / 8] &= !(0x80 >> (101 % 8));
+            }
+            if white_first != inverted {
+                data.iter_mut().for_each(|b| *b = !*b);
+            }
+            let palette = if white_first { vec![255, 0] } else { vec![0, 255] };
+            let cs = Object::Array(vec![
+                Object::name("Indexed"),
+                Object::name("DeviceGray"),
+                1.into(),
+                Object::String(pdfcraft_cos::PdfString::literal(palette)),
+            ]);
+            let mut entries = vec![("BitsPerComponent", 1.into()), ("ColorSpace", cs)];
+            if inverted {
+                entries.push(("Decode", Object::Array(vec![1.into(), 0.into()])));
+            }
+            let mut doc = Document::new_empty();
+            let image = mono_image(&mut doc, w, h, &data, None, &entries);
+            page(&mut doc, &[("Im", image)], "q 144 0 0 57.6 20 600 cm /Im Do Q");
+            let before = render(&doc);
+            assert_eq!(before, gray_render, "the palette image is visually identical to DeviceGray");
+            optimize(&mut doc, &Settings::default()).unwrap();
+            let s = stream(&doc, image);
+            assert_eq!((s.dict.int(b"Width"), s.dict.int(b"Height")), (Some(w.into()), Some(h.into())));
+            assert_eq!(doc.decoded_image(&s).unwrap(), data);
+            let saved = Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap();
+            assert_eq!(render(&saved), before, "palette white-first={white_first}, inverted={inverted}");
+        }
+    }
+}
+
+/// White margins must not hide a small screened photograph from the tone guard.
+#[test]
+fn mixed_text_and_small_halftone_regions_keep_their_tones_with_wide_white_margins() {
+    let (w, h) = (1200u32, 480u32);
+    let stride = (w as usize).div_ceil(8);
+    for side in [8usize, 40, 300] {
+        let mut data = vec![0xFF; stride * h as usize];
+        for y in 40..40 + side {
+            for x in 100..100 + side {
+                if (x + y) % 2 == 0 {
+                    data[y * stride + x / 8] &= !(0x80 >> (x % 8));
+                }
+            }
+        }
+        // A separate one-pixel text/rule stroke makes this a mixed-content scan.
+        for y in 380..420 {
+            data[y * stride + 801 / 8] &= !(0x80 >> (801 % 8));
+        }
+        let mut doc = Document::new_empty();
+        let image = mono_image(&mut doc, w, h, &data, None, &[("BitsPerComponent", 1.into()), ("ColorSpace", Object::name("DeviceGray"))]);
+        page(&mut doc, &[("Im", image)], "q 144 0 0 57.6 20 600 cm /Im Do Q");
+        let before = render(&doc);
+        optimize(&mut doc, &Settings::default()).unwrap();
+        let s = stream(&doc, image);
+        assert_eq!((s.dict.int(b"Width"), s.dict.int(b"Height")), (Some(w.into()), Some(h.into())));
+        assert_eq!(doc.decoded_image(&s).unwrap(), data, "screened samples survive, not a solid patch");
+        let saved = Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap();
+        assert_eq!(render(&saved), before, "local halftone {side}x{side}");
+    }
+}

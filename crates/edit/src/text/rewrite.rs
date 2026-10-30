@@ -791,6 +791,13 @@ pub(crate) fn rewrite_block_from(
 ) -> Result<LineEdit, EditError> {
     let blocks = group_blocks(&lines);
     let b = blocks.get(block).cloned().ok_or_else(|| EditError::Invalid(format!("page {} has no paragraph {}", page + 1, block + 1)))?;
+    // Existing PDF paragraphs do not yet persist selected-row alignment intent. Refuse
+    // that operation before writing anything; whole-paragraph `align` remains supported.
+    if style.aligns.iter().any(Option::is_some) {
+        return Err(EditError::Invalid(
+            "selected-row alignment of existing paragraphs is not supported until it can be preserved across editing sessions".into(),
+        ));
+    }
     // An alignment for a one-row paragraph is laid out across the column it sits in, as a
     // paragraph of that width moved to its left edge.
     let framed;
@@ -812,6 +819,9 @@ pub(crate) fn rewrite_block_from(
     let mut res = p.dict.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned()).unwrap_or_default();
     let mut fonts_res = res.get(b"Font").map(|f| doc.resolve(f)).and_then(|f| f.as_dict().cloned()).unwrap_or_default();
     let dispatch = choose_rewrite_path(doc, &fonts_res, &b, &members, first, text, style)?;
+    if dispatch.use_styled_path && style.align == Some(crate::added::Align::Justify) {
+        return Err(EditError::Invalid("justification of mixed-style existing paragraphs is not supported".into()));
+    }
     if dispatch.use_styled_path {
         return rewrite_styled_block(doc, page, &b, &lines, text, style, max_glyphs);
     }

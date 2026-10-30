@@ -65,6 +65,9 @@ impl Paragraphs<'_> {
 
     /// `align` picked: for the selected paragraphs, or the whole box (dropping theirs).
     fn choose(&self, look: &mut AddedText, align: TextAlign) {
+        if !self.tidy && self.selected().is_some() {
+            return;
+        }
         match self.selected() {
             Some(which) => {
                 let count = pdfcraft_engine::paragraph_align::count(self.text);
@@ -192,7 +195,11 @@ pub(crate) fn panel(
             TextAlign::Right => "align-right",
             TextAlign::Justify => "align-justify",
         };
-        let align = icons::button(ui, current, 30.0, false, tl!("Alignment"));
+        let supported = paragraphs.as_ref().is_none_or(|p| p.tidy || p.selected().is_none());
+        let align = ui
+            .add_enabled_ui(supported, |ui| icons::button(ui, current, 30.0, false, tl!("Alignment")))
+            .inner
+            .on_disabled_hover_text(format!("{} — {}", tl!("Alignment"), tl!("Planned")));
         let align = flyout(ui, t, align);
         egui::Popup::menu(&align).show(|ui| {
             ui.horizontal(|ui| {

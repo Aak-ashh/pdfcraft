@@ -26,7 +26,7 @@
 //! Anything else is real content and stays.
 
 use pdfcraft_content::{Matrix, Op, Pieces};
-use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
+use pdfcraft_cos::{DecodeBudget, Dict, Document, ObjRef, Object, PdfString, Stream};
 use sha2::{Digest, Sha256};
 
 use crate::{EditError, MarkKind};
@@ -174,8 +174,8 @@ pub(crate) fn replace(doc: &mut Document, page: &pdfcraft_model::Page) -> Result
     }
     dict.set(TAG.to_vec(), Object::Dict(note));
     let copy = doc.add(Object::Stream(Stream::flate(dict, bytes)));
-    // Every slot that draws the original: a page may list the same stream twice, and a second
-    // copy of the fill would cover the background again.
+    // scan accepts only one execution of this stream on the page. Other pages keep the
+    // original stream; ambiguous repeated executions are never rewritten.
     let mut list = crate::place::contents(doc, page)?;
     let mut replaced = false;
     for entry in list.iter_mut().filter(|o| matches!(o, Object::Ref(r) if *r == original)) {
@@ -208,7 +208,7 @@ pub(crate) fn restore(doc: &mut Document, page: &pdfcraft_model::Page) -> Result
                     let same = |w: &ObjRef| match &*doc.get(*w) {
                         Object::Stream(s) => {
                             [TAG, &b"PCMark"[..], b"Subtype"].iter().all(|k| s.dict.get(k).is_none())
-                                && s.decoded().ok().as_deref() == Some(bytes.as_slice())
+                                && DecodeBudget::new(SCAN_BYTES, 0).decode_strict(s).ok().as_deref() == Some(bytes.as_slice())
                         }
                         _ => false,
                     };
@@ -248,7 +248,7 @@ fn restored_copy(doc: &Document, page: &pdfcraft_model::Page, copy: ObjRef) -> O
         return None;
     }
     let hash = note.get(b"Before")?.as_string()?;
-    let bytes = s.decoded().ok()?;
+    let bytes = DecodeBudget::new(SCAN_BYTES, 0).decode_strict(s).ok()?;
     let parsed = pdfcraft_content::parse(head(&bytes));
     // The `n` standing in for the fill, after exactly the operators that came before it.
     let fill = parsed.ops.get(index)?;
@@ -354,7 +354,8 @@ fn scan(doc: &Document, p: &pdfcraft_model::Page, swap: Option<(ObjRef, &[u8])>)
     let crop = p.crop(doc);
     let c = p.dict.get(b"Contents")?;
     let list: Vec<Object> = match &*doc.resolve(c) {
-        Object::Array(a) => a.clone(),
+        Object::Array(a) if a.len() <= SCAN_OPS => a.clone(),
+        Object::Array(_) => return None,
         _ => vec![c.clone()],
     };
     // The page's own content: untagged streams (marks and the q/Q wrapper carry /PCMark). Read
@@ -363,6 +364,7 @@ fn scan(doc: &Document, p: &pdfcraft_model::Page, swap: Option<(ObjRef, &[u8])>)
     let mut data = Vec::new();
     let mut starts = Vec::new();
     let mut total = 0usize;
+    let mut budget = DecodeBudget::new(SCAN_BYTES, 0);
     for (slot, o) in list.iter().enumerate() {
         if total >= SCAN_BYTES {
             break;
@@ -378,13 +380,21 @@ fn scan(doc: &Document, p: &pdfcraft_model::Page, swap: Option<(ObjRef, &[u8])>)
             return None;
         }
         let bytes = match swap {
-            Some((with, b)) if with == *r => b.to_vec(),
+            Some((with, b)) if with == *r => {
+                if b.len() > SCAN_BYTES.saturating_sub(total) {
+                    return None;
+                }
+                budget.decode_strict(&Stream::from_raw(Dict::new(), b.to_vec())).ok()?
+            }
             // Tolerant decoding can return an empty or partial stream after corruption.
             // That cannot prove which paint preceded the candidate backdrop.
-            _ => s.decoded_strict().ok()?,
+            _ => budget.decode_strict(s).ok()?,
         };
+        if bytes.len() > SCAN_BYTES.saturating_sub(total).saturating_sub(1) {
+            return None;
+        }
         starts.push(total);
-        total = total.saturating_add(bytes.len()).saturating_add(1);
+        total += bytes.len() + 1;
         refs.push((slot, *r));
         data.push(bytes);
     }
@@ -392,6 +402,15 @@ fn scan(doc: &Document, p: &pdfcraft_model::Page, swap: Option<(ObjRef, &[u8])>)
     let parsed = pdfcraft_content::parse(head(pieces.data()));
     let res = resources(doc, &p.dict);
     let found = walk(doc, &res, crop, &parsed.ops);
+    // A match proves the graphics state for one execution only. Repeated references may
+    // paint real artwork under a different color or transform: leave them untouched.
+    if let Some((Backdrop::Fill, Some(op))) = &found {
+        let piece = pieces.piece_of(op.start);
+        let (_, reference) = refs.get(piece)?;
+        if list.iter().filter(|o| matches!(o, Object::Ref(r) if r == reference)).count() != 1 {
+            return None;
+        }
+    }
     found.map(|(b, op)| match (b, op) {
         (Backdrop::Fill, Some(op)) => (b, Some(Found { refs, pieces, starts, op })),
         _ => (b, None),

@@ -7758,62 +7758,49 @@ fn a_flatten_refused_on_a_later_page_changes_nothing() {
     assert_eq!((*doc.get(first)).clone(), before, "the first page keeps its comment and content");
 }
 
-/// One row of an edited paragraph aligned on its own (#A: highlighting a line and aligning it):
-/// the other rows stay where they were.
+/// Existing-row alignment is explicitly refused without mutating the paragraph.
 #[test]
-fn one_row_of_a_paragraph_takes_its_own_alignment() {
-    let mut doc = text_page("BT /F1 10 Tf 12 TL 100 700 Td (One two three four five six seven) Tj T* (eight nine ten eleven twelve) Tj ET");
-    let block = text::text_blocks(&doc, 0).unwrap()[0].clone();
-    assert_eq!(block.editor_text, "One two three four five six seven\neight nine ten eleven twelve");
-    let style = text::BlockStyle { aligns: vec![None, Some(added::Align::Right)], ..Default::default() };
-    text::rewrite_block(&mut doc, 0, 0, Some(&block.editor_text), &style).unwrap();
-    let lines = text::text_lines(&doc, 0).unwrap();
-    let row = |t: &str| lines.iter().find(|l| l.text.starts_with(t)).unwrap().rect;
-    assert!((row("One")[0] - block.rect[0]).abs() < 0.5, "the first row stays at the left: {:?}", row("One"));
-    assert!((row("eight")[2] - block.rect[2]).abs() < 1.0, "the second row ends at the right edge: {:?} vs {}", row("eight"), block.rect[2]);
+fn one_row_of_a_paragraph_takes_its_own_alignment_is_refused_without_changing_the_document() {
+    for align in [added::Align::Left, added::Align::Center, added::Align::Right, added::Align::Justify] {
+        let mut doc = text_page("BT /F1 10 Tf 12 TL 72 700 Td (First row) Tj T* (Second row) Tj ET");
+        let before = page_content_bytes(&doc, 0);
+        let blocks = text::text_blocks(&doc, 0).unwrap();
+        let style = text::BlockStyle { aligns: vec![None, Some(align)], ..Default::default() };
+        let error = text::rewrite_block(&mut doc, 0, 0, Some(&blocks[0].editor_text), &style).unwrap_err();
+        assert!(error.to_string().contains("selected-row alignment"));
+        assert_eq!(page_content_bytes(&doc, 0), before);
+        assert_eq!(page_content_bytes(&reopen(&doc), 0), before);
+    }
 }
 
-/// Only a row given an alignment of its own is rewritten. The others keep their source operators,
-/// `TJ` word gaps included, so their words stay exactly where they were: rebuilt from the text,
-/// the first row's words moved by about a point and a half while its outer width stayed the same.
+/// Refusal preserves all existing rows and their saved content stream.
 #[test]
-fn rows_without_their_own_alignment_keep_their_operators() {
-    let first = "[(One) -250 (two) -250 (three) -250 (four)] TJ";
-    let mut doc = text_page(&format!("BT /F1 10 Tf 12 TL 72 700 Td {first} T* [(five) -250 (six) -250 (seven) -250 (eight)] TJ T* (nine ten) Tj ET"));
-    let block = text::text_blocks(&doc, 0).unwrap()[0].clone();
-    assert_eq!(block.editor_text.matches('\n').count(), 2, "one paragraph of three rows: {:?}", block.editor_text);
-    let row = |doc: &Document, starts: &str| text::text_lines(doc, 0).unwrap().into_iter().find(|l| l.text.starts_with(starts)).expect("the row");
-    let ink = row(&doc, "One").ink;
-    let style = text::BlockStyle { aligns: vec![None, None, Some(added::Align::Right)], ..Default::default() };
-    text::rewrite_block(&mut doc, 0, 0, Some(&block.editor_text), &style).unwrap();
-    let doc = reopen(&doc);
-    assert_eq!(row(&doc, "One").ink, ink, "the first row's words stay where they were");
-    let content = String::from_utf8_lossy(&page_content_bytes(&doc, 0)).into_owned();
-    assert!(content.contains(first), "the first row keeps its operator: {content}");
-    assert!((row(&doc, "nine").rect[2] - block.rect[2]).abs() < 1.0, "the last row is right-aligned: {:?}", row(&doc, "nine").rect);
+fn rows_without_their_own_alignment_keep_their_operators_is_refused_without_changing_the_document() {
+    for align in [added::Align::Left, added::Align::Center, added::Align::Right, added::Align::Justify] {
+        let mut doc = text_page("BT /F1 10 Tf 12 TL 72 700 Td (First row) Tj T* (Second row) Tj ET");
+        let before = page_content_bytes(&doc, 0);
+        let blocks = text::text_blocks(&doc, 0).unwrap();
+        let style = text::BlockStyle { aligns: vec![None, Some(align)], ..Default::default() };
+        let error = text::rewrite_block(&mut doc, 0, 0, Some(&blocks[0].editor_text), &style).unwrap_err();
+        assert!(error.to_string().contains("selected-row alignment"));
+        assert_eq!(page_content_bytes(&doc, 0), before);
+        assert_eq!(page_content_bytes(&reopen(&doc), 0), before);
+    }
 }
 
-/// The same in a region of several styles: only the short first row is centred.
+/// Mixed-style rows also refuse unsupported per-row intent before writing.
 #[test]
-fn one_row_of_a_styled_region_takes_its_own_alignment() {
-    let mut doc = mixed_region_page();
-    let block = text::text_blocks(&doc, 0).unwrap()[1].clone();
-    assert_eq!(
-        block.editor_text,
-        "About
-Plain bold text.
-Italic footer"
-    );
-    let row = |lines: &[text::TextLine], t: &str| lines.iter().find(|l| l.text.starts_with(t)).unwrap().rect;
-    let before = text::text_lines(&doc, 0).unwrap();
-    let style = text::BlockStyle { aligns: vec![Some(added::Align::Center)], ..Default::default() };
-    text::rewrite_block(&mut doc, 0, 1, Some(&block.editor_text), &style).unwrap();
-    let lines = text::text_lines(&doc, 0).unwrap();
-    assert!((row(&lines, "Italic")[0] - row(&before, "Italic")[0]).abs() < 0.5, "the last row stays put");
-    assert!((row(&lines, "Plain")[0] - row(&before, "Plain")[0]).abs() < 0.5, "the middle row stays put");
-    let about = row(&lines, "About");
-    let (mid, centre) = ((about[0] + about[2]) / 2.0, (block.rect[0] + block.rect[2]) / 2.0);
-    assert!(about[0] > row(&before, "About")[0] + 5.0 && (mid - centre).abs() < 1.5, "the first row is centred: {mid} vs {centre}");
+fn one_row_of_a_styled_region_takes_its_own_alignment_is_refused_without_changing_the_document() {
+    for align in [added::Align::Left, added::Align::Center, added::Align::Right, added::Align::Justify] {
+        let mut doc = mixed_region_page();
+        let before = page_content_bytes(&doc, 0);
+        let blocks = text::text_blocks(&doc, 0).unwrap();
+        let style = text::BlockStyle { aligns: vec![None, Some(align)], ..Default::default() };
+        let error = text::rewrite_block(&mut doc, 0, 1, Some(&blocks[1].editor_text), &style).unwrap_err();
+        assert!(error.to_string().contains("selected-row alignment"));
+        assert_eq!(page_content_bytes(&doc, 0), before);
+        assert_eq!(page_content_bytes(&reopen(&doc), 0), before);
+    }
 }
 
 /// Added text: each paragraph is laid out with its own alignment, a justified paragraph's last
@@ -7896,7 +7883,7 @@ fn a_lone_row_aligns_across_the_column_it_sits_in() {
         let blocks = text::text_blocks(doc, 0).unwrap();
         let (index, block) = blocks.iter().enumerate().find(|(_, b)| b.lines.contains(&line)).unwrap();
         // The title is the paragraph's first row.
-        let style = text::BlockStyle { aligns: vec![Some(a)], ..Default::default() };
+        let style = text::BlockStyle { align: Some(a), ..Default::default() };
         text::rewrite_block(doc, 0, index, Some(&block.editor_text), &style).unwrap();
     };
     align(&mut doc, added::Align::Center);
@@ -7939,7 +7926,7 @@ fn a_title_moves_to_its_column_only_for_an_alignment_of_its_own() {
     for draft in ["Title", "Title\nSub"] {
         let mut doc = text_page(page);
         let style = text::BlockStyle { aligns: vec![None, Some(added::Align::Right)], ..Default::default() };
-        text::rewrite_block(&mut doc, 0, 0, Some(draft), &style).unwrap();
+        assert!(text::rewrite_block(&mut doc, 0, 0, Some(draft), &style).is_err());
         assert!((title(&doc)[0] - before[0]).abs() < 0.5, "{draft:?}: the title stays put, {:?} vs {before:?}", title(&doc));
     }
 }
@@ -7958,7 +7945,7 @@ fn a_column_is_measured_by_its_whole_rows_not_its_first_runs() {
         body.rows.iter().filter_map(|row| row.iter().filter_map(|i| lines.get(*i)).map(|l| l.rect[2]).reduce(f64::max)).fold(f64::MIN, f64::max);
     let mut doc = text_page(page);
     let index = blocks.iter().position(|b| b.text == "A longer title").expect("the title is a block of its own");
-    let style = text::BlockStyle { aligns: vec![Some(added::Align::Right)], ..Default::default() };
+    let style = text::BlockStyle { align: Some(added::Align::Right), ..Default::default() };
     text::rewrite_block(&mut doc, 0, index, Some("A longer title"), &style).unwrap();
     let title = text::text_lines(&doc, 0).unwrap().into_iter().find(|l| l.text == "A longer title").unwrap().rect;
     assert!((title[2] - column_right).abs() < 1.0, "right: on the whole row's right edge, {title:?} vs {column_right}");
@@ -7972,7 +7959,7 @@ fn an_isolated_row_edited_with_an_alignment_does_not_wrap_at_its_old_width() {
     for align in [added::Align::Center, added::Align::Right] {
         let mut doc = text_page("BT /F1 18 Tf 1 0 0 1 100 700 Tm (Title) Tj ET");
         let longer = "A much longer title for the page";
-        let style = text::BlockStyle { aligns: vec![Some(align)], ..Default::default() };
+        let style = text::BlockStyle { align: Some(align), ..Default::default() };
         text::rewrite_block(&mut doc, 0, 0, Some(longer), &style).unwrap();
         let lines = text::text_lines(&doc, 0).unwrap();
         assert_eq!(lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), [longer], "{align:?}: the title stays on one row");
@@ -7996,7 +7983,7 @@ fn a_lone_row_aligns_in_its_own_column_not_a_closer_full_width_heading() {
         let mut doc = text_page(page);
         let blocks = text::text_blocks(&doc, 0).unwrap();
         let index = blocks.iter().position(|b| b.text == "Title").unwrap();
-        let style = text::BlockStyle { aligns: vec![Some(align)], ..Default::default() };
+        let style = text::BlockStyle { align: Some(align), ..Default::default() };
         text::rewrite_block(&mut doc, 0, index, Some("Title"), &style).unwrap();
         text::text_lines(&doc, 0).unwrap().into_iter().find(|l| l.text == "Title").unwrap().rect
     };
@@ -8018,7 +8005,7 @@ fn a_lone_row_aligns_across_its_own_column_of_two() {
     let blocks = text::text_blocks(&doc, 0).unwrap();
     let column = blocks.iter().find(|b| b.text.starts_with("The first")).unwrap().rect;
     let index = blocks.iter().position(|b| b.text == "Title").unwrap();
-    let style = text::BlockStyle { aligns: vec![Some(added::Align::Left)], ..Default::default() };
+    let style = text::BlockStyle { align: Some(added::Align::Left), ..Default::default() };
     text::rewrite_block(&mut doc, 0, index, Some("Title"), &style).unwrap();
     let title = text::text_lines(&doc, 0).unwrap().into_iter().find(|l| l.text == "Title").unwrap().rect;
     assert!((title[0] - column[0]).abs() < 0.5, "left: on the first column's edge, {title:?} vs {column:?}");
@@ -8043,7 +8030,7 @@ fn a_lone_row_of_two_styles_aligns_across_its_column() {
     let centre = |doc: &mut Document| {
         let blocks = text::text_blocks(doc, 0).unwrap();
         let (index, block) = blocks.iter().enumerate().find(|(_, b)| b.text == "Big Title").unwrap();
-        let style = text::BlockStyle { aligns: vec![Some(added::Align::Center)], ..Default::default() };
+        let style = text::BlockStyle { align: Some(added::Align::Center), ..Default::default() };
         text::rewrite_block(doc, 0, index, Some(&block.editor_text), &style).unwrap();
     };
     centre(&mut doc);
@@ -8078,7 +8065,7 @@ fn a_titles_column_ignores_distant_full_width_headers_and_footers() {
                 for align in [added::Align::Center, added::Align::Center, added::Align::Right, added::Align::Left] {
                     let blocks = text::text_blocks(&doc, 0).unwrap();
                     let (index, block) = blocks.iter().enumerate().find(|(_, b)| b.text == name).unwrap();
-                    let style = text::BlockStyle { aligns: vec![Some(align)], ..Default::default() };
+                    let style = text::BlockStyle { align: Some(align), ..Default::default() };
                     text::rewrite_block(&mut doc, 0, index, Some(&block.editor_text), &style).unwrap();
                     doc = reopen(&doc);
                     let title = rect(&doc, name);
@@ -8534,18 +8521,18 @@ fn q_inside_a_text_object_restores_the_text_matrices() {
     }
 }
 
-/// Integration of #4180 and #2529: soft wraps retain the source paragraph's alignment,
-/// while a typed newline advances to the next alignment and survives a save/reopen.
+/// Whole-paragraph alignment retains both soft wraps and typed hard breaks after save/reopen.
+/// Selected-row alignment for existing PDF content is withheld until it can persist safely.
 #[test]
-fn wrapped_rows_keep_alignment_separate_from_hard_break_markers() {
+fn wrapped_rows_keep_whole_paragraph_alignment_and_hard_break_markers() {
     let mut doc = text_page("BT /F1 10 Tf 12 TL 72 700 Td (Old) Tj ET");
-    let style = text::BlockStyle { width: Some(60.0), aligns: vec![Some(added::Align::Left), Some(added::Align::Right)], ..Default::default() };
+    let style = text::BlockStyle { width: Some(60.0), align: Some(added::Align::Left), ..Default::default() };
     text::rewrite_block(&mut doc, 0, 0, Some("One two three four five six\nTail"), &style).unwrap();
     let doc = reopen(&doc);
     let lines = text::text_lines(&doc, 0).unwrap();
     assert!(lines.len() > 2, "the first logical row must wrap");
     let tail = lines.iter().find(|line| line.text == "Tail").unwrap();
-    assert!((tail.rect[2] - 132.0).abs() < 1.0, "the second logical row stays right-aligned: {:?}", tail.rect);
+    assert!((tail.rect[0] - 72.0).abs() < 1.0, "the second logical row keeps the paragraph alignment: {:?}", tail.rect);
     for line in lines.iter().filter(|line| line.text != "Tail") {
         assert!((line.rect[0] - 72.0).abs() < 1.0, "soft-wrapped rows stay left-aligned: {:?}", line.rect);
     }
@@ -8576,4 +8563,16 @@ fn ordinary_soft_wrap_counts_keep_their_spaces() {
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].reflow_text, format!("First{}Second", " ".repeat(gap)));
     }
+}
+
+#[test]
+fn styled_existing_justification_is_refused_instead_of_silently_left_aligning() {
+    let mut doc = mixed_region_page();
+    let before = page_content_bytes(&doc, 0);
+    let blocks = text::text_blocks(&doc, 0).unwrap();
+    let style = text::BlockStyle { align: Some(added::Align::Justify), ..Default::default() };
+    let error = text::rewrite_block(&mut doc, 0, 1, Some(&blocks[1].editor_text), &style).unwrap_err();
+    assert!(error.to_string().contains("justification"));
+    assert_eq!(page_content_bytes(&doc, 0), before);
+    assert_eq!(page_content_bytes(&reopen(&doc), 0), before);
 }

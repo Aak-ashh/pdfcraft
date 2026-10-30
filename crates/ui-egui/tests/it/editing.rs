@@ -7114,98 +7114,48 @@ fn row_rect(h: &Harness<'static, PdfCraftApp>, starts: &str) -> [f64; 4] {
     s.session.get(s.views[0].id).unwrap().text_lines(0).into_iter().find(|l| l.text.starts_with(starts)).expect("the row").rect
 }
 
-/// Bug A: with one row of a paragraph selected, an alignment applies to that row only.
-/// Bug C: Undo then puts the paragraph back and closes the editor, instead of leaving it open on
-/// a text the page no longer has.
+/// Existing-row alignment stays disabled until intent survives reopening; cancellation keeps all rows.
 #[test]
-fn aligning_a_selected_row_aligns_only_that_row_and_undo_puts_it_back() {
+fn selected_existing_rows_keep_alignment_disabled_and_the_complete_paragraph() {
     let mut h = three_row_paragraph();
+    let before = h.state().views[0].line_editor.as_ref().unwrap().text.clone();
     let first = row_rect(&h, "One");
-    let wide = row_rect(&h, "three");
     let last = row_rect(&h, "nine");
-    // Select the last row.
     h.key_press_modifiers(Modifiers::COMMAND, Key::End);
     h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
     h.run_steps(2);
+    assert!(h.get_by_label("Alignment").accesskit_node().is_disabled());
+    let button = h.get_by_label("Alignment").rect().center();
+    click_at(&mut h, button);
+    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().text, before);
+    assert_eq!(row_rect(&h, "One"), first);
+    assert_eq!(row_rect(&h, "nine"), last);
+    assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().can_undo(), None);
+    h.key_press(Key::Escape);
+    h.run_steps(3);
+    assert_eq!(row_rect(&h, "One"), first);
+    assert_eq!(row_rect(&h, "nine"), last);
+}
+
+
+/// Clearing the selection restores ordinary whole-paragraph alignment and its undo step.
+#[test]
+fn whole_paragraph_alignment_stays_available_without_a_row_selection() {
+    let mut h = three_row_paragraph();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    h.run_steps(2);
+    assert!(h.get_by_label("Alignment").accesskit_node().is_disabled());
+    h.key_press(Key::End);
+    h.run_steps(2);
+    assert!(!h.get_by_label("Alignment").accesskit_node().is_disabled());
     align_by_pointer(&mut h, "Align right");
-    {
-        let s = h.state();
-        assert_eq!(s.session.get(s.views[0].id).unwrap().can_undo(), Some("Edit text"));
-        assert!(s.views[0].line_editor.is_some(), "the paragraph stays open");
-    }
-    let moved = row_rect(&h, "nine");
-    assert!((row_rect(&h, "One")[0] - first[0]).abs() < 0.5, "the first row stays put");
-    assert!((moved[2] - wide[2]).abs() < 1.0 && moved[0] > last[0] + 20.0, "the last row is right-aligned: {moved:?}");
+    assert!(h.state().views[0].line_editor.is_some());
     h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
-    h.run_steps(4);
-    let s = h.state();
-    assert_eq!(s.session.get(s.views[0].id).unwrap().can_undo(), None, "the alignment is undone");
-    assert!(s.views[0].line_editor.is_none(), "the editor closed with the step it showed");
-    assert!((row_rect(&h, "nine")[0] - last[0]).abs() < 0.5, "the last row is back");
-}
-
-/// Format text's alignment flyout by keyboard or screen reader: each control is focused, then
-/// pressed, with no pointer anywhere.
-fn align_by_focus(h: &mut Harness<'static, PdfCraftApp>, choice: &str) {
-    for label in ["Alignment", choice] {
-        h.get_by_label(label).focus();
-        h.run_steps(2);
-        h.get_by_label(label).click();
-        h.run_steps(3);
-    }
-}
-
-/// The same as by pointer, with the alignment controls reached by keyboard or a screen reader:
-/// the paragraph stays open when the focus leaves it for the Format text panel, the selected row
-/// takes the alignment, and a second choice is for that row again.
-#[test]
-fn aligning_a_selected_row_by_keyboard_keeps_the_paragraph_open() {
-    let mut h = three_row_paragraph();
-    let first = row_rect(&h, "One");
-    let wide = row_rect(&h, "three");
-    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
-    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
-    h.run_steps(2);
-    align_by_focus(&mut h, "Align right");
-    assert!(h.state().views[0].line_editor.is_some(), "the paragraph stays open");
-    let moved = row_rect(&h, "nine");
-    assert!((moved[2] - wide[2]).abs() < 1.0, "the last row is right-aligned: {moved:?}");
-    align_by_focus(&mut h, "Centre");
-    assert!(h.state().views[0].line_editor.is_some(), "the paragraph is still open");
-    assert!((row_rect(&h, "One")[0] - first[0]).abs() < 0.5, "the first row stays put: {:?}", row_rect(&h, "One"));
-    let last = row_rect(&h, "nine");
-    assert!((((last[0] + last[2]) - (wide[0] + wide[2])) / 2.0).abs() < 1.0, "the last row is centred: {last:?} in {wide:?}");
-}
-
-/// A row aligned on its own, deleted by typing, then brought back with Undo from the menu: it
-/// comes back with its alignment, and Redo deletes it again. The box's history keeps only text,
-/// so the restored row took the alignment of the row before it.
-#[test]
-fn undo_brings_a_deleted_row_back_with_its_alignment() {
-    let mut h = three_row_paragraph();
-    // Right-align the last row on its own.
-    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
-    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
-    h.run_steps(2);
-    align_by_pointer(&mut h, "Align right");
-    let ed = |h: &Harness<'static, PdfCraftApp>| h.state().views[0].line_editor.clone().expect("the paragraph stays open");
-    let (three_rows, aligned) = (ed(&h).text, ed(&h).look.aligns);
-    assert_eq!(aligned.last(), Some(&Some(pdfcraft_engine::TextAlign::Right)), "{aligned:?}");
-    // Delete the last row with the line break before it.
-    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
-    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
-    h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowLeft);
-    h.key_press(Key::Backspace);
-    h.run_steps(2);
-    let (two_rows, after_delete) = (ed(&h).text, ed(&h).look.aligns);
-    assert_eq!(pdfcraft_engine::paragraph_align::count(&two_rows), 2, "{two_rows:?}");
-    assert!(h.state_mut().execute("edit.undo"));
     h.run_steps(3);
-    assert_eq!((ed(&h).text, ed(&h).look.aligns), (three_rows, aligned), "Undo brings the row back right-aligned");
-    assert!(h.state_mut().execute("edit.redo"));
-    h.run_steps(3);
-    assert_eq!((ed(&h).text, ed(&h).look.aligns), (two_rows, after_delete), "Redo deletes it again");
+    assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().can_undo(), None);
 }
+
 
 /// Redo after Undo in the box puts the typing back, in the box: it doesn't reach the document,
 /// whose own Redo (a formatting change waiting here) must stay waiting.
@@ -7239,47 +7189,6 @@ fn redo_after_undoing_typing_puts_the_typing_back() {
     assert_eq!((doc.can_redo(), doc.text_blocks(0)[0].base_font.as_str()), (Some("Edit text"), "Helvetica"), "the document's Redo still waits");
 }
 
-/// A row aligned on its own keeps its alignment when the whole paragraph is then made bold: the
-/// rewrite for the bold carries the rows' alignments too, as nothing in the page records them.
-#[test]
-fn a_row_aligned_on_its_own_keeps_it_through_more_formatting() {
-    let mut h = three_row_paragraph();
-    let wide = row_rect(&h, "three");
-    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
-    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
-    h.run_steps(2);
-    align_by_pointer(&mut h, "Align right");
-    // Nothing selected: the bold is for the whole paragraph.
-    h.key_press(Key::End);
-    h.run_steps(2);
-    assert_eq!(h.state().views[0].line_editor.as_ref().unwrap().selection, None);
-    h.get_by_label("Bold").click();
-    h.run_steps(4);
-    assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().text_blocks(0)[0].base_font, "Helvetica-Bold");
-    let last = row_rect(&h, "nine");
-    assert!(
-        (last[2] - row_rect(&h, "three")[2].max(wide[2])).abs() < 1.0 && last[0] > wide[0] + 20.0,
-        "the last row is still right-aligned: {last:?}"
-    );
-}
-
-/// A second alignment picked while the same row is still selected applies to that row again, not
-/// the whole paragraph.
-#[test]
-fn a_second_alignment_for_a_selected_row_stays_on_that_row() {
-    let mut h = three_row_paragraph();
-    let first = row_rect(&h, "One");
-    let wide = row_rect(&h, "three");
-    h.key_press_modifiers(Modifiers::COMMAND, Key::End);
-    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
-    h.run_steps(2);
-    align_by_pointer(&mut h, "Align right");
-    align_by_pointer(&mut h, "Centre");
-    assert!((row_rect(&h, "One")[0] - first[0]).abs() < 0.5, "the first row stays put: {:?}", row_rect(&h, "One"));
-    let last = row_rect(&h, "nine");
-    let (mid, centre) = ((last[0] + last[2]) / 2.0, (wide[0] + wide[2]) / 2.0);
-    assert!((mid - centre).abs() < 1.0, "the last row is centred: {last:?} in {wide:?}");
-}
 
 /// Redo from the menu or toolbar with typing in the box the page doesn't have yet. Closing the
 /// box first applied the typing, a new edit that dropped the document's waiting Redo, and the

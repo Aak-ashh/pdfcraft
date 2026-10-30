@@ -908,27 +908,24 @@ fn packed_rows(samples: &[u8], row_len: usize, w: usize, h: usize, (n, bpc, whit
     Some(out)
 }
 
-/// Whether sample 1 is the dark one of the 1-bit image `d` describes, after its decode array
-/// (`[0 1]` when it has none of two numbers): the painted part of an image mask and black in grey
-/// decode to 0, and full ink in a separation (or a DeviceN of one colourant) to 1. An indexed image
-/// says the sample that decodes to entry 0 (its decode array maps samples to entries, ISO 32000-2
-/// §8.9.5.2): its palette says which entry is darker, and the palette isn't read yet, so a tie goes
-/// to entry 0 whatever its colour.
-fn dark_is_one(doc: &Document, d: &Dict) -> bool {
-    let number = |v: Option<&Object>| v.and_then(|v| doc.resolve(v).as_f64());
+/// Resolve polarity only for explicitly understood samples. Indexed palettes and custom
+/// colour spaces stay at their original resolution rather than guessing which entry is dark.
+fn dark_is_one(doc: &Document, d: &Dict) -> Option<bool> {
+    let number = |v: Option<&Object>| v.and_then(|v| doc.resolve(v).as_f64()).filter(|v| v.is_finite());
     let (d0, d1) = match d.get(b"Decode").map(|v| doc.resolve(v)).as_deref() {
-        Some(Object::Array(a)) => number(a.first()).zip(number(a.get(1))).unwrap_or((0.0, 1.0)),
-        _ => (0.0, 1.0),
+        Some(Object::Array(a)) if a.len() == 2 => number(a.first()).zip(number(a.get(1)))?,
+        None => (0.0, 1.0),
+        _ => return None,
     };
+    if d0 == d1 {
+        return None;
+    }
     if matches!(d.get(b"ImageMask"), Some(Object::Bool(true))) {
-        return d1 < d0;
+        return Some(d1 < d0);
     }
     match d.get(b"ColorSpace").map(|cs| doc.resolve(cs)).as_deref() {
-        Some(Object::Array(a)) => match a.first().and_then(Object::as_name) {
-            Some(b"Separation" | b"DeviceN") => d1 > d0,
-            _ => d1 < d0,
-        },
-        _ => d1 < d0,
+        Some(Object::Name(n)) if matches!(n.as_slice(), b"DeviceGray" | b"G") => Some(d1 < d0),
+        _ => None,
     }
 }
 
@@ -937,7 +934,12 @@ fn dark_is_one(doc: &Document, d: &Dict) -> bool {
 /// (1 if `dark_is_one`, see [`dark_is_one`]), so a dark line half a new pixel wide stays. `None`
 /// when the rows are short or the new size isn't smaller in both directions or empty. Also says
 /// how many new pixels cover both samples.
+#[cfg(test)]
 pub(crate) fn downsample_bits(data: &[u8], w: u32, h: u32, nw: u32, nh: u32, dark_is_one: bool) -> Option<(Vec<u8>, u64)> {
+    downsample_bits_checked(data, w, h, nw, nh, dark_is_one).map(|(out, mixed, _)| (out, mixed))
+}
+
+fn downsample_bits_checked(data: &[u8], w: u32, h: u32, nw: u32, nh: u32, dark_is_one: bool) -> Option<(Vec<u8>, u64, bool)> {
     if nw == 0 || nh == 0 || nw > w || nh > h {
         return None;
     }
@@ -951,7 +953,11 @@ pub(crate) fn downsample_bits(data: &[u8], w: u32, h: u32, nw: u32, nh: u32, dar
     // Per source column, the area its 1 samples cover in the new row.
     let mut ones = vec![0u64; usize::try_from(w).ok()?];
     let mut mixed = 0u64;
+    let mut previous_mixed = vec![false; usize::try_from(nw).ok()?];
+    let mut local_tone = false;
     for j in 0..nh {
+        let mut left_mixed = false;
+        let mut above_left_mixed = false;
         ones.fill(0);
         let (y0, y1) = (j * h, (j + 1) * h);
         for y in y0 / nh..y1.div_ceil(nh).min(h) {
@@ -972,21 +978,28 @@ pub(crate) fn downsample_bits(data: &[u8], w: u32, h: u32, nw: u32, nh: u32, dar
             // Against what the 0 samples cover: covered is at most w·h, which can't overflow
             // (w·h < 2^64 for u32 sizes).
             let zeros = w * h - covered;
-            mixed += u64::from(covered > 0 && zeros > 0);
+            let is_mixed = covered > 0 && zeros > 0;
+            mixed += u64::from(is_mixed);
+            let column = usize::try_from(i).ok()?;
+            let above = *previous_mixed.get(column)?;
+            local_tone |= is_mixed && left_mixed && above && above_left_mixed;
+            *previous_mixed.get_mut(column)? = is_mixed;
+            left_mixed = is_mixed;
+            above_left_mixed = above;
             if covered > zeros || (dark_is_one && covered == zeros) {
                 let i = usize::try_from(i).ok()?;
                 *out_row.get_mut(i / 8)? |= 0x80 >> (i % 8);
             }
         }
     }
-    Some((out, mixed))
+    Some((out, mixed, local_tone))
 }
 
 /// A black-and-white image (see [`one_bit`]) resampled and stored again per `settings`, if that is
 /// smaller as stored; `ppi` is its effective resolution, and `defaults` says it is drawn where
 /// `/DefaultGray` or `/DefaultRGB` is or may be in force. Also says whether it was resampled.
 ///
-/// - **Resampled** ([`downsample_bits`]) when its resolution is above `above_ppi`, to `target_ppi`,
+/// - **Resampled** ([`downsample_bits_checked`]) when its resolution is above `above_ppi`, to `target_ppi`,
 ///   unless it has a soft mask, whose own size would then have to follow, or is a halftone or a
 ///   dither: most of its new pixels would cover both black and white, and taking the sample that
 ///   covers more would turn its tones solid (a 50% screen black, a 25% one white).
@@ -1025,12 +1038,15 @@ fn mono(doc: &Document, s: &Stream, ppi: f64, defaults: bool, settings: &MonoSet
     } else {
         (w, h)
     };
-    let averaged = if (nw, nh) != (w, h) {
+    let polarity = if defaults { None } else { dark_is_one(doc, packed.as_ref().unwrap_or(d)) };
+    let averaged = if (nw, nh) != (w, h) && polarity.is_some() {
         // The dark sample of the image as it ends up: packed RGB is grey, with grey's decode pair.
-        let (out, mixed) = downsample_bits(&data, w, h, nw, nh, dark_is_one(doc, packed.as_ref().unwrap_or(d)))?;
+        let (out, mixed, local_tone) = downsample_bits_checked(&data, w, h, nw, nh, polarity?)?;
         // A halftone or dither: most new pixels cover both samples. Text covers both only along
         // its edges.
-        (mixed.saturating_mul(2) <= u64::from(nw) * u64::from(nh)).then_some(out)
+        // A dense 2x2 patch of mixed output samples can encode a local photo even when
+        // white margins dominate the page. Conservatively retain the original image.
+        (!local_tone && mixed.saturating_mul(2) <= u64::from(nw) * u64::from(nh)).then_some(out)
     } else {
         None
     };
@@ -1310,15 +1326,15 @@ mod downsample_tests {
             ("ColorSpace", Object::Array(vec![Object::name("Separation"), Object::name("Spot"), Object::name("DeviceCMYK"), Object::Null]));
         let indexed = ("ColorSpace", Object::Array(vec![Object::name("Indexed"), Object::name("DeviceGray"), 1.into(), Object::Null]));
         for (entries, dark_one) in [
-            (vec![grey.clone()], false),
-            (vec![grey, inverted.clone()], true),
-            (vec![mask.clone()], false),
-            (vec![mask, inverted.clone()], true),
-            (vec![separation.clone()], true),
-            (vec![separation, inverted.clone()], false),
-            (vec![indexed.clone()], false),
-            (vec![indexed, inverted], true),
-            (vec![("ColorSpace", Object::name("DeviceGray")), ("Decode", Object::Array(vec![Object::name("x"), 0.into()]))], false),
+            (vec![grey.clone()], Some(false)),
+            (vec![grey, inverted.clone()], Some(true)),
+            (vec![mask.clone()], Some(false)),
+            (vec![mask, inverted.clone()], Some(true)),
+            (vec![separation.clone()], None),
+            (vec![separation, inverted.clone()], None),
+            (vec![indexed.clone()], None),
+            (vec![indexed, inverted], None),
+            (vec![("ColorSpace", Object::name("DeviceGray")), ("Decode", Object::Array(vec![Object::name("x"), 0.into()]))], None),
         ] {
             assert_eq!(dark_is_one(&doc, &image(&entries)), dark_one, "{entries:?}");
         }

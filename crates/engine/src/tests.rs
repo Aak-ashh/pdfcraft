@@ -9280,3 +9280,54 @@ fn need_appearances_buttons_are_displayed_from_their_captions() {
         assert!(ink(&shown, inside(x, 100)) > 700, "the file's square at {x}");
     }
 }
+
+#[test]
+fn repeated_backdrop_artwork_survives_background_undo_redo_and_both_save_modes() {
+    let white = "1 g";
+    let rectangle = "0 0 100 100 re f";
+    let artwork = "q 0 g 0.25 0 0 0.25 20 20 cm";
+    let raw = format!(
+        "%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+         2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+         3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents [4 0 R 5 0 R 6 0 R 5 0 R 7 0 R] >> endobj\n\
+         4 0 obj << /Length {} >> stream\n{white}\nendstream endobj\n\
+         5 0 obj << /Length {} >> stream\n{rectangle}\nendstream endobj\n\
+         6 0 obj << /Length {} >> stream\n{artwork}\nendstream endobj\n\
+         7 0 obj << /Length 1 >> stream\nQ\nendstream endobj\ntrailer << /Root 1 0 R >>\n%%EOF",
+        white.len(), rectangle.len(), artwork.len()
+    );
+    // Start with a conventional xref, so the first save can exercise incremental output.
+    let source = pdfcraft_cos::Document::open(Arc::new(raw.into_bytes())).unwrap();
+    let bytes = pdfcraft_cos::write_full(&source, &pdfcraft_cos::SaveOptions::default()).unwrap();
+    let mut s = Session::new();
+    let id = s.open("shared-backdrop.pdf", None, Arc::new(bytes), None).unwrap();
+    let black = |s: &Session, id| {
+        let rgba = pixel(s, id, 0, 30, 70);
+        assert!(rgba[0] < 20 && rgba[1] < 20 && rgba[2] < 20, "later artwork survives: {rgba:?}");
+    };
+    black(&s, id);
+    s.apply(
+        id,
+        Edit::AddBackground {
+            pages: vec![0],
+            settings: Background { color: [1.0, 0.0, 0.0], ..Background::default() },
+            replace: false,
+            file: None,
+        },
+    )
+    .unwrap();
+    black(&s, id);
+    s.undo(id).unwrap();
+    black(&s, id);
+    s.redo(id).unwrap();
+    black(&s, id);
+    let saved = s.save_bytes(id).unwrap();
+    let reopened = s.open("incremental.pdf", None, saved.clone(), None).unwrap();
+    black(&s, reopened);
+    let doc = pdfcraft_cos::Document::open(saved).unwrap();
+    let full = pdfcraft_cos::write_full(&doc, &pdfcraft_cos::SaveOptions::default()).unwrap();
+    let rewritten = s.open("full.pdf", None, Arc::new(full), None).unwrap();
+    black(&s, rewritten);
+    s.apply(rewritten, Edit::RemoveMarks { kind: MarkKind::Background }).unwrap();
+    black(&s, rewritten);
+}

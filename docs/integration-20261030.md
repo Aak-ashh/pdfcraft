@@ -5,6 +5,16 @@ Base: 1d1cbc4ec92012767f5b48c92b451e15eb401c42
 Validation: combined GitHub CI passed on bdf56209ce6a22980ef488eec92a55073f5a4e18 (Linux and Windows, run 41038860617). No fresh manual GUI pass has been performed. The subsequent architectural-guard additions require a fresh run.
 All included source heads are preserved as merge parents, retaining original authorship. No upstream PR was merged. Conflicts were resolved after the user requested inclusion despite merge conflicts.
 
+## Review follow-up and withheld behavior
+
+Review 5712795161 identified combined-behavior gaps after the green baseline at 673178b.
+The follow-up is pending fresh hosted validation; earlier results below are historical evidence.
+
+- Backdrop detection uses a shared strict 64 KiB decoding budget, including intermediate filter outputs, and caps content-stream entries. A fill stream executed more than once on the page is treated as ambiguous and is not replaced; source artwork stays untouched.
+- Monochrome downsampling no longer guesses Indexed/custom color-space polarity. Those images may be recompressed losslessly but retain their resolution. A local 2-by-2 patch of mixed output samples conservatively retains the entire source image, even when white margins dominate it.
+- **Withheld from #4180:** selected-row alignment of existing PDF paragraphs. The UI disables it for a text selection and the editing API explicitly refuses per-row alignment intent before mutation. Whole-paragraph alignment and the independently persisted alignments of added text remain available. Prior immediate-row tests are replaced by safe-refusal tests; no cross-session alignment guarantee is claimed for the withheld feature.
+- The custom JBIG2 encoder still needs separate representative independent-decoder qualification. No codec corruption defect has been established by this review. No fresh native manual GUI acceptance pass is claimed.
+
 ## Included
 - [#4304](https://github.com/storytold/pdfcraft/pull/4304): M11: PDF Optimizer stores black-and-white images as CCITT Group 4 (optimize.mono-compression) (1b7164cab1fc187c5385c30f94449542fe284280)
 - [#4335](https://github.com/storytold/pdfcraft/pull/4335): M11: black-and-white pictures stay one bit: Create PDF, the optimizer, and CCITT image export (210ba20fe69e701286bbfdbd924cfc01d9aaa9f4)
@@ -76,7 +86,7 @@ For each source-head diff above, the added `#[test]` function names were matched
 - #2635: 6/6 added source regression names passed; 0 missing, 0 skipped.
 - #1952: 6/6 added source regression names passed; 0 missing, 0 skipped.
 
-The conflict-specific tests `wrapped_rows_keep_alignment_separate_from_hard_break_markers` and `black_and_white_images_become_jbig2` (including the CCITT-to-JBIG2 conversion/render assertions) passed in that same run. Source tests for alignment/history, paragraph boundaries, field calculations and button export values remain present and passed.
+The conflict-specific tests `wrapped_rows_keep_alignment_separate_from_hard_break_markers` and `black_and_white_images_become_jbig2` (including the CCITT-to-JBIG2 conversion/render assertions) passed in that same run. Those counts describe that baseline. In the review follow-up, unsupported existing-row alignment success tests are replaced by safe-refusal tests; the corresponding feature is withheld. Paragraph-boundary, field-calculation and button-export coverage is retained.
 
 ## Protect dependency check
 
