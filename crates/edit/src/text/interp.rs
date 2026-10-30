@@ -810,10 +810,8 @@ pub(super) fn interpret(
                     // The marker is untrusted and later expands into spaces during reflow.
                     // Charge it to the same page-wide budget as glyph text, so many individually
                     // small markers cannot multiply the allocation past the limit either.
-                    carry.text_left = carry
-                        .text_left
-                        .checked_sub(soft_gap)
-                        .ok_or_else(|| EditError::Invalid("the page's text is too large to read".into()))?;
+                    carry.text_left =
+                        carry.text_left.checked_sub(soft_gap).ok_or_else(|| EditError::Invalid("the page's text is too large to read".into()))?;
                 } else if op.name(0) == Some(b"PCHard") {
                     hard_break = true;
                     soft_break = false;
