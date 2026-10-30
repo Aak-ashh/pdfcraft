@@ -1254,7 +1254,7 @@ fn edited_button_export_values_round_trip_in_all_data_formats() {
     set_value(&mut doc, "Agree", &FieldValue::Check(true)).unwrap();
     set_value(&mut doc, "Size", &FieldValue::Radio(Some("Small".into()))).unwrap();
     let doc = Document::open(Arc::new(write_full(&doc, &SaveOptions::default()).unwrap())).unwrap();
-    let mut exports = vec![export_xfdf(&doc, false, true, "").into_bytes(), export_fdf(&doc, false, true, "")];
+    let mut exports = vec![export_xfdf(&doc, false, true, "").into_bytes(), export_fdf(&doc, false, true, "").unwrap()];
     exports.extend([Format::Xml, Format::Csv, Format::Txt].map(|f| export_data(&doc, f).into_bytes()));
     for (index, bytes) in exports.into_iter().enumerate() {
         if index < 2 {
