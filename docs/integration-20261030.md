@@ -2,7 +2,7 @@
 
 Base: 1d1cbc4ec92012767f5b48c92b451e15eb401c42
 
-Validation: pending combined GitHub CI. No fresh manual GUI pass has been performed.
+Validation: combined GitHub CI passed on bdf56209ce6a22980ef488eec92a55073f5a4e18 (Linux and Windows, run 41038860617). No fresh manual GUI pass has been performed. The subsequent architectural-guard additions require a fresh run.
 All included source heads are preserved as merge parents, retaining original authorship. No upstream PR was merged. Conflicts were resolved after the user requested inclusion despite merge conflicts.
 
 ## Included
@@ -41,3 +41,43 @@ Excluded held PRs #4648, #2877 and #3762 were not included.
 Source reviews and individual hosted CI do not establish combined-build safety; the integration gate must pass.
 
 Integration-specific changes: preserve hard/soft wrap metadata together with per-row alignment; share CCITT/JBIG2 export paths with the 32 MiB globals cap retained; keep downsampling and RGB ownership guards with JBIG2 encoding; retain all translation keys and both sets of regression tests.
+
+## Per-PR regression evidence
+
+Evidence: [Linux job 124006360624](https://github.com/FredApps/pdfcraft/actions/runs/41038860617/job/124006360624) on bdf56209ce6a22980ef488eec92a55073f5a4e18: 5,627 passed, 15 skipped. The Windows leg of the same run also passed.
+
+For each source-head diff above, the added `#[test]` function names were matched against PASS/SKIP entries in the combined Linux log. Every listed source regression was found passing, none skipped or missing. Counts overlap because stacked PRs carry their prerequisites; they must not be summed as distinct tests. This records source regression coverage, not manual feature acceptance.
+
+- #4304: 11/11 added source regression names passed; 0 missing, 0 skipped.
+- #4320: 21/21 added source regression names passed; 0 missing, 0 skipped.
+- #4325: 18/18 added source regression names passed; 0 missing, 0 skipped.
+- #4335: 19/19 added source regression names passed; 0 missing, 0 skipped.
+- #4384: 39/39 added source regression names passed; 0 missing, 0 skipped.
+- #4404: 50/50 added source regression names passed; 0 missing, 0 skipped.
+- #4805: 36/36 added source regression names passed; 0 missing, 0 skipped.
+- #5300: 18/18 added source regression names passed; 0 missing, 0 skipped.
+- #4719: 6/6 added source regression names passed; 0 missing, 0 skipped.
+- #4541: 5/5 added source regression names passed; 0 missing, 0 skipped.
+- #2815: 35/35 added source regression names passed; 0 missing, 0 skipped.
+- #4620: 1/1 added source regression names passed; 0 missing, 0 skipped.
+- #2529: 35/35 added source regression names passed; 0 missing, 0 skipped.
+- #3789: 5/5 added source regression names passed; 0 missing, 0 skipped.
+- #3779: 4/4 added source regression names passed; 0 missing, 0 skipped.
+- #2960: 1/1 added source regression names passed; 0 missing, 0 skipped.
+- #5208: 2/2 added source regression names passed; 0 missing, 0 skipped.
+- #4596: 1/1 added source regression names passed; 0 missing, 0 skipped.
+- #3636: 3/3 added source regression names passed; 0 missing, 0 skipped.
+- #4494: 4/4 added source regression names passed; 0 missing, 0 skipped.
+- #4013: 4/4 added source regression names passed; 0 missing, 0 skipped.
+- #4180: 54/54 added source regression names passed; 0 missing, 0 skipped.
+- #4179: 20/20 added source regression names passed; 0 missing, 0 skipped.
+- #5134: the source diff adds no test function. Combined gates passed; no new manual scrollbar acceptance is claimed.
+- #2133: 1/1 added source regression names passed; 0 missing, 0 skipped.
+- #2635: 6/6 added source regression names passed; 0 missing, 0 skipped.
+- #1952: 6/6 added source regression names passed; 0 missing, 0 skipped.
+
+The conflict-specific tests `wrapped_rows_keep_alignment_separate_from_hard_break_markers` and `black_and_white_images_become_jbig2` (including the CCITT-to-JBIG2 conversion/render assertions) passed in that same run. Source tests for alignment/history, paragraph boundaries, field calculations and button export values remain present and passed.
+
+## Protect dependency check
+
+The integration base main commit 1d1cbc4ec92012767f5b48c92b451e15eb401c42 already locks registry `getrandom` 0.4.3 (checksum 300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099). #4013 makes it a direct engine dependency rather than introducing an unrecorded package. The combined dependency-policy and asset gates passed. The fail-closed randomness regression also passed.
