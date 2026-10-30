@@ -7040,6 +7040,9 @@ fn test_clip_only_text_raster_preserves_clipping_without_painting() {
     assert!(pixels.contains(&white), "the clip is text-shaped, not the whole page");
 }
 
+#[cfg(target_os = "windows")]
+mod gbk_glyphs;
+
 /// Chinese and Korean CID fonts that aren't embedded (Adobe-CNS1 `MSung-Light`, Adobe-GB1
 /// `STSong-Light`, Adobe-Korea1 `HYGoThic-Medium`; Acrobat also writes Japanese `KozGoPr6N`
 /// text boxes without the font) drew nothing, because craft-fonts has only Japanese faces.
@@ -7061,6 +7064,8 @@ fn non_embedded_chinese_and_korean_cid_fonts_draw_with_an_installed_face() {
         ("KaiTi", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
         ("FangSong", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
         ("ABCDEF+FZSSK--GBK1-0", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
+        ("ABCDEF+FZHTK--GBK1-0", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
+        ("ABCDEF+FZKTK--GBK1-0", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
         ("ABCDEF+FZFSK--GBK1-0", CidFamily::AdobeGB1, "GB1", "GBK-EUC-H", "D6D0CEC4", "CIDFontType2"),
     ];
     for (base_font, family, ordering, encoding, code, subtype) in cases {
@@ -7105,6 +7110,8 @@ trailer << /Root 1 0 R >>
         let saved = ink(RenderConfig::default());
         assert!(saved < 50, "{base_font}: not drawn without system_fonts ({saved} dark pixels)");
         if encoding == "GBK-EUC-H" {
+            #[cfg(target_os = "windows")]
+            gbk_glyphs::assert_expected_glyphs(&pdf, base_font);
             let mut renderer = PageRenderer::new(pdf, RenderConfig { system_fonts: true, ..Default::default() });
             let text = renderer.render(RenderRequest { page: 0, kind: RequestKind::Text, ..Default::default() });
             assert!(text.error.is_none(), "{base_font}: {:?}", text.error);
